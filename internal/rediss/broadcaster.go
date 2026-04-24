@@ -2,6 +2,7 @@ package rediss
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 )
 
@@ -37,7 +38,11 @@ func (b *Broadcaster) Unsubscribe(ch chan []byte) {
 
 func (b *Broadcaster) Run(ctx context.Context) {
 	sub := b.redis.Subscribe(ctx, b.channel)
-	defer sub.Close()
+	defer func() {
+		if err := sub.Close(); err != nil {
+			slog.Error("broadcaster: close sub", "channel", b.channel, "err", err)
+		}
+	}()
 	msgs := sub.Channel()
 	for {
 		select {

@@ -34,13 +34,21 @@ func (w *bloombergRSSWorker) Run(ctx context.Context) error {
 	}
 
 	rc := rediss.New(cfg.Redis)
-	defer rc.Close()
+	defer func() {
+		if err := rc.Close(); err != nil {
+			slog.Error("bloomberg-rss: close redis client", "err", err)
+		}
+	}()
 
 	mc, err := mongodb.New(ctx, cfg.MongoDB)
 	if err != nil {
 		return fmt.Errorf("bloomberg-rss: connect mongodb: %w", err)
 	}
-	defer mc.Disconnect(ctx)
+	defer func() {
+		if err := mc.Disconnect(ctx); err != nil {
+			slog.Error("bloomberg-rss: disconnect mongodb", "err", err)
+		}
+	}()
 
 	repo, err := mongodb.NewNewsRepository(ctx, mc.DB())
 	if err != nil {
@@ -91,7 +99,11 @@ func scrapeBloombergRSS(ctx context.Context, repo *mongodb.NewsRepository, rc *r
 	if err != nil {
 		return fmt.Errorf("fetch feed: %w", err)
 	}
-	defer res.Body.Close()
+	defer func() {
+		if err := res.Body.Close(); err != nil {
+			slog.Error("bloomberg-rss: close feed body", "err", err)
+		}
+	}()
 
 	var feed rssFeed
 	if err := xml.NewDecoder(res.Body).Decode(&feed); err != nil {

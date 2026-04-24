@@ -34,7 +34,11 @@ func (w *polymarketWatcher) Run(ctx context.Context) error {
 	}
 
 	rc := rediss.New(cfg.Redis)
-	defer rc.Close()
+	defer func() {
+		if err := rc.Close(); err != nil {
+			slog.Error("polymarket-watcher: close redis client", "err", err)
+		}
+	}()
 
 	detCfg, err := loadDetectorEnv()
 	if err != nil {
@@ -45,13 +49,21 @@ func (w *polymarketWatcher) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("polymarket-watcher: %w", err)
 	}
-	defer client.Close()
+	defer func() {
+		if err := client.Close(); err != nil {
+			slog.Error("polymarket-watcher: close polymarket client", "err", err)
+		}
+	}()
 
 	mc, err := mongodb.New(ctx, cfg.MongoDB)
 	if err != nil {
 		return fmt.Errorf("polymarket-watcher: connect mongodb: %w", err)
 	}
-	defer mc.Disconnect(ctx)
+	defer func() {
+		if err := mc.Disconnect(ctx); err != nil {
+			slog.Error("polymarket-watcher: disconnect mongodb", "err", err)
+		}
+	}()
 
 	wlRepo := mongodb.NewWatchlistRepository(mc.DB())
 

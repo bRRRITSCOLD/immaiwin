@@ -2,6 +2,7 @@ package mongodb
 
 import (
 	"context"
+	"log/slog"
 	"time"
 
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/news"
@@ -41,7 +42,11 @@ func (r *NewsRepository) List(ctx context.Context, since time.Time, limit int) (
 	if err != nil {
 		return nil, err
 	}
-	defer cur.Close(ctx)
+	defer func() {
+		if err := cur.Close(ctx); err != nil {
+			slog.Error("mongodb-news: close cursor", "err", err)
+		}
+	}()
 	var results []news.Article
 	if err := cur.All(ctx, &results); err != nil {
 		return nil, err

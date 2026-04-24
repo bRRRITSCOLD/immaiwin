@@ -35,13 +35,21 @@ func (w *aljazeeraScraperWorker) Run(ctx context.Context) error {
 	}
 
 	rc := rediss.New(cfg.Redis)
-	defer rc.Close()
+	defer func() {
+		if err := rc.Close(); err != nil {
+			slog.Error("aljazeera-scraper: close redis client", "err", err)
+		}
+	}()
 
 	mc, err := mongodb.New(ctx, cfg.MongoDB)
 	if err != nil {
 		return fmt.Errorf("aljazeera-scraper: connect mongodb: %w", err)
 	}
-	defer mc.Disconnect(ctx)
+	defer func() {
+		if err := mc.Disconnect(ctx); err != nil {
+			slog.Error("aljazeera-scraper: disconnect mongodb", "err", err)
+		}
+	}()
 
 	repo, err := mongodb.NewNewsRepository(ctx, mc.DB())
 	if err != nil {
@@ -76,7 +84,11 @@ func scrapeAlJazeera(ctx context.Context, repo *mongodb.NewsRepository, rc *redi
 	if err != nil {
 		return fmt.Errorf("fetch homepage: %w", err)
 	}
-	defer res.Body.Close()
+	defer func() {
+		if err := res.Body.Close(); err != nil {
+			slog.Error("aljazeera-scraper: close homepage body", "err", err)
+		}
+	}()
 
 	doc, err := goquery.NewDocumentFromReader(res.Body)
 	if err != nil {
@@ -158,7 +170,11 @@ func fetchArticleContent(url string) (body, rawHTML string, err error) {
 	if err != nil {
 		return "", "", err
 	}
-	defer res.Body.Close()
+	defer func() {
+		if err := res.Body.Close(); err != nil {
+			slog.Error("aljazeera-scraper: close article body", "url", url, "err", err)
+		}
+	}()
 
 	doc, err := goquery.NewDocumentFromReader(res.Body)
 	if err != nil {

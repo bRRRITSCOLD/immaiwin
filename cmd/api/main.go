@@ -25,14 +25,22 @@ func main() {
 	}
 
 	rc := rediss.New(cfg.Redis)
-	defer rc.Close()
+	defer func() {
+		if err := rc.Close(); err != nil {
+			slog.Error("failed to close redis client", "err", err)
+		}
+	}()
 
 	pm, err := polymarket.New(polymarket.ClientConfig{})
 	if err != nil {
 		slog.Error("failed to create polymarket client", "err", err)
 		os.Exit(1)
 	}
-	defer pm.Close()
+	defer func() {
+		if err := pm.Close(); err != nil {
+			slog.Error("failed to close polymarket client", "err", err)
+		}
+	}()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -42,7 +50,11 @@ func main() {
 		slog.Error("failed to connect to mongodb", "err", err)
 		os.Exit(1)
 	}
-	defer mc.Disconnect(ctx)
+	defer func() {
+		if err := mc.Disconnect(ctx); err != nil {
+			slog.Error("failed to disconnect mongodb", "err", err)
+		}
+	}()
 
 	wl := mongodb.NewWatchlistRepository(mc.DB())
 	tr := mongodb.NewTradeRepository(mc.DB())
