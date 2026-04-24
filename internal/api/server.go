@@ -13,9 +13,10 @@ import (
 )
 
 type Server struct {
-	cfg         config.APIConfig
-	broadcaster *rediss.Broadcaster
-	server      *http.Server
+	cfg             config.APIConfig
+	broadcaster     *rediss.Broadcaster
+	newsBroadcaster *rediss.Broadcaster
+	server          *http.Server
 }
 
 type marketsClient interface {
@@ -25,8 +26,9 @@ type marketsClient interface {
 	handler.EventsSearcher
 }
 
-func NewServer(cfg config.APIConfig, rc *rediss.Client, pm marketsClient, wl handler.WatchlistStore, tr handler.TradesLister) *Server {
-	b := rediss.NewBroadcaster(rc)
+func NewServer(cfg config.APIConfig, rc *rediss.Client, pm marketsClient, wl handler.WatchlistStore, tr handler.TradesLister, nr handler.NewsLister) *Server {
+	b := rediss.NewBroadcaster(rc, rediss.TradesChannel)
+	nb := rediss.NewBroadcaster(rc, rediss.NewsChannel)
 
 	r := gin.New()
 	r.Use(gin.Logger(), gin.Recovery(), cors.Default())
@@ -34,16 +36,20 @@ func NewServer(cfg config.APIConfig, rc *rediss.Client, pm marketsClient, wl han
 	r.GET("/health", handler.Health)
 	r.GET("/api/v1/trades/stream", handler.StreamTrades(tr, b))
 	r.GET("/api/v1/trades", handler.GetTrades(tr))
+	r.GET("/api/v1/news", handler.GetNews(nr))
+	r.GET("/api/v1/news/stream", handler.StreamNews(nb))
 	r.GET("/api/v1/markets", handler.GetMarkets(pm))
 	r.GET("/api/v1/markets/search", handler.SearchMarkets(pm))
 	r.GET("/api/v1/events", handler.GetEvents(pm))
 	r.GET("/api/v1/events/search", handler.SearchEvents(pm))
 	r.GET("/api/v1/watchlist", handler.GetWatchlist(wl))
 	r.PUT("/api/v1/watchlist", handler.SyncWatchlist(wl))
+	r.PATCH("/api/v1/watchlist/:market_id/config", handler.UpdateWatchlistConfig(wl))
 
 	return &Server{
-		cfg:         cfg,
-		broadcaster: b,
+		cfg:             cfg,
+		broadcaster:     b,
+		newsBroadcaster: nb,
 		server: &http.Server{
 			Addr:    fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
 			Handler: r,
@@ -55,6 +61,7 @@ func NewServer(cfg config.APIConfig, rc *rediss.Client, pm marketsClient, wl han
 // It blocks until the server closes.
 func (s *Server) Start(ctx context.Context) error {
 	go s.broadcaster.Run(ctx)
+	go s.newsBroadcaster.Run(ctx)
 	return s.server.ListenAndServe()
 }
 

@@ -272,6 +272,9 @@ function MarketsPage() {
             <Link to="/watchlist" className="text-muted-foreground hover:text-foreground transition-colors">
               Watchlist
             </Link>
+            <Link to="/news" className="text-muted-foreground hover:text-foreground transition-colors">
+              News
+            </Link>
           </nav>
         </div>
       </header>

@@ -19,6 +19,7 @@ type TradeEvent struct {
 	Unusual        bool      `json:"unusual"`
 	RollingAvgSize float64   `json:"rolling_avg_size,omitempty"`
 	Reason         string    `json:"reason,omitempty"`
+	Expr           string    `json:"expr,omitempty"`
 	DetectedAt     time.Time `json:"detected_at"`
 }
 
@@ -35,5 +36,6 @@ type Trade struct {
 	Timestamp      string        `bson:"timestamp"         json:"timestamp"`
 	RollingAvgSize float64       `bson:"rolling_avg_size"  json:"rolling_avg_size"`
 	Reason         string        `bson:"reason"            json:"reason"`
+	Expr           string        `bson:"expr,omitempty"    json:"expr,omitempty"`
 	DetectedAt     time.Time     `bson:"detected_at"       json:"detected_at"`
 }

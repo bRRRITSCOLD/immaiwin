@@ -7,13 +7,15 @@ import (
 
 type Broadcaster struct {
 	redis   *Client
+	channel string
 	mu      sync.RWMutex
 	clients map[chan []byte]struct{}
 }
 
-func NewBroadcaster(rc *Client) *Broadcaster {
+func NewBroadcaster(rc *Client, channel string) *Broadcaster {
 	return &Broadcaster{
 		redis:   rc,
+		channel: channel,
 		clients: make(map[chan []byte]struct{}),
 	}
 }
@@ -34,7 +36,7 @@ func (b *Broadcaster) Unsubscribe(ch chan []byte) {
 }
 
 func (b *Broadcaster) Run(ctx context.Context) {
-	sub := b.redis.Subscribe(ctx, TradesChannel)
+	sub := b.redis.Subscribe(ctx, b.channel)
 	defer sub.Close()
 	msgs := sub.Channel()
 	for {

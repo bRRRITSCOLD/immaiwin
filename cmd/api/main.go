@@ -46,8 +46,13 @@ func main() {
 
 	wl := mongodb.NewWatchlistRepository(mc.DB())
 	tr := mongodb.NewTradeRepository(mc.DB())
+	nr, err := mongodb.NewNewsRepository(ctx, mc.DB())
+	if err != nil {
+		slog.Error("failed to init news repository", "err", err)
+		os.Exit(1)
+	}
 
-	srv := api.NewServer(cfg.API, rc, pm, wl, tr)
+	srv := api.NewServer(cfg.API, rc, pm, wl, tr, nr)
 
 	go func() {
 		slog.Info("api server listening", "addr", srv.Addr())

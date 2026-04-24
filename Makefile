@@ -2,7 +2,7 @@ MODULE := github.com/bRRRITSCOLD/immaiwin-go
 CMDS    := api ui worker
 BINDIR  := bin
 
-.PHONY: setup build test lint clean run-api run-ui run-worker list-workers dev-ui
+.PHONY: setup build test lint clean run-api run-ui run-worker list-workers run-dev-ui
 
 setup:
 	go install -modfile=tools/go.mod tool
@@ -30,8 +30,8 @@ run-api:
 run-ui:
 	go run ./cmd/ui
 
-dev-ui:
-	cd ui && pnpm dev
+run-dev-ui:
+	go run ./cmd/ui -dev
 
 run-worker: ## usage: make run-worker NAME=example
 	go run ./cmd/worker -name $(NAME)

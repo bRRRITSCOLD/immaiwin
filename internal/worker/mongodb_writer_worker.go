@@ -70,6 +70,7 @@ func (w *mongoDBWriter) Run(ctx context.Context) error {
 				Timestamp:      event.Timestamp,
 				RollingAvgSize: event.RollingAvgSize,
 				Reason:         event.Reason,
+				Expr:           event.Expr,
 				DetectedAt:     event.DetectedAt,
 			}
 			if _, err := repo.InsertOne(ctx, t); err != nil {

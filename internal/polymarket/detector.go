@@ -76,6 +76,47 @@ func (d *Detector) Process(event ws.LastTradePriceEvent) (*UnusualTrade, bool) {
 	}, true
 }
 
+// IsWindowFull returns true when the rolling window for assetID has seen at least
+// WindowSize trades. Returns false if no window exists yet.
+func (d *Detector) IsWindowFull(assetID string) bool {
+	if rw, ok := d.windows[assetID]; ok {
+		return rw.full
+	}
+	return false
+}
+
+// RollingAvg returns the current rolling average size for the given asset,
+// computed before the next trade is added. Returns 0 if no history yet.
+func (d *Detector) RollingAvg(assetID string) float64 {
+	if rw, ok := d.windows[assetID]; ok {
+		return rw.avg()
+	}
+	return 0
+}
+
+// UpdateWindow adds a size value to the rolling window for the given asset.
+func (d *Detector) UpdateWindow(assetID string, size float64) {
+	rw, ok := d.windows[assetID]
+	if !ok {
+		rw = newRollingWindow(d.cfg.WindowSize)
+		d.windows[assetID] = rw
+	}
+	rw.add(size)
+}
+
+// SetWindowSize resizes the rolling window for assetID to n.
+// If n < 1, uses the detector's default WindowSize.
+// No-ops if the window already has the correct size — preserving history on reconnects.
+func (d *Detector) SetWindowSize(assetID string, n int) {
+	if n < 1 {
+		n = d.cfg.WindowSize
+	}
+	if existing, ok := d.windows[assetID]; ok && len(existing.sizes) == n {
+		return
+	}
+	d.windows[assetID] = newRollingWindow(n)
+}
+
 // rollingWindow is a fixed-size circular buffer for tracking recent trade sizes.
 type rollingWindow struct {
 	sizes []float64
