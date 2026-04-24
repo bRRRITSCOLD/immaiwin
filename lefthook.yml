@@ -1,0 +1,12 @@
+pre-commit:
+  piped: true
+  commands:
+    build:
+      priority: 1
+      run: go build ./...
+    lint:
+      priority: 2
+      run: golangci-lint run
+    test:
+      priority: 3
+      run: go run ./scripts/test/main.go
