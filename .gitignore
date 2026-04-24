@@ -69,4 +69,6 @@ go.work.sum
 # .idea/
 # .vscode/
 
-.private
+.private/*
+
+.claude/settings.local.json
