@@ -70,6 +70,5 @@ go.work.sum
 # .vscode/
 
 .private/*
-!.private/.gitkeep
 
 .claude/settings.local.json
