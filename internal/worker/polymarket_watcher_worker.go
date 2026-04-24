@@ -68,15 +68,15 @@ func (w *polymarketWatcher) Run(ctx context.Context) error {
 	// tradeCh is nil when idle (no watchlist items or subscribe failed).
 	// A nil channel in a select case is never selected — safe idle behaviour.
 	var (
-		subCtx           context.Context
-		cancelSub        context.CancelFunc
-		tradeCh          <-chan ws.LastTradePriceEvent
-		activeTokenIDs   []string
-		activeExprs      map[string]string        // tokenID → expr string, for change detection
-		activeWindowSizes map[string]int           // tokenID → window size, for change detection
-		questionByToken  map[string]string        // assetID → market question
-		outcomeByToken   map[string]string        // assetID → outcome label (e.g. "Yes"/"No")
-		compiledByToken  map[string]*polymarket.CompiledExpr // assetID → compiled expr (nil = use default detector)
+		subCtx            context.Context
+		cancelSub         context.CancelFunc
+		tradeCh           <-chan ws.LastTradePriceEvent
+		activeTokenIDs    []string
+		activeExprs       map[string]string                   // tokenID → expr string, for change detection
+		activeWindowSizes map[string]int                      // tokenID → window size, for change detection
+		questionByToken   map[string]string                   // assetID → market question
+		outcomeByToken    map[string]string                   // assetID → outcome label (e.g. "Yes"/"No")
+		compiledByToken   map[string]*polymarket.CompiledExpr // assetID → compiled expr (nil = use default detector)
 	)
 
 	fetchWatchlist := func() ([]string, map[string]string, map[string]string, map[string]string, map[string]int) {
