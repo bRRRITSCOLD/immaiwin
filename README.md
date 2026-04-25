@@ -45,7 +45,7 @@ cp .env.example .env
 ### 3. Start Dependencies (Docker)
 The app requires MongoDB and Redis. You can start them using Docker Compose:
 ```bash
-docker compose up -d
+make docker-compose-up
 ```
 - **MongoDB**: Stores trades, news articles, and Schwab OAuth tokens.
 - **Redis**: Handles real-time message broadcasting between workers and the API.
@@ -54,15 +54,11 @@ docker compose up -d
 The Schwab API requires an HTTPS callback URL. We use `mkcert` to generate locally-trusted certificates for `127.0.0.1`.
 
 1. **Install mkcert**: Follow the [official instructions](https://github.com/FiloSottile/mkcert#installation).
-2. **Install local CA**:
+2. **Install local CA and Generate certificates**:
    ```bash
-   mkcert -install
+   make certs
    ```
-3. **Generate certificates**:
-   ```bash
-   mkcert -cert-file .private/certs/localhost.pem -key-file .private/certs/localhost-key.pem 127.0.0.1
-   ```
-4. **Configure .env**:
+3. **Configure .env**:
    Update your `.env` to point to the certs and use an `https` callback:
    ```env
    API_TLS_CERT=./.private/certs/localhost.pem
@@ -82,13 +78,13 @@ To fully run the system, you need to start the API, the UI, and one or more work
 
 ### Start the API Server
 ```bash
-make run-api
+make api
 ```
 The API server will be available at `http://localhost:8080`.
 
 ### Start the UI (Development Mode)
 ```bash
-make run-dev-ui
+make dev-ui
 ```
 The dashboard will be available at `http://localhost:3000`.
 
@@ -101,12 +97,27 @@ make list-workers
 ```
 
 **Commonly used workers:**
-- **Polymarket Watcher**: `make run-worker NAME=polymarket-watcher`
-- **MongoDB Writer**: `make run-worker NAME=mongodb-writer` (Required to persist data from different feeds to MongoDB)
-- **Al Jazeera Scraper**: `make run-worker NAME=aljazeera-scraper`
-- **Bloomberg RSS**: `make run-worker NAME=bloomberg-rss`
-- **Schwab Options Watcher**: `make run-worker NAME=schwab-watcher`
-- **Schwab Futures Watcher**: `make run-worker NAME=schwab-futures-watcher`
+- **Polymarket Watcher**: `make worker NAME=polymarket-watcher`
+- **MongoDB Writer**: `make worker NAME=mongodb-writer` (Required to persist data from different feeds to MongoDB)
+- **Al Jazeera Scraper**: `make worker NAME=aljazeera-scraper`
+- **Bloomberg RSS**: `make worker NAME=bloomberg-rss`
+- **Schwab Options Watcher**: `make worker NAME=schwab-watcher`
+- **Schwab Futures Watcher**: `make worker NAME=schwab-futures-watcher`
+
+## Stopping Application
+### Stop Workers
+In each worker terminal press ctrl + c.
+
+### Stop Dependencies (UI)
+In ui terminal press ctrl + c.
+
+### Stop Dependencies (API)
+In api terminal press ctrl + c.
+
+### Stop Dependencies (Docker)
+```bash
+make docker-compose-down
+```
 
 ## Development
 
