@@ -25,7 +25,18 @@ git clone https://github.com/bRRRITSCOLD/immaiwin-go.git
 cd immaiwin-go
 ```
 
-### 2. Environment Configuration
+### 2. Schwab Developer Setup
+To use Schwab features, you must have a Schwab Developer account.
+
+1. **Create Account**: Register at [Schwab Developer Portal](https://developer.schwab.com/).
+2. **Request API Access**: Ensure your account has access to the **Market Data API** and **Trader API**.
+3. **Create an App**: 
+   - Go to "Dashboard" -> "Create New App".
+   - Name your app (e.g., `immaiwin-dev`).
+   - **Register Callback URL**: Set this to `https://127.0.0.1:8080/auth/schwab/callback`. This *must* match your `SCHWAB_CALLBACK_URL` in `.env`.
+4. **Retrieve Credentials**: Once approved, copy your **App Key** (`SCHWAB_CLIENT_ID`) and **App Secret** (`SCHWAB_CLIENT_SECRET`) into your `.env`.
+
+### 3. Environment Configuration
 Copy the example environment file and fill in your credentials (especially Schwab API keys if using Schwab features):
 ```bash
 cp .env.example .env
@@ -39,13 +50,33 @@ docker compose up -d
 - **MongoDB**: Stores trades, news articles, and Schwab OAuth tokens.
 - **Redis**: Handles real-time message broadcasting between workers and the API.
 
-### 4. Setup Backend
+### 4. Setup TLS (Required for Schwab OAuth)
+The Schwab API requires an HTTPS callback URL. We use `mkcert` to generate locally-trusted certificates for `127.0.0.1`.
+
+1. **Install mkcert**: Follow the [official instructions](https://github.com/FiloSottile/mkcert#installation).
+2. **Install local CA**:
+   ```bash
+   mkcert -install
+   ```
+3. **Generate certificates**:
+   ```bash
+   mkcert -cert-file certs/localhost.pem -key-file certs/localhost-key.pem 127.0.0.1
+   ```
+4. **Configure .env**:
+   Update your `.env` to point to the certs and use an `https` callback:
+   ```env
+   API_TLS_CERT=./certs/localhost.pem
+   API_TLS_KEY=./certs/localhost-key.pem
+   SCHWAB_CALLBACK_URL=https://127.0.0.1:8080/auth/schwab/callback
+   ```
+
+### 5. Setup Backend
 Install the necessary Go tools and git hooks:
 ```bash
 make setup
 ```
 
-### 5. Setup Frontend
+### 6. Setup Frontend
 Navigate to the UI directory and install dependencies:
 ```bash
 cd internal/ui
