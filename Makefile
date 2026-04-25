@@ -7,6 +7,9 @@ BINDIR  := bin
 setup:
 	go install -modfile=tools/go.mod tool
 	lefthook install
+	cd internal/ui
+	pnpm install
+	cd ../..
 
 build:
 	go build ./...

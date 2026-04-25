@@ -60,28 +60,20 @@ The Schwab API requires an HTTPS callback URL. We use `mkcert` to generate local
    ```
 3. **Generate certificates**:
    ```bash
-   mkcert -cert-file certs/localhost.pem -key-file certs/localhost-key.pem 127.0.0.1
+   mkcert -cert-file .private/certs/localhost.pem -key-file .private/certs/localhost-key.pem 127.0.0.1
    ```
 4. **Configure .env**:
    Update your `.env` to point to the certs and use an `https` callback:
    ```env
-   API_TLS_CERT=./certs/localhost.pem
-   API_TLS_KEY=./certs/localhost-key.pem
+   API_TLS_CERT=./.private/certs/localhost.pem
+   API_TLS_KEY=./.private/certs/localhost-key.pem
    SCHWAB_CALLBACK_URL=https://127.0.0.1:8080/auth/schwab/callback
    ```
 
-### 5. Setup Backend
+### 5. Setup Frontend and Backend
 Install the necessary Go tools and git hooks:
 ```bash
 make setup
-```
-
-### 6. Setup Frontend
-Navigate to the UI directory and install dependencies:
-```bash
-cd internal/ui
-pnpm install
-cd ../..
 ```
 
 ## Running the Application
@@ -110,9 +102,11 @@ make list-workers
 
 **Commonly used workers:**
 - **Polymarket Watcher**: `make run-worker NAME=polymarket-watcher`
-- **MongoDB Writer**: `make run-worker NAME=mongodb-writer` (Required to persist trades from Redis to MongoDB)
+- **MongoDB Writer**: `make run-worker NAME=mongodb-writer` (Required to persist data from different feeds to MongoDB)
 - **Al Jazeera Scraper**: `make run-worker NAME=aljazeera-scraper`
 - **Bloomberg RSS**: `make run-worker NAME=bloomberg-rss`
+- **Schwab Options Watcher**: `make run-worker NAME=schwab-watcher`
+- **Schwab Futures Watcher**: `make run-worker NAME=schwab-futures-watcher`
 
 ## Development
 

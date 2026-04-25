@@ -9,13 +9,13 @@ Unit testing verifies the smallest testable parts of an application—such as a 
 * All unit tests are suffixed with `_test.go` and lives in the same directory as the file/package it tests
 * All unit tests always include the below, even if they aren't used (`SetupSuite` - runs before all tests in the suite, `SetupTest` - runs before each test in the suite, `TearDownTest` - runs after each test in the suite, `TearDownSuite` - runs after all tests in the suite). We follow this pattern just in case we need them and to keep patterns familiar with developers.
   ```go  
-  func (s *DotEnvErrorsTestSuite) SetupSuite() {}
+  func (s *UniqueNameOfTestSuite) SetupSuite() {}
 
-  func (s *DotEnvErrorsTestSuite) TearDownSuite() {}
+  func (s *UniqueNameOfTestSuite) TearDownSuite() {}
 
-  func (s *DotEnvErrorsTestSuite) SetupTest() {}
+  func (s *UniqueNameOfTestSuite) SetupTest() {}
 
-  func (s *DotEnvErrorsTestSuite) TearDownTest() {}
+  func (s *UniqueNameOfTestSuite) TearDownTest() {}
   ```
 
 ### Integration Testing
@@ -23,13 +23,13 @@ Integration testing focuses on the "seams" between components, ensuring that two
 * All integration tests are suffixed with `_integration_test.go` and lives in the same directory as the file/package it tests
 * All integration tests always include the below, even if they aren't used (`SetupSuite` - runs before all tests in the suite, `SetupTest` - runs before each test in the suite, `TearDownTest` - runs after each test in the suite, `TearDownSuite` - runs after all tests in the suite). We follow this pattern just in case we need them and to keep patterns familiar with developers.
   ```go  
-  func (s *DotEnvErrorsTestSuite) SetupSuite() {}
+  func (s *UniqueNameOfTestSuite) SetupSuite() {}
 
-  func (s *DotEnvErrorsTestSuite) TearDownSuite() {}
+  func (s *UniqueNameOfTestSuite) TearDownSuite() {}
 
-  func (s *DotEnvErrorsTestSuite) SetupTest() {}
+  func (s *UniqueNameOfTestSuite) SetupTest() {}
 
-  func (s *DotEnvErrorsTestSuite) TearDownTest() {}
+  func (s *UniqueNameOfTestSuite) TearDownTest() {}
   ```
 
 
@@ -39,13 +39,13 @@ Validates entire user workflows from start to finish in an environment that mimi
 * All e2e tests are suffixed with `_e2e_test.go` and lives in the same directory as the file/package it tests
 * All e2e tests always include the below, even if they aren't used (`SetupSuite` - runs before all tests in the suite, `SetupTest` - runs before each test in the suite, `TearDownTest` - runs after each test in the suite, `TearDownSuite` - runs after all tests in the suite). We follow this pattern just in case we need them and to keep patterns familiar with developers.
   ```go  
-  func (s *DotEnvErrorsTestSuite) SetupSuite() {}
+  func (s *UniqueNameOfTestSuite) SetupSuite() {}
 
-  func (s *DotEnvErrorsTestSuite) TearDownSuite() {}
+  func (s *UniqueNameOfTestSuite) TearDownSuite() {}
 
-  func (s *DotEnvErrorsTestSuite) SetupTest() {}
+  func (s *UniqueNameOfTestSuite) SetupTest() {}
 
-  func (s *DotEnvErrorsTestSuite) TearDownTest() {}
+  func (s *UniqueNameOfTestSuite) TearDownTest() {}
   ```
 
 ## Commands
@@ -67,6 +67,8 @@ go test -v -race -count=1 ./...
 go run ./scripts/test/main.go
 
 # or
+make test
 
-go test -v -race -count=1 ./...
+# or
+go test -v -count=1 ./...
 ```
