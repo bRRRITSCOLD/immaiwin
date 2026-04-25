@@ -103,6 +103,9 @@ function TradesPage() {
             <Link to="/" className="text-foreground font-medium">Trades</Link>
             <Link to="/markets" className="text-muted-foreground hover:text-foreground transition-colors">Markets</Link>
             <Link to="/watchlist" className="text-muted-foreground hover:text-foreground transition-colors">Watchlist</Link>
+            <Link to="/news" className="text-muted-foreground hover:text-foreground transition-colors">News</Link>
+            <Link to="/options" className="text-muted-foreground hover:text-foreground transition-colors">Options</Link>
+            <Link to="/futures" className="text-muted-foreground hover:text-foreground transition-colors">Futures</Link>
           </nav>
         </div>
         <Badge variant={connected ? 'default' : 'destructive'} className="gap-1.5">

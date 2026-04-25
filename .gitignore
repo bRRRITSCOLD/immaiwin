@@ -72,3 +72,5 @@ go.work.sum
 .private/*
 
 .claude/settings.local.json
+
+certs

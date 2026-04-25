@@ -26,18 +26,30 @@ func (w *mongoDBWriter) Run(ctx context.Context) error {
 	}
 
 	rc := rediss.New(cfg.Redis)
-	defer rc.Close()
+	defer func() {
+		if err := rc.Close(); err != nil {
+			slog.Error("mongodb-writer: close redis client", "err", err)
+		}
+	}()
 
 	mongoClient, err := mongodb.New(ctx, cfg.MongoDB)
 	if err != nil {
 		return fmt.Errorf("mongodb-writer: connect mongodb: %w", err)
 	}
-	defer mongoClient.Disconnect(ctx)
+	defer func() {
+		if err := mongoClient.Disconnect(ctx); err != nil {
+			slog.Error("mongodb-writer: disconnect mongodb", "err", err)
+		}
+	}()
 
 	repo := mongodb.NewTradeRepository(mongoClient.DB())
 
 	sub := rc.Subscribe(ctx, rediss.TradesChannel)
-	defer sub.Close()
+	defer func() {
+		if err := sub.Close(); err != nil {
+			slog.Error("mongodb-writer: close redis subscription", "err", err)
+		}
+	}()
 
 	slog.Info("mongodb writer started")
 
@@ -70,6 +82,7 @@ func (w *mongoDBWriter) Run(ctx context.Context) error {
 				Timestamp:      event.Timestamp,
 				RollingAvgSize: event.RollingAvgSize,
 				Reason:         event.Reason,
+				Expr:           event.Expr,
 				DetectedAt:     event.DetectedAt,
 			}
 			if _, err := repo.InsertOne(ctx, t); err != nil {

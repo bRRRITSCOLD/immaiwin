@@ -10,11 +10,14 @@ type Config struct {
 	Worker  WorkerConfig  `envPrefix:"WORKER_"`
 	Redis   RedisConfig   `envPrefix:"REDIS_"`
 	MongoDB MongoDBConfig `envPrefix:"MONGODB_"`
+	Schwab SchwabConfig `envPrefix:"SCHWAB_"`
 }
 
 type APIConfig struct {
-	Host string `env:"HOST" envDefault:"0.0.0.0"`
-	Port int    `env:"PORT" envDefault:"8080"`
+	Host        string `env:"HOST"     envDefault:"0.0.0.0"`
+	Port        int    `env:"PORT"     envDefault:"8080"`
+	TLSCertFile string `env:"TLS_CERT" envDefault:""`
+	TLSKeyFile  string `env:"TLS_KEY"  envDefault:""`
 }
 
 type UIConfig struct {
@@ -36,6 +39,12 @@ type RedisConfig struct {
 type MongoDBConfig struct {
 	URI      string `env:"URI" envDefault:"mongodb://localhost:27017"`
 	Database string `env:"DATABASE" envDefault:"immaiwin"`
+}
+
+type SchwabConfig struct {
+	ClientID     string `env:"CLIENT_ID"     envDefault:""`
+	ClientSecret string `env:"CLIENT_SECRET" envDefault:""`
+	CallbackURL  string `env:"CALLBACK_URL"  envDefault:"http://127.0.0.1:8080/auth/schwab/callback"`
 }
 
 func Load(opts ...Option) (*Config, error) {

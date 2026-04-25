@@ -8,7 +8,12 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-const TradesChannel = "immaiwin:trades:detected"
+const (
+	TradesChannel  = "immaiwin:trades:detected"
+	NewsChannel    = "immaiwin:news:articles"
+	OptionsChannel = "immaiwin:options:unusual"
+	FuturesChannel = "immaiwin:futures:trades"
+)
 
 type Client struct {
 	rdb *redis.Client

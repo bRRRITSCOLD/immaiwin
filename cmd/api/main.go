@@ -15,24 +15,33 @@ import (
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/mongodb"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/polymarket"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/rediss"
+	"github.com/bRRRITSCOLD/immaiwin-go/internal/schwab"
 )
 
 func main() {
-	cfg, err := config.Load()
+	cfg, err := config.Load(config.WithDotEnv(".env"))
 	if err != nil {
 		slog.Error("failed to load config", "err", err)
 		os.Exit(1)
 	}
 
 	rc := rediss.New(cfg.Redis)
-	defer rc.Close()
+	defer func() {
+		if err := rc.Close(); err != nil {
+			slog.Error("failed to close redis client", "err", err)
+		}
+	}()
 
 	pm, err := polymarket.New(polymarket.ClientConfig{})
 	if err != nil {
 		slog.Error("failed to create polymarket client", "err", err)
 		os.Exit(1)
 	}
-	defer pm.Close()
+	defer func() {
+		if err := pm.Close(); err != nil {
+			slog.Error("failed to close polymarket client", "err", err)
+		}
+	}()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -42,12 +51,30 @@ func main() {
 		slog.Error("failed to connect to mongodb", "err", err)
 		os.Exit(1)
 	}
-	defer mc.Disconnect(ctx)
+	defer func() {
+		if err := mc.Disconnect(ctx); err != nil {
+			slog.Error("failed to disconnect mongodb", "err", err)
+		}
+	}()
 
 	wl := mongodb.NewWatchlistRepository(mc.DB())
 	tr := mongodb.NewTradeRepository(mc.DB())
+	nr, err := mongodb.NewNewsRepository(ctx, mc.DB())
+	if err != nil {
+		slog.Error("failed to init news repository", "err", err)
+		os.Exit(1)
+	}
 
-	srv := api.NewServer(cfg.API, rc, pm, wl, tr)
+	tokens := schwab.NewTokenManager(cfg.Schwab, mc.DB())
+	if err := tokens.Load(ctx); err != nil {
+		slog.Warn("schwab tokens not loaded (visit /auth/schwab to authorize)", "err", err)
+	}
+	tokens.RunRefresher(ctx)
+
+	owl := mongodb.NewOptionsWatchlistRepository(mc.DB())
+	fwl := mongodb.NewFuturesWatchlistRepository(mc.DB())
+
+	srv := api.NewServer(cfg.API, rc, pm, wl, tr, nr, tokens, owl, fwl)
 
 	go func() {
 		slog.Info("api server listening", "addr", srv.Addr())

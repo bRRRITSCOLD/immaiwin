@@ -1,8 +1,18 @@
 version: "2"
 
 linters:
+  settings:
+    errcheck:
+      exclude-functions:
+        - fmt.Fprintf
+        - fmt.Fprint
+        - fmt.Fprintln
+        - fmt.Printf
+        - fmt.Print
+        - fmt.Println
+        - fmt.Sprintf
   exclusions:
     rules:
-      - path: _test\.go
+      - path: '_test\.go'
         linters:
           - errcheck

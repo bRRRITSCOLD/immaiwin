@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -105,7 +106,11 @@ func (c *Client) SearchMarkets(ctx context.Context, req *gamma.MarketsRequest) (
 	if err != nil {
 		return nil, fmt.Errorf("polymarket: search markets: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			slog.Error("polymarket: close response body", "err", err)
+		}
+	}()
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("polymarket: search markets: status %d", resp.StatusCode)
 	}

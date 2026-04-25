@@ -2,6 +2,7 @@ package mongodb
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/watchlist"
@@ -61,8 +62,10 @@ func (r *WatchlistRepository) Sync(ctx context.Context, items []watchlist.Watchl
 					"slug":     item.Slug,
 				},
 				"$setOnInsert": bson.M{
-					"market_id": item.MarketID,
-					"added_at":  now,
+					"market_id":    item.MarketID,
+					"added_at":     now,
+					"unusual_expr": watchlist.DefaultExpr,
+					"window_size":  watchlist.DefaultWindowSize,
 				},
 			},
 			options.UpdateOne().SetUpsert(true),
@@ -70,6 +73,23 @@ func (r *WatchlistRepository) Sync(ctx context.Context, items []watchlist.Watchl
 		if err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// UpdateConfig sets the unusual_expr and window_size fields for a watchlisted market.
+// Returns an error if the market is not in the watchlist.
+func (r *WatchlistRepository) UpdateConfig(ctx context.Context, marketID, exprStr string, windowSize int) error {
+	res, err := r.col.UpdateOne(
+		ctx,
+		bson.M{"market_id": marketID},
+		bson.M{"$set": bson.M{"unusual_expr": exprStr, "window_size": windowSize}},
+	)
+	if err != nil {
+		return err
+	}
+	if res.MatchedCount == 0 {
+		return fmt.Errorf("market %s not in watchlist", marketID)
 	}
 	return nil
 }

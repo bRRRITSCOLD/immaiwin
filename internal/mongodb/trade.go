@@ -2,6 +2,7 @@ package mongodb
 
 import (
 	"context"
+	"log/slog"
 
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/trade"
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -32,7 +33,11 @@ func (r *TradeRepository) ListMissingQuestion(ctx context.Context) ([]trade.Trad
 	if err != nil {
 		return nil, err
 	}
-	defer cur.Close(ctx)
+	defer func() {
+		if err := cur.Close(ctx); err != nil {
+			slog.Error("mongodb-trade: close cursor", "err", err)
+		}
+	}()
 	var results []trade.Trade
 	if err := cur.All(ctx, &results); err != nil {
 		return nil, err
@@ -66,7 +71,11 @@ func (r *TradeRepository) ListMissingOutcome(ctx context.Context) ([]trade.Trade
 	if err != nil {
 		return nil, err
 	}
-	defer cur.Close(ctx)
+	defer func() {
+		if err := cur.Close(ctx); err != nil {
+			slog.Error("mongodb-trade: close cursor", "err", err)
+		}
+	}()
 	var results []trade.Trade
 	if err := cur.All(ctx, &results); err != nil {
 		return nil, err
@@ -83,7 +92,11 @@ func (r *TradeRepository) List(ctx context.Context, limit int) ([]trade.Trade, e
 	if err != nil {
 		return nil, err
 	}
-	defer cur.Close(ctx)
+	defer func() {
+		if err := cur.Close(ctx); err != nil {
+			slog.Error("mongodb-trade: close cursor", "err", err)
+		}
+	}()
 	var results []trade.Trade
 	if err := cur.All(ctx, &results); err != nil {
 		return nil, err
