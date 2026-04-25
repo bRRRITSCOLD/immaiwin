@@ -3,7 +3,6 @@ package worker
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -13,7 +12,6 @@ import (
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/mongodb"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/rediss"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/schwab"
-	"github.com/gorilla/websocket"
 )
 
 // SchwabFuturesWatcherWorker monitors futures contracts for symbols in the futures watchlist.
@@ -60,13 +58,13 @@ func (w *schwabFuturesWatcher) Run(ctx context.Context) error {
 	defer pollTicker.Stop()
 
 	var (
-		subCtx           context.Context
-		cancelSub        context.CancelFunc
-		tradeCh          <-chan futures.Trade
-		closeCh          <-chan error
-		reconnectCh      <-chan time.Time
-		consecutiveCloses int
+		subCtx      context.Context
+		cancelSub   context.CancelFunc
+		tradeCh     <-chan futures.Trade
+		closeCh     <-chan error
+		reconnectCh <-chan time.Time
 	)
+	bo := &StreamBackoff{}
 
 	buildAndSubscribe := func() {
 		if cancelSub != nil {
@@ -157,13 +155,12 @@ func (w *schwabFuturesWatcher) Run(ctx context.Context) error {
 				}
 				tradeCh = nil
 				closeCh = nil
-				consecutiveCloses++
-				bd := futuresExpBackoff(consecutiveCloses, closeErr)
-				slog.Info("schwab-futures-watcher: stream closed", "backoff", bd, "reason", closeErr, "attempt", consecutiveCloses)
+				bd := bo.Next(closeErr)
+				slog.Info("schwab-futures-watcher: stream closed", "backoff", bd, "reason", closeErr, "attempt", bo.consecutive)
 				reconnectCh = time.After(bd)
 				continue
 			}
-			consecutiveCloses = 0 // live trade received — reset backoff
+			bo.Reset()
 
 			event := futures.FuturesEvent{
 				Symbol:     trade.Symbol,
@@ -187,35 +184,3 @@ func (w *schwabFuturesWatcher) Run(ctx context.Context) error {
 	}
 }
 
-const maxFuturesBackoff = 30 * time.Minute
-
-// futuresExpBackoff returns exponentially increasing backoff capped at 30 min.
-// Base is derived from close code; consecutive multiplies by 2 each attempt.
-func futuresExpBackoff(consecutive int, err error) time.Duration {
-	base := 15 * time.Second
-	if err != nil {
-		var ce *websocket.CloseError
-		if errors.As(err, &ce) {
-			switch ce.Code {
-			case websocket.CloseGoingAway:
-				base = 30 * time.Second
-			case websocket.ClosePolicyViolation:
-				return maxFuturesBackoff // auth/policy: max immediately
-			case websocket.CloseInternalServerErr:
-				base = 30 * time.Second
-			}
-		}
-	}
-	if consecutive <= 1 {
-		return base
-	}
-	shift := consecutive - 1
-	if shift > 20 {
-		shift = 20
-	}
-	bd := base * (1 << shift)
-	if bd > maxFuturesBackoff {
-		bd = maxFuturesBackoff
-	}
-	return bd
-}

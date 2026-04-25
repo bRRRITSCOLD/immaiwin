@@ -3,11 +3,9 @@ package worker
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/config"
@@ -15,7 +13,6 @@ import (
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/options"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/rediss"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/schwab"
-	"github.com/gorilla/websocket"
 )
 
 // SchwabWatcherWorker monitors option chains for symbols in the options watchlist
@@ -173,6 +170,7 @@ func (w *schwabWatcher) Run(ctx context.Context) error {
 				reconnectCh = time.After(bd)
 				continue
 			}
+			bo.Reset()
 
 			oi := oiBySymbol[trade.Symbol]
 			result := det.Process(trade, oi)
@@ -230,38 +228,6 @@ func isMarketHours() bool {
 	open := time.Date(now.Year(), now.Month(), now.Day(), 9, 30, 0, 0, loc)
 	close := time.Date(now.Year(), now.Month(), now.Day(), 16, 0, 0, 0, loc)
 	return now.After(open) && now.Before(close)
-}
-
-// closeBackoff returns how long to wait before reconnecting based on WS close reason.
-// Code 1000 with session/market/close/end text → 20 min (market closure).
-// Auth/policy errors → 5 min. Everything else → 15 s.
-//
-//nolint:unused
-func closeBackoff(err error) time.Duration {
-	if err == nil {
-		return 15 * time.Second
-	}
-	var ce *websocket.CloseError
-	if !errors.As(err, &ce) {
-		return 15 * time.Second
-	}
-	txt := strings.ToLower(ce.Text)
-	switch ce.Code {
-	case websocket.CloseNormalClosure: // 1000
-		if strings.Contains(txt, "market") || strings.Contains(txt, "session") ||
-			strings.Contains(txt, "close") || strings.Contains(txt, "end") {
-			return 20 * time.Minute
-		}
-		return 15 * time.Second
-	case websocket.CloseGoingAway: // 1001
-		return 30 * time.Second
-	case websocket.ClosePolicyViolation: // 1008
-		return 5 * time.Minute
-	case websocket.CloseInternalServerErr: // 1011
-		return 30 * time.Second
-	default:
-		return 15 * time.Second
-	}
 }
 
 // runDailyReset resets cumulative volume at 9:30am ET each trading day.
