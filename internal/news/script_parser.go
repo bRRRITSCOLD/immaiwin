@@ -53,7 +53,7 @@ func newScriptVM(script string) (*goja.Runtime, error) {
 	vm := goja.New()
 
 	// $(html) → Selection; $(html, selector) → Selection.Find(selector)
-	vm.Set("$", func(call goja.FunctionCall) goja.Value {
+	if err := vm.Set("$", func(call goja.FunctionCall) goja.Value {
 		html := call.Argument(0).String()
 		doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
 		if err != nil {
@@ -64,24 +64,32 @@ func newScriptVM(script string) (*goja.Runtime, error) {
 			sel = doc.Find(call.Argument(1).String())
 		}
 		return wrapSel(vm, sel)
-	})
+	}); err != nil {
+		return nil, fmt.Errorf("vm.Set $: %w", err)
+	}
 
 	// parseRSS(xmlStr) → []object — parses generic RSS/Atom-style feed items
-	vm.Set("parseRSS", func(call goja.FunctionCall) goja.Value {
+	if err := vm.Set("parseRSS", func(call goja.FunctionCall) goja.Value {
 		xmlStr := call.Argument(0).String()
 		items := parseGenericRSS(xmlStr)
 		return vm.ToValue(items)
-	})
+	}); err != nil {
+		return nil, fmt.Errorf("vm.Set parseRSS: %w", err)
+	}
 
 	// now() → ISO-8601 UTC string
-	vm.Set("now", func() string {
+	if err := vm.Set("now", func() string {
 		return time.Now().UTC().Format(time.RFC3339)
-	})
+	}); err != nil {
+		return nil, fmt.Errorf("vm.Set now: %w", err)
+	}
 
 	// parseDate(str) → ISO-8601 UTC string or ""
-	vm.Set("parseDate", func(call goja.FunctionCall) goja.Value {
+	if err := vm.Set("parseDate", func(call goja.FunctionCall) goja.Value {
 		return vm.ToValue(tryParseDate(call.Argument(0).String()))
-	})
+	}); err != nil {
+		return nil, fmt.Errorf("vm.Set parseDate: %w", err)
+	}
 
 	if _, err := vm.RunString(script); err != nil {
 		return nil, err
