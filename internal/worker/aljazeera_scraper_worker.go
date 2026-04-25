@@ -136,26 +136,30 @@ func scrapeAlJazeera(ctx context.Context, repo *mongodb.NewsRepository, rc *redi
 		if inserted {
 			slog.Info("aljazeera-scraper: new article", "title", title, "url", link)
 			newURLs = append(newURLs, link)
-			if payload, err := json.Marshal(article); err == nil {
-				if err := rc.Publish(ctx, rediss.NewsChannel, payload); err != nil {
-					slog.Warn("aljazeera-scraper: publish article", "url", link, "err", err)
-				}
-			}
 		}
 	})
 
-	// Fetch body for newly inserted articles only.
+	// Fetch body for newly inserted articles, then publish (body-first).
 	for _, url := range newURLs {
 		body, rawHTML, err := fetchArticleContent(url)
 		if err != nil {
 			slog.Warn("aljazeera-scraper: fetch content failed", "url", url, "err", err)
+		}
+		if body != "" || rawHTML != "" {
+			if err := repo.UpdateContent(ctx, url, body, rawHTML); err != nil {
+				slog.Error("aljazeera-scraper: update content", "url", url, "err", err)
+			}
+		}
+		// Publish after body is saved so SSE clients receive complete article.
+		article, err := repo.GetByURL(ctx, url)
+		if err != nil {
+			slog.Warn("aljazeera-scraper: fetch article for publish", "url", url, "err", err)
 			continue
 		}
-		if body == "" && rawHTML == "" {
-			continue
-		}
-		if err := repo.UpdateContent(ctx, url, body, rawHTML); err != nil {
-			slog.Error("aljazeera-scraper: update content", "url", url, "err", err)
+		if payload, err := json.Marshal(article); err == nil {
+			if err := rc.Publish(ctx, rediss.NewsChannel, payload); err != nil {
+				slog.Warn("aljazeera-scraper: publish article", "url", url, "err", err)
+			}
 		}
 	}
 

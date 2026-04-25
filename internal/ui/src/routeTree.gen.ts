@@ -10,13 +10,20 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as WatchlistRouteImport } from './routes/watchlist'
+import { Route as OptionsRouteImport } from './routes/options'
 import { Route as NewsRouteImport } from './routes/news'
 import { Route as MarketsRouteImport } from './routes/markets'
+import { Route as FuturesRouteImport } from './routes/futures'
 import { Route as IndexRouteImport } from './routes/index'
 
 const WatchlistRoute = WatchlistRouteImport.update({
   id: '/watchlist',
   path: '/watchlist',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const OptionsRoute = OptionsRouteImport.update({
+  id: '/options',
+  path: '/options',
   getParentRoute: () => rootRouteImport,
 } as any)
 const NewsRoute = NewsRouteImport.update({
@@ -29,6 +36,11 @@ const MarketsRoute = MarketsRouteImport.update({
   path: '/markets',
   getParentRoute: () => rootRouteImport,
 } as any)
+const FuturesRoute = FuturesRouteImport.update({
+  id: '/futures',
+  path: '/futures',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
@@ -37,35 +49,50 @@ const IndexRoute = IndexRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/futures': typeof FuturesRoute
   '/markets': typeof MarketsRoute
   '/news': typeof NewsRoute
+  '/options': typeof OptionsRoute
   '/watchlist': typeof WatchlistRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/futures': typeof FuturesRoute
   '/markets': typeof MarketsRoute
   '/news': typeof NewsRoute
+  '/options': typeof OptionsRoute
   '/watchlist': typeof WatchlistRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/futures': typeof FuturesRoute
   '/markets': typeof MarketsRoute
   '/news': typeof NewsRoute
+  '/options': typeof OptionsRoute
   '/watchlist': typeof WatchlistRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/markets' | '/news' | '/watchlist'
+  fullPaths: '/' | '/futures' | '/markets' | '/news' | '/options' | '/watchlist'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/markets' | '/news' | '/watchlist'
-  id: '__root__' | '/' | '/markets' | '/news' | '/watchlist'
+  to: '/' | '/futures' | '/markets' | '/news' | '/options' | '/watchlist'
+  id:
+    | '__root__'
+    | '/'
+    | '/futures'
+    | '/markets'
+    | '/news'
+    | '/options'
+    | '/watchlist'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  FuturesRoute: typeof FuturesRoute
   MarketsRoute: typeof MarketsRoute
   NewsRoute: typeof NewsRoute
+  OptionsRoute: typeof OptionsRoute
   WatchlistRoute: typeof WatchlistRoute
 }
 
@@ -76,6 +103,13 @@ declare module '@tanstack/react-router' {
       path: '/watchlist'
       fullPath: '/watchlist'
       preLoaderRoute: typeof WatchlistRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/options': {
+      id: '/options'
+      path: '/options'
+      fullPath: '/options'
+      preLoaderRoute: typeof OptionsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/news': {
@@ -92,6 +126,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof MarketsRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/futures': {
+      id: '/futures'
+      path: '/futures'
+      fullPath: '/futures'
+      preLoaderRoute: typeof FuturesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/': {
       id: '/'
       path: '/'
@@ -104,8 +145,10 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  FuturesRoute: FuturesRoute,
   MarketsRoute: MarketsRoute,
   NewsRoute: NewsRoute,
+  OptionsRoute: OptionsRoute,
   WatchlistRoute: WatchlistRoute,
 }
 export const routeTree = rootRouteImport

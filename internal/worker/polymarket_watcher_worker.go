@@ -236,7 +236,7 @@ func (w *polymarketWatcher) Run(ctx context.Context) error {
 					unusual = &polymarket.UnusualTrade{
 						LastTradePriceEvent: event,
 						RollingAvgSize:      avg,
-						Reason:              "custom expression",
+						Reason:              activeExprs[event.AssetID],
 					}
 				}
 			} else {

@@ -24,6 +24,9 @@ func main() {
 	wr.RegisterWorker(worker.PolymarketWatcherWorker)
 	wr.RegisterWorker(worker.AljazeeraScraperWorker)
 	wr.RegisterWorker(worker.BloombergRSSWorker)
+	wr.RegisterWorker(worker.InvestingRSSWorker)
+	wr.RegisterWorker(worker.SchwabWatcherWorker)
+	wr.RegisterWorker(worker.SchwabFuturesWatcherWorker)
 
 	if *list {
 		slog.Info("available workers", "names", strings.Join(wr.RegisteredWorkerNames(), ", "))

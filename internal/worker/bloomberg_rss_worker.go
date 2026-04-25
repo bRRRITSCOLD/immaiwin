@@ -78,13 +78,14 @@ func (w *bloombergRSSWorker) Run(ctx context.Context) error {
 
 // rssItem maps relevant fields from a Bloomberg RSS <item>.
 type rssItem struct {
-	Title       string   `xml:"title"`
-	Link        string   `xml:"link"`
-	GUID        string   `xml:"guid"`
-	Description string   `xml:"description"`
-	PubDate     string   `xml:"pubDate"`
-	Creator     string   `xml:"http://purl.org/dc/elements/1.1/ creator"`
-	Categories  []string `xml:"category"`
+	XMLName      xml.Name `xml:"item"`
+	Title        string   `xml:"title"`
+	Link         string   `xml:"link"`
+	GUID         string   `xml:"guid"`
+	Description  string   `xml:"description"`
+	PubDate      string   `xml:"pubDate"`
+	Creator      string   `xml:"http://purl.org/dc/elements/1.1/ creator"`
+	Categories   []string `xml:"category"`
 	MediaContent struct {
 		URL string `xml:"url,attr"`
 	} `xml:"http://search.yahoo.com/mrss/ content"`
@@ -133,6 +134,11 @@ func scrapeBloombergRSS(ctx context.Context, repo *mongodb.NewsRepository, rc *r
 
 		body := strings.TrimSpace(item.Description)
 
+		var rawXML string
+		if b, err := xml.MarshalIndent(item, "", "  "); err == nil {
+			rawXML = string(b)
+		}
+
 		meta := map[string]any{}
 		if item.Creator != "" {
 			meta["author"] = strings.TrimSpace(item.Creator)
@@ -157,6 +163,7 @@ func scrapeBloombergRSS(ctx context.Context, repo *mongodb.NewsRepository, rc *r
 			URL:       url,
 			Title:     title,
 			Body:      body,
+			RawXML:    rawXML,
 			ScrapedAt: scrapedAt,
 			Metadata:  meta,
 		}

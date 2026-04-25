@@ -9,8 +9,10 @@ import (
 )
 
 const (
-	TradesChannel = "immaiwin:trades:detected"
-	NewsChannel   = "immaiwin:news:articles"
+	TradesChannel  = "immaiwin:trades:detected"
+	NewsChannel    = "immaiwin:news:articles"
+	OptionsChannel = "immaiwin:options:unusual"
+	FuturesChannel = "immaiwin:futures:trades"
 )
 
 type Client struct {

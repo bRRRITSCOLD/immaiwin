@@ -119,6 +119,12 @@ function WatchlistPage() {
             <Link to="/news" className="text-muted-foreground hover:text-foreground transition-colors">
               News
             </Link>
+            <Link to="/options" className="text-muted-foreground hover:text-foreground transition-colors">
+              Options
+            </Link>
+            <Link to="/futures" className="text-muted-foreground hover:text-foreground transition-colors">
+              Futures
+            </Link>
           </nav>
         </div>
       </header>

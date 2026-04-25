@@ -1,17 +1,23 @@
 package main
 
 import (
+	"flag"
 	"os"
 	"os/exec"
+	"path/filepath"
 )
 
 func main() {
-	args := []string{"internal", "&&", "cd", "ui", "&&", "pnpm", "run", "dev"}
+	dev := flag.Bool("dev", false, "run the dev server")
+	flag.Parse()
 
-	cmd := exec.Command("cd", args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		os.Exit(1)
+	if *dev {
+		cmd := exec.Command("pnpm", "run", "dev")
+		cmd.Dir = filepath.Join("internal", "ui")
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			os.Exit(1)
+		}
 	}
 }

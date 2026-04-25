@@ -15,10 +15,11 @@ import (
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/mongodb"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/polymarket"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/rediss"
+	"github.com/bRRRITSCOLD/immaiwin-go/internal/schwab"
 )
 
 func main() {
-	cfg, err := config.Load()
+	cfg, err := config.Load(config.WithDotEnv(".env"))
 	if err != nil {
 		slog.Error("failed to load config", "err", err)
 		os.Exit(1)
@@ -64,7 +65,16 @@ func main() {
 		os.Exit(1)
 	}
 
-	srv := api.NewServer(cfg.API, rc, pm, wl, tr, nr)
+	tokens := schwab.NewTokenManager(cfg.Schwab, mc.DB())
+	if err := tokens.Load(ctx); err != nil {
+		slog.Warn("schwab tokens not loaded (visit /auth/schwab to authorize)", "err", err)
+	}
+	tokens.RunRefresher(ctx)
+
+	owl := mongodb.NewOptionsWatchlistRepository(mc.DB())
+	fwl := mongodb.NewFuturesWatchlistRepository(mc.DB())
+
+	srv := api.NewServer(cfg.API, rc, pm, wl, tr, nr, tokens, owl, fwl)
 
 	go func() {
 		slog.Info("api server listening", "addr", srv.Addr())
