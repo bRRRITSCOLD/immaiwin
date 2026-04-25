@@ -27,7 +27,14 @@ function loadLayout(): CardState[] {
     const parsed = JSON.parse(raw) as CardState[]
     // Always use canonical label from defaults (label not user-editable)
     const defaultsByid = Object.fromEntries(DEFAULT_CARDS.map((c) => [c.id, c]))
-    const merged = parsed.map((c) => ({ ...c, label: defaultsByid[c.id]?.label ?? c.label }))
+    const maxW = window.innerWidth - 40
+    const maxH = window.innerHeight - 120
+    const merged = parsed.map((c) => ({
+      ...c,
+      label: defaultsByid[c.id]?.label ?? c.label,
+      width: Math.min(c.width, maxW),
+      height: Math.min(c.height, maxH),
+    }))
     // Append any new default cards not yet in saved layout
     const ids = new Set(parsed.map((c) => c.id))
     const missing = DEFAULT_CARDS.filter((c) => !ids.has(c.id))

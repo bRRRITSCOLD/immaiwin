@@ -33,19 +33,18 @@ function DashboardPage() {
   }
 
   return (
-    <div className="min-h-screen bg-background text-foreground">
+    <div className="h-screen overflow-x-hidden overflow-y-auto bg-background text-foreground">
       <header className="sticky top-0 z-10 border-b bg-background/90 backdrop-blur-sm px-6 py-3 flex items-center justify-between shrink-0">
         <div className="flex items-center gap-4">
           <h1 className="text-lg font-semibold tracking-tight">immaiwin</h1>
           <Separator orientation="vertical" className="h-5" />
           <nav className="flex items-center gap-3 text-sm">
             <Link to="/" className="text-muted-foreground hover:text-foreground transition-colors">Polymarket</Link>
-            <Link to="/markets" className="text-muted-foreground hover:text-foreground transition-colors">Markets</Link>
-            <Link to="/watchlist" className="text-muted-foreground hover:text-foreground transition-colors">Watchlist</Link>
             <Link to="/news" className="text-muted-foreground hover:text-foreground transition-colors">News</Link>
             <Link to="/options" className="text-muted-foreground hover:text-foreground transition-colors">Options</Link>
             <Link to="/futures" className="text-muted-foreground hover:text-foreground transition-colors">Futures</Link>
             <Link to="/dashboard" className="text-foreground font-medium">Dashboard</Link>
+            <Link to="/scrapers" className="text-muted-foreground hover:text-foreground transition-colors">Scrapers</Link>
           </nav>
         </div>
         {/* Feed visibility toggles */}

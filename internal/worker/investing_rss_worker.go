@@ -3,10 +3,9 @@ package worker
 import (
 	"context"
 	"encoding/json"
-	"encoding/xml"
 	"fmt"
+	"io"
 	"log/slog"
-	"strings"
 	"time"
 
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/config"
@@ -16,12 +15,9 @@ import (
 )
 
 const (
-	investingFeedURL      = "https://www.investing.com/rss/news_301.rss"
-	investingPlatform     = "investing"
+	investingFeedURL        = "https://www.investing.com/rss/news_301.rss"
+	investingPlatform       = "investing"
 	investingScrapeInterval = 10 * time.Minute
-
-	// Investing.com pubDate format: "2006-01-02 15:04:05"
-	investingPubDateFormat = "2006-01-02 15:04:05"
 )
 
 var InvestingRSSWorker = &investingRSSWorker{}
@@ -58,8 +54,13 @@ func (w *investingRSSWorker) Run(ctx context.Context) error {
 		return fmt.Errorf("investing-rss: create news repo: %w", err)
 	}
 
+	scraperRepo, err := mongodb.NewScraperConfigRepository(ctx, mc.DB())
+	if err != nil {
+		return fmt.Errorf("investing-rss: create scraper config repo: %w", err)
+	}
+
 	scrape := func() {
-		if err := scrapeInvestingRSS(ctx, repo, rc); err != nil {
+		if err := scrapeInvestingRSS(ctx, repo, scraperRepo, rc); err != nil {
 			slog.Error("investing-rss: scrape failed", "err", err)
 		}
 	}
@@ -79,23 +80,15 @@ func (w *investingRSSWorker) Run(ctx context.Context) error {
 	}
 }
 
-type investingItem struct {
-	XMLName   xml.Name `xml:"item"`
-	Title     string   `xml:"title"`
-	Link      string   `xml:"link"`
-	PubDate   string   `xml:"pubDate"`
-	Author    string   `xml:"author"`
-	Enclosure struct {
-		URL string `xml:"url,attr"`
-	} `xml:"enclosure"`
-}
+func scrapeInvestingRSS(ctx context.Context, repo *mongodb.NewsRepository, scraperRepo *mongodb.ScraperConfigRepository, rc *rediss.Client) error {
+	scrapercfg, err := scraperRepo.GetOrDefault(ctx, investingPlatform, investingFeedURL)
+	if err != nil {
+		return fmt.Errorf("load scraper config: %w", err)
+	}
 
-type investingFeed struct {
-	Items []investingItem `xml:"channel>item"`
-}
+	parser := news.NewParser(scrapercfg, &news.DefaultInvestingParser{})
 
-func scrapeInvestingRSS(ctx context.Context, repo *mongodb.NewsRepository, rc *rediss.Client) error {
-	res, err := httpGet(investingFeedURL)
+	res, err := httpGet(scrapercfg.FeedURL)
 	if err != nil {
 		return fmt.Errorf("fetch feed: %w", err)
 	}
@@ -105,59 +98,44 @@ func scrapeInvestingRSS(ctx context.Context, repo *mongodb.NewsRepository, rc *r
 		}
 	}()
 
-	var feed investingFeed
-	if err := xml.NewDecoder(res.Body).Decode(&feed); err != nil {
+	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		return fmt.Errorf("read feed body: %w", err)
+	}
+
+	articles, err := parser.Parse(ctx, news.ParseInput{
+		Source:  investingPlatform,
+		FeedURL: scrapercfg.FeedURL,
+		Raw:     string(body),
+	})
+	if err != nil {
 		return fmt.Errorf("parse feed: %w", err)
 	}
 
-	for _, item := range feed.Items {
-		url := strings.TrimSpace(item.Link)
-		if url == "" || !strings.HasPrefix(url, "http") {
-			continue
+	for _, a := range articles {
+		scrapedAt := a.ScrapedAt
+		if scrapedAt.IsZero() {
+			scrapedAt = time.Now().UTC()
 		}
-
-		title := strings.TrimSpace(item.Title)
-		if title == "" {
-			continue
-		}
-
-		scrapedAt := time.Now().UTC()
-		if t, err := time.Parse(investingPubDateFormat, strings.TrimSpace(item.PubDate)); err == nil {
-			scrapedAt = t.UTC()
-		}
-
-		var rawXML string
-		if b, err := xml.MarshalIndent(item, "", "  "); err == nil {
-			rawXML = string(b)
-		}
-
-		meta := map[string]any{}
-		if item.Author != "" {
-			meta["author"] = strings.TrimSpace(item.Author)
-		}
-		if item.Enclosure.URL != "" {
-			meta["image_url"] = item.Enclosure.URL
-		}
-
 		article := &news.Article{
 			Platform:  investingPlatform,
-			URL:       url,
-			Title:     title,
-			RawXML:    rawXML,
+			URL:       a.URL,
+			Title:     a.Title,
+			RawXML:    a.RawXML,
 			ScrapedAt: scrapedAt,
-			Metadata:  meta,
+			Metadata:  a.Metadata,
 		}
 
 		inserted, err := repo.Upsert(ctx, article)
 		if err != nil {
-			slog.Error("investing-rss: upsert article", "url", url, "err", err)
+			slog.Error("investing-rss: upsert article", "url", a.URL, "err", err)
 			continue
 		}
 		if inserted {
-			slog.Info("investing-rss: new article", "title", title, "url", url)
+			slog.Info("investing-rss: new article", "title", a.Title, "url", a.URL)
 			if payload, err := json.Marshal(article); err == nil {
 				if err := rc.Publish(ctx, rediss.NewsChannel, payload); err != nil {
-					slog.Warn("investing-rss: publish article", "url", url, "err", err)
+					slog.Warn("investing-rss: publish article", "url", a.URL, "err", err)
 				}
 			}
 		}

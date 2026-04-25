@@ -96,7 +96,7 @@ export function WatchlistFeed() {
   }, [])
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col flex-1 min-h-0">
       {/* Toolbar */}
       <div className="flex items-center justify-between gap-3 px-1 pb-3 shrink-0">
         <div className="flex items-center gap-3">

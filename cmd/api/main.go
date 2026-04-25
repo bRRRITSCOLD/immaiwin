@@ -73,8 +73,13 @@ func main() {
 
 	owl := mongodb.NewOptionsWatchlistRepository(mc.DB())
 	fwl := mongodb.NewFuturesWatchlistRepository(mc.DB())
+	sc, err := mongodb.NewScraperConfigRepository(ctx, mc.DB())
+	if err != nil {
+		slog.Error("failed to init scraper config repository", "err", err)
+		os.Exit(1)
+	}
 
-	srv := api.NewServer(cfg.API, rc, pm, wl, tr, nr, tokens, owl, fwl)
+	srv := api.NewServer(cfg.API, rc, pm, wl, tr, nr, tokens, owl, fwl, sc)
 
 	go func() {
 		slog.Info("api server listening", "addr", srv.Addr())

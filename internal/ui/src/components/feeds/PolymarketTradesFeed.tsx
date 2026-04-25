@@ -9,7 +9,7 @@ import { Skeleton } from '~/components/ui/skeleton'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '~/components/ui/tabs'
 import { Tooltip, TooltipContent, TooltipTrigger } from '~/components/ui/tooltip'
 import { WatchlistFeed } from '~/components/feeds/WatchlistFeed'
-import { MarketsFeed } from '~/components/feeds/MarketsFeed'
+import { PolymarketMarketsFeed } from '~/components/feeds/PolymarketMarketsFeed'
 
 const API_BASE = import.meta.env['VITE_API_URL'] ?? 'http://localhost:8080'
 
@@ -29,7 +29,7 @@ interface Trade {
   token_outcome: string
 }
 
-export function TradesFeed() {
+export function PolymarketTradesFeed() {
   const [liveTrades, setLiveTrades] = useState<Trade[]>([])
   const [connected, setConnected] = useState(false)
   const [liveLoading, setLiveLoading] = useState(true)
@@ -60,7 +60,11 @@ export function TradesFeed() {
       setConnected(true)
       setTimeout(() => setLiveLoading(false), 3000)
     }
-    es.onerror = () => setConnected(false)
+    es.onerror = () => {
+      setConnected(false)
+      setLiveLoading(true)
+      setLiveTrades([])
+    }
     return () => { es.close() }
   }, [])
 
@@ -103,7 +107,7 @@ export function TradesFeed() {
         </Badge>
       </div>
 
-      <TabsContent value="live" className="flex-1 overflow-hidden mt-0 data-[state=inactive]:hidden">
+      <TabsContent value="live" className="flex-1 overflow-hidden mt-0 min-h-0 flex flex-col data-[state=inactive]:hidden">
         <ScrollArea className="h-full" viewportRef={liveViewportRef}>
           {liveLoading ? (
             <div className="pr-4"><LoadingState /></div>
@@ -134,7 +138,7 @@ export function TradesFeed() {
         </ScrollArea>
       </TabsContent>
 
-      <TabsContent value="history" className="flex-1 overflow-hidden mt-0 data-[state=inactive]:hidden">
+      <TabsContent value="history" className="flex-1 overflow-hidden mt-0 min-h-0 flex flex-col data-[state=inactive]:hidden">
         <ScrollArea className="h-full">
           <div className="space-y-3 pr-4">
             {histLoading ? (
@@ -150,11 +154,11 @@ export function TradesFeed() {
         </ScrollArea>
       </TabsContent>
 
-      <TabsContent value="markets" className="flex-1 overflow-hidden mt-0 data-[state=inactive]:hidden">
-        <MarketsFeed />
+      <TabsContent value="markets" className="flex-1 overflow-hidden mt-0 min-h-0 flex flex-col data-[state=inactive]:hidden">
+        <PolymarketMarketsFeed />
       </TabsContent>
 
-      <TabsContent value="watchlist" className="flex-1 overflow-hidden mt-0 data-[state=inactive]:hidden">
+      <TabsContent value="watchlist" className="flex-1 overflow-hidden mt-0 min-h-0 flex flex-col data-[state=inactive]:hidden">
         <WatchlistFeed />
       </TabsContent>
     </Tabs>

@@ -10,6 +10,7 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as WatchlistRouteImport } from './routes/watchlist'
+import { Route as ScrapersRouteImport } from './routes/scrapers'
 import { Route as OptionsRouteImport } from './routes/options'
 import { Route as NewsRouteImport } from './routes/news'
 import { Route as MarketsRouteImport } from './routes/markets'
@@ -20,6 +21,11 @@ import { Route as IndexRouteImport } from './routes/index'
 const WatchlistRoute = WatchlistRouteImport.update({
   id: '/watchlist',
   path: '/watchlist',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ScrapersRoute = ScrapersRouteImport.update({
+  id: '/scrapers',
+  path: '/scrapers',
   getParentRoute: () => rootRouteImport,
 } as any)
 const OptionsRoute = OptionsRouteImport.update({
@@ -60,6 +66,7 @@ export interface FileRoutesByFullPath {
   '/markets': typeof MarketsRoute
   '/news': typeof NewsRoute
   '/options': typeof OptionsRoute
+  '/scrapers': typeof ScrapersRoute
   '/watchlist': typeof WatchlistRoute
 }
 export interface FileRoutesByTo {
@@ -69,6 +76,7 @@ export interface FileRoutesByTo {
   '/markets': typeof MarketsRoute
   '/news': typeof NewsRoute
   '/options': typeof OptionsRoute
+  '/scrapers': typeof ScrapersRoute
   '/watchlist': typeof WatchlistRoute
 }
 export interface FileRoutesById {
@@ -79,6 +87,7 @@ export interface FileRoutesById {
   '/markets': typeof MarketsRoute
   '/news': typeof NewsRoute
   '/options': typeof OptionsRoute
+  '/scrapers': typeof ScrapersRoute
   '/watchlist': typeof WatchlistRoute
 }
 export interface FileRouteTypes {
@@ -90,6 +99,7 @@ export interface FileRouteTypes {
     | '/markets'
     | '/news'
     | '/options'
+    | '/scrapers'
     | '/watchlist'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -99,6 +109,7 @@ export interface FileRouteTypes {
     | '/markets'
     | '/news'
     | '/options'
+    | '/scrapers'
     | '/watchlist'
   id:
     | '__root__'
@@ -108,6 +119,7 @@ export interface FileRouteTypes {
     | '/markets'
     | '/news'
     | '/options'
+    | '/scrapers'
     | '/watchlist'
   fileRoutesById: FileRoutesById
 }
@@ -118,6 +130,7 @@ export interface RootRouteChildren {
   MarketsRoute: typeof MarketsRoute
   NewsRoute: typeof NewsRoute
   OptionsRoute: typeof OptionsRoute
+  ScrapersRoute: typeof ScrapersRoute
   WatchlistRoute: typeof WatchlistRoute
 }
 
@@ -128,6 +141,13 @@ declare module '@tanstack/react-router' {
       path: '/watchlist'
       fullPath: '/watchlist'
       preLoaderRoute: typeof WatchlistRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/scrapers': {
+      id: '/scrapers'
+      path: '/scrapers'
+      fullPath: '/scrapers'
+      preLoaderRoute: typeof ScrapersRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/options': {
@@ -182,6 +202,7 @@ const rootRouteChildren: RootRouteChildren = {
   MarketsRoute: MarketsRoute,
   NewsRoute: NewsRoute,
   OptionsRoute: OptionsRoute,
+  ScrapersRoute: ScrapersRoute,
   WatchlistRoute: WatchlistRoute,
 }
 export const routeTree = rootRouteImport

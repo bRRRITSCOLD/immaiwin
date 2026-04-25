@@ -38,6 +38,7 @@ func NewServer(
 	auth handler.SchwabAuthorizer,
 	owl handler.OptionsWatchlistStore,
 	fwl handler.FuturesWatchlistStore,
+	sc handler.ScraperConfigStore,
 ) *Server {
 	b := rediss.NewBroadcaster(rc, rediss.TradesChannel)
 	nb := rediss.NewBroadcaster(rc, rediss.NewsChannel)
@@ -62,6 +63,10 @@ func NewServer(
 	// News
 	r.GET("/api/v1/news", handler.GetNews(nr))
 	r.GET("/api/v1/news/stream", handler.StreamNews(nb))
+	r.GET("/api/v1/news/scrapers", handler.ListScraperConfigs(sc))
+	r.PATCH("/api/v1/news/scrapers/:source", handler.PatchScraperConfig(sc))
+	r.DELETE("/api/v1/news/scrapers/:source/script", handler.DeleteScraperScript(sc))
+	r.POST("/api/v1/news/scrapers/validate", handler.ValidateScript())
 
 	// Polymarket markets
 	r.GET("/api/v1/markets", handler.GetMarkets(pm))

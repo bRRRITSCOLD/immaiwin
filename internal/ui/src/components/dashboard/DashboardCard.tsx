@@ -5,13 +5,13 @@ import { Eye, EyeOff, GripVertical } from 'lucide-react'
 import { Card } from '~/components/ui/card'
 import { type CardId, type CardState } from './useDashboardLayout'
 import { useResizeHandle } from './useResizeHandle'
-import { TradesFeed } from '~/components/feeds/TradesFeed'
+import { PolymarketTradesFeed } from '~/components/feeds/PolymarketTradesFeed'
 import { OptionsFeed } from '~/components/feeds/OptionsFeed'
 import { FuturesFeed } from '~/components/feeds/FuturesFeed'
 import { NewsFeed } from '~/components/feeds/NewsFeed'
 
 const FEED_MAP: Record<CardId, React.ComponentType> = {
-  trades: TradesFeed,
+  trades: PolymarketTradesFeed,
   options: OptionsFeed,
   futures: FuturesFeed,
   news: NewsFeed,

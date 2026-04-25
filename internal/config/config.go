@@ -10,7 +10,7 @@ type Config struct {
 	Worker  WorkerConfig  `envPrefix:"WORKER_"`
 	Redis   RedisConfig   `envPrefix:"REDIS_"`
 	MongoDB MongoDBConfig `envPrefix:"MONGODB_"`
-	Schwab SchwabConfig `envPrefix:"SCHWAB_"`
+	Schwab  SchwabConfig  `envPrefix:"SCHWAB_"`
 }
 
 type APIConfig struct {
@@ -44,7 +44,7 @@ type MongoDBConfig struct {
 type SchwabConfig struct {
 	ClientID     string `env:"CLIENT_ID"     envDefault:""`
 	ClientSecret string `env:"CLIENT_SECRET" envDefault:""`
-	CallbackURL  string `env:"CALLBACK_URL"  envDefault:"http://127.0.0.1:8080/auth/schwab/callback"`
+	CallbackURL  string `env:"CALLBACK_URL"  envDefault:"https://127.0.0.1:8080/auth/schwab/callback"`
 }
 
 func Load(opts ...Option) (*Config, error) {

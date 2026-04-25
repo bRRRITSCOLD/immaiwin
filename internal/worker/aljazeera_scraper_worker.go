@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -17,7 +18,6 @@ import (
 )
 
 const (
-	aljazeeraBaseURL        = "https://www.aljazeera.com"
 	aljazeeraPlatform       = "aljazeera"
 	aljazeeraScrapeInterval = 5 * time.Minute
 )
@@ -56,8 +56,13 @@ func (w *aljazeeraScraperWorker) Run(ctx context.Context) error {
 		return fmt.Errorf("aljazeera-scraper: create news repo: %w", err)
 	}
 
+	scraperRepo, err := mongodb.NewScraperConfigRepository(ctx, mc.DB())
+	if err != nil {
+		return fmt.Errorf("aljazeera-scraper: create scraper config repo: %w", err)
+	}
+
 	scrape := func() {
-		if err := scrapeAlJazeera(ctx, repo, rc); err != nil {
+		if err := scrapeAlJazeera(ctx, repo, scraperRepo, rc); err != nil {
 			slog.Error("aljazeera-scraper: scrape failed", "err", err)
 		}
 	}
@@ -79,8 +84,15 @@ func (w *aljazeeraScraperWorker) Run(ctx context.Context) error {
 
 // scrapeAlJazeera fetches the Al Jazeera homepage, extracts article links and titles,
 // upserts new articles to MongoDB, then fetches body text for newly discovered articles.
-func scrapeAlJazeera(ctx context.Context, repo *mongodb.NewsRepository, rc *rediss.Client) error {
-	res, err := httpGet(aljazeeraBaseURL + "/")
+func scrapeAlJazeera(ctx context.Context, repo *mongodb.NewsRepository, scraperRepo *mongodb.ScraperConfigRepository, rc *rediss.Client) error {
+	scrapercfg, err := scraperRepo.GetOrDefault(ctx, aljazeeraPlatform, news.AljazeeraBaseURL+"/")
+	if err != nil {
+		return fmt.Errorf("load scraper config: %w", err)
+	}
+
+	parser := news.NewParser(scrapercfg, &news.DefaultAljazeeraParser{})
+
+	res, err := httpGet(scrapercfg.FeedURL)
 	if err != nil {
 		return fmt.Errorf("fetch homepage: %w", err)
 	}
@@ -90,54 +102,43 @@ func scrapeAlJazeera(ctx context.Context, repo *mongodb.NewsRepository, rc *redi
 		}
 	}()
 
-	doc, err := goquery.NewDocumentFromReader(res.Body)
+	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		return fmt.Errorf("read homepage body: %w", err)
+	}
+
+	articles, err := parser.Parse(ctx, news.ParseInput{
+		Source:  aljazeeraPlatform,
+		FeedURL: scrapercfg.FeedURL,
+		Raw:     string(body),
+	})
 	if err != nil {
 		return fmt.Errorf("parse homepage: %w", err)
 	}
 
-	now := time.Now().UTC()
 	var newURLs []string
-
-	doc.Find("h3").Each(func(_ int, s *goquery.Selection) {
-		title := strings.TrimSpace(s.Text())
-		if title == "" {
-			return
+	for _, a := range articles {
+		scrapedAt := a.ScrapedAt
+		if scrapedAt.IsZero() {
+			scrapedAt = time.Now().UTC()
 		}
-
-		// Locate nearest <a> tag.
-		link := ""
-		if a := s.Find("a"); a.Length() > 0 {
-			link, _ = a.Attr("href")
-		} else if s.Parent().Is("a") {
-			link, _ = s.Parent().Attr("href")
-		}
-		if link == "" {
-			return
-		}
-		if strings.HasPrefix(link, "/") {
-			link = aljazeeraBaseURL + link
-		}
-		if !strings.HasPrefix(link, "http") {
-			return
-		}
-
 		article := &news.Article{
 			Platform:  aljazeeraPlatform,
-			URL:       link,
-			Title:     title,
-			ScrapedAt: now,
+			URL:       a.URL,
+			Title:     a.Title,
+			ScrapedAt: scrapedAt,
 		}
 
 		inserted, err := repo.Upsert(ctx, article)
 		if err != nil {
-			slog.Error("aljazeera-scraper: upsert article", "url", link, "err", err)
-			return
+			slog.Error("aljazeera-scraper: upsert article", "url", a.URL, "err", err)
+			continue
 		}
 		if inserted {
-			slog.Info("aljazeera-scraper: new article", "title", title, "url", link)
-			newURLs = append(newURLs, link)
+			slog.Info("aljazeera-scraper: new article", "title", a.Title, "url", a.URL)
+			newURLs = append(newURLs, a.URL)
 		}
-	})
+	}
 
 	// Fetch body for newly inserted articles, then publish (body-first).
 	for _, url := range newURLs {
@@ -186,7 +187,6 @@ func fetchArticleContent(url string) (body, rawHTML string, err error) {
 	}
 
 	// Container selectors tried in priority order.
-	// Each selector targets the wrapper element; text is extracted from p and li within it.
 	containerSelectors := []string{
 		"[data-testid='ArticleBodyParagraph']",
 		"[data-testid='LiveBlogCard']",
