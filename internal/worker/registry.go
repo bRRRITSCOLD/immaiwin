@@ -27,11 +27,11 @@ func NewWorkerRegistry() *WorkerRegistry {
 // Register adds a worker to the registry. Panics on duplicate name.
 func (wr *WorkerRegistry) RegisterWorker(w Worker) {
 	if _, exists := wr.registry[w.Name()]; exists {
-		slog.Info("worker already registered", "name", w.Name())
+		slog.Debug("worker already registered", "name", w.Name())
 	} else {
 		wr.registry[w.Name()] = w
 
-		slog.Info("worker registered", "name", w.Name())
+		slog.Debug("worker registered", "name", w.Name())
 	}
 
 }
