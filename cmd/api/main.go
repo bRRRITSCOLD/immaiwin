@@ -16,6 +16,7 @@ import (
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/polymarket"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/rediss"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/schwab"
+	"github.com/bRRRITSCOLD/immaiwin-go/internal/workflow"
 )
 
 func main() {
@@ -79,7 +80,19 @@ func main() {
 		os.Exit(1)
 	}
 
-	srv := api.NewServer(cfg.API, rc, pm, wl, tr, nr, tokens, owl, fwl, sc)
+	wfRepo, err := mongodb.NewWorkflowRepository(ctx, mc.DB())
+	if err != nil {
+		slog.Error("failed to init workflow repository", "err", err)
+		os.Exit(1)
+	}
+
+	wfExec := &workflow.WorkflowExecutor{
+		HTTPClient: &http.Client{Timeout: 30 * time.Second},
+		DB:         mongodb.NewRawDB(mc.DB()),
+		Pub:        rc,
+	}
+
+	srv := api.NewServer(cfg.API, rc, pm, wl, tr, nr, tokens, owl, fwl, sc, wfRepo, wfExec)
 
 	go func() {
 		slog.Info("api server listening", "addr", srv.Addr())

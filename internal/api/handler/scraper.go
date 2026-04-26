@@ -11,8 +11,10 @@ import (
 // ScraperConfigStore is the storage interface for scraper configs.
 type ScraperConfigStore interface {
 	List(ctx context.Context) ([]news.ScraperConfig, error)
+	GetOrDefault(ctx context.Context, source, defaultFeedURL string) (news.ScraperConfig, error)
 	Upsert(ctx context.Context, cfg news.ScraperConfig) error
 	ClearScript(ctx context.Context, source string) error
+	Delete(ctx context.Context, source string) error
 }
 
 // ListScraperConfigs returns all stored scraper configurations.
@@ -81,6 +83,22 @@ func DeleteScraperScript(store ScraperConfigStore) gin.HandlerFunc {
 			return
 		}
 		if err := store.ClearScript(c.Request.Context(), source); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.Status(http.StatusNoContent)
+	}
+}
+
+// DeleteScraperConfig removes a scraper config entirely.
+func DeleteScraperConfig(store ScraperConfigStore) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		source := c.Param("source")
+		if source == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "source required"})
+			return
+		}
+		if err := store.Delete(c.Request.Context(), source); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}

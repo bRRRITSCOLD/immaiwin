@@ -1,0 +1,126 @@
+{
+  "_id": "18a9bfad88b648bc",
+  "created_at": {
+    "$date": "2026-04-26T00:11:20.014Z"
+  },
+  "edges": [
+    {
+      "id": "e1",
+      "source": "trigger-1",
+      "target": "http_fetch-1"
+    },
+    {
+      "id": "e2",
+      "source": "http_fetch-1",
+      "target": "js_transform-1",
+      "source_handle": "success"
+    },
+    {
+      "id": "e3",
+      "source": "http_fetch-1",
+      "target": "notify-1",
+      "source_handle": "error",
+      "target_handle": "in-top",
+      "label": "error"
+    },
+    {
+      "id": "e4",
+      "source": "js_transform-1",
+      "target": "for_each-1",
+      "source_handle": "success"
+    },
+    {
+      "id": "e5",
+      "source": "js_transform-1",
+      "target": "notify-1",
+      "source_handle": "error",
+      "target_handle": "in-left",
+      "label": "error"
+    },
+    {
+      "id": "e6",
+      "source": "for_each-1",
+      "target": "mongo_upsert-1",
+      "source_handle": "item",
+      "label": "item"
+    },
+    {
+      "id": "e7",
+      "source": "for_each-1",
+      "target": "notify-1",
+      "source_handle": "error",
+      "target_handle": "in-bottom",
+      "label": "error"
+    }
+  ],
+  "name": "aljazeera",
+  "nodes": [
+    {
+      "id": "trigger-1",
+      "type": "trigger",
+      "position": {
+        "x": 0,
+        "y": 60
+      },
+      "data": {}
+    },
+    {
+      "id": "http_fetch-1",
+      "type": "http_fetch",
+      "position": {
+        "x": 220,
+        "y": 40
+      },
+      "data": {
+        "url": "https://www.aljazeera.com/"
+      }
+    },
+    {
+      "id": "js_transform-1",
+      "type": "js_transform",
+      "position": {
+        "x": 500,
+        "y": 20
+      },
+      "data": {
+        "script": "// Al Jazeera HTML parser — extracts titles/links from homepage, fetches body per article.\n// each(fn) callback: fn(index, element)\nfunction parse(raw) {\n  var articles = []\n  $(raw).find('h3').each(function(i, el) {\n    var title = el.text().trim()\n    if (!title) return\n    var a = el.find('a')\n    var link = a.length ? (a.attr('href') || '') : ''\n    if (!link) return\n    if (link.indexOf('/') === 0) link = 'https://www.aljazeera.com' + link\n    if (link.indexOf('http') !== 0) return\n\n    var body = ''\n    var res = httpGet(link)\n    if (res.ok) {\n      var selectors = [\n        '[data-testid=\"ArticleBodyParagraph\"]',\n        '.wysiwyg--all-content',\n        '.article-p-wrapper',\n        'article',\n      ]\n      for (var s = 0; s < selectors.length; s++) {\n        var container = $(res.body).find(selectors[s]).first()\n        if (container.length > 0) {\n          body = container.text().trim()\n          break\n        }\n      }\n    }\n\n    articles.push({ url: link, title: title, body: body, scraped_at: now() })\n  })\n  return articles\n}"
+      }
+    },
+    {
+      "id": "for_each-1",
+      "type": "for_each",
+      "position": {
+        "x": 780,
+        "y": 30
+      },
+      "data": {}
+    },
+    {
+      "id": "mongo_upsert-1",
+      "type": "mongo_upsert",
+      "position": {
+        "x": 1020,
+        "y": 10
+      },
+      "data": {
+        "collection": "news_articles",
+        "filter_field": "url",
+        "pub_channel": "immaiwin:news:articles"
+      }
+    },
+    {
+      "id": "notify-1",
+      "type": "notify",
+      "position": {
+        "x": 780,
+        "y": 240
+      },
+      "data": {
+        "message": "aljazeera: pipeline error"
+      }
+    }
+  ],
+  "updated_at": {
+    "$date": "2026-04-26T00:11:20.014Z"
+  }
+}

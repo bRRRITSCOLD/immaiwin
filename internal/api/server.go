@@ -8,6 +8,7 @@ import (
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/api/handler"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/config"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/rediss"
+	"github.com/bRRRITSCOLD/immaiwin-go/internal/workflow"
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 )
@@ -39,6 +40,8 @@ func NewServer(
 	owl handler.OptionsWatchlistStore,
 	fwl handler.FuturesWatchlistStore,
 	sc handler.ScraperConfigStore,
+	wfStore handler.WorkflowStore,
+	wfExec *workflow.WorkflowExecutor,
 ) *Server {
 	b := rediss.NewBroadcaster(rc, rediss.TradesChannel)
 	nb := rediss.NewBroadcaster(rc, rediss.NewsChannel)
@@ -65,8 +68,15 @@ func NewServer(
 	r.GET("/api/v1/news/stream", handler.StreamNews(nb))
 	r.GET("/api/v1/news/scrapers", handler.ListScraperConfigs(sc))
 	r.PATCH("/api/v1/news/scrapers/:source", handler.PatchScraperConfig(sc))
+	r.DELETE("/api/v1/news/scrapers/:source", handler.DeleteScraperConfig(sc))
 	r.DELETE("/api/v1/news/scrapers/:source/script", handler.DeleteScraperScript(sc))
 	r.POST("/api/v1/news/scrapers/validate", handler.ValidateScript())
+
+	// Workflows
+	r.GET("/api/v1/workflows", handler.ListWorkflows(wfStore))
+	r.PUT("/api/v1/workflows/:id", handler.UpsertWorkflow(wfStore))
+	r.DELETE("/api/v1/workflows/:id", handler.DeleteWorkflow(wfStore))
+	r.POST("/api/v1/workflows/:id/run", handler.RunWorkflow(wfStore, wfExec))
 
 	// Polymarket markets
 	r.GET("/api/v1/markets", handler.GetMarkets(pm))

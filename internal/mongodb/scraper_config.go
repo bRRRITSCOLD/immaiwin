@@ -77,3 +77,9 @@ func (r *ScraperConfigRepository) ClearScript(ctx context.Context, source string
 	)
 	return err
 }
+
+// Delete removes a scraper config entirely.
+func (r *ScraperConfigRepository) Delete(ctx context.Context, source string) error {
+	_, err := r.col.DeleteOne(ctx, bson.M{"source": source})
+	return err
+}

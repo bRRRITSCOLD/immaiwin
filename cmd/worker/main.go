@@ -22,9 +22,7 @@ func main() {
 
 	wr.RegisterWorker(worker.MongoDBWriterWorker)
 	wr.RegisterWorker(worker.PolymarketWatcherWorker)
-	wr.RegisterWorker(worker.AljazeeraScraperWorker)
-	wr.RegisterWorker(worker.BloombergRSSWorker)
-	wr.RegisterWorker(worker.InvestingRSSWorker)
+	wr.RegisterWorker(worker.NewsScraperWorker)
 	wr.RegisterWorker(worker.SchwabWatcherWorker)
 	wr.RegisterWorker(worker.SchwabFuturesWatcherWorker)
 

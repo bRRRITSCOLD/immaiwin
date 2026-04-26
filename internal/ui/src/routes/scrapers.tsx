@@ -1,8 +1,11 @@
 import { createFileRoute, Link } from '@tanstack/react-router'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { useVirtualizer } from '@tanstack/react-virtual'
 import { toast } from 'sonner'
+import { ChevronDown, ChevronRight, Trash2 } from 'lucide-react'
 import { Badge } from '~/components/ui/badge'
 import { Button } from '~/components/ui/button'
+import { Checkbox } from '~/components/ui/checkbox'
 import { Input } from '~/components/ui/input'
 import { Label } from '~/components/ui/label'
 import { Separator } from '~/components/ui/separator'
@@ -22,59 +25,49 @@ interface ScraperConfig {
   updated_at: string
 }
 
-const RSS_TEMPLATE = `// parse(raw) receives raw RSS/XML string.
-// Helpers: parseRSS(xmlStr), now(), parseDate(str), $(html)
-function parse(raw) {
-  var items = parseRSS(raw)
-  return items.map(function(item) {
-    return {
-      url: item.link || item.guid || '',
-      title: item.title || '',
-      body: item.description || '',
-      scraped_at: item.pubDate ? parseDate(item.pubDate) : now()
-    }
-  })
+const FALLBACK_SCRIPT = `// parse(raw) receives raw feed content (RSS/XML or HTML).
+// TypeScript is supported — types are stripped before execution in goja.
+function parse(raw: string): Article[] {
+  const items = parseRSS(raw)
+  return items.map((item) => ({
+    url: item.link || item.guid || '',
+    title: item.title || '',
+    body: item.description || '',
+    scraped_at: item.pubDate ? parseDate(item.pubDate) : now(),
+  }))
 }`
 
-const HTML_TEMPLATE = `// parse(raw) receives raw HTML string (homepage).
-// Helpers: $(html), now(), parseRSS(xmlStr), parseDate(str)
-function parse(raw) {
-  var articles = []
-  $(raw).find('h3').each(function(i, el) {
-    var title = el.text().trim()
-    if (!title) return
-    var a = el.find('a')
-    var link = a.length ? a.attr('href') : ''
-    if (!link) return
-    if (link.indexOf('/') === 0) link = 'https://www.aljazeera.com' + link
-    if (link.indexOf('http') !== 0) return
-    articles.push({ url: link, title: title, scraped_at: now() })
-  })
-  return articles
-}`
-
-interface SourceDef {
-  id: string
-  label: string
-  defaultFeedURL: string
-  template: string
+interface CardState {
+  feedURL: string
+  script: string
 }
 
-const KNOWN_SOURCES: SourceDef[] = [
-  { id: 'bloomberg', label: 'Bloomberg', defaultFeedURL: 'https://feeds.bloomberg.com/markets/news.rss', template: RSS_TEMPLATE },
-  { id: 'investing', label: 'Investing.com', defaultFeedURL: 'https://www.investing.com/rss/news_301.rss', template: RSS_TEMPLATE },
-  { id: 'aljazeera', label: 'Al Jazeera', defaultFeedURL: 'https://www.aljazeera.com/', template: HTML_TEMPLATE },
-]
+interface ScraperCardProps {
+  config: ScraperConfig
+  isExpanded: boolean
+  isSelected: boolean
+  onToggle: () => void
+  onSelectChange: (checked: boolean) => void
+  initialState: CardState
+  onStateChange: (state: CardState) => void
+}
 
-const KNOWN_IDS = new Set(KNOWN_SOURCES.map((s) => s.id))
-
-function ScraperCard({ source, saved }: { source: SourceDef; saved?: ScraperConfig }) {
-  const [feedURL, setFeedURL] = useState(saved?.feed_url || source.defaultFeedURL)
-  const [script, setScript] = useState(saved?.script || source.template)
-  const [hasScript, setHasScript] = useState(!!saved?.script)
+function ScraperCard({ config, isExpanded, isSelected, onToggle, onSelectChange, initialState, onStateChange }: ScraperCardProps) {
+  const [feedURL, setFeedURL] = useState(initialState.feedURL)
+  const [script, setScript] = useState(initialState.script)
+  const [hasScript, setHasScript] = useState(!!config.script)
   const [validating, setValidating] = useState(false)
   const [saving, setSaving] = useState(false)
-  const [clearing, setClearing] = useState(false)
+
+  function handleFeedURLChange(v: string) {
+    setFeedURL(v)
+    onStateChange({ feedURL: v, script })
+  }
+
+  function handleScriptChange(v: string) {
+    setScript(v)
+    onStateChange({ feedURL, script: v })
+  }
 
   async function validate() {
     setValidating(true)
@@ -85,10 +78,10 @@ function ScraperCard({ source, saved }: { source: SourceDef; saved?: ScraperConf
         body: JSON.stringify({ script }),
       })
       const data = await res.json()
-      if (!res.ok) toast.error(`${source.label}: ${data.error}`)
-      else toast.success(`${source.label}: script valid`)
+      if (!res.ok) toast.error(`${config.source}: ${data.error}`)
+      else toast.success(`${config.source}: script valid`)
     } catch {
-      toast.error(`${source.label}: network error`)
+      toast.error(`${config.source}: network error`)
     } finally {
       setValidating(false)
     }
@@ -97,102 +90,93 @@ function ScraperCard({ source, saved }: { source: SourceDef; saved?: ScraperConf
   async function save() {
     setSaving(true)
     try {
-      const body: Record<string, string> = { feed_url: feedURL }
-      if (hasScript || script !== source.template) {
-        body.script = script
-      }
-      const res = await fetch(`${API_BASE}/api/v1/news/scrapers/${source.id}`, {
+      const res = await fetch(`${API_BASE}/api/v1/news/scrapers/${config.source}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
+        body: JSON.stringify({ feed_url: feedURL, script }),
       })
       const data = await res.json()
-      if (!res.ok) toast.error(`${source.label}: ${data.error}`)
+      if (!res.ok) toast.error(`${config.source}: ${data.error}`)
       else {
-        setHasScript(!!body.script)
-        toast.success(`${source.label}: saved`)
+        setHasScript(true)
+        toast.success(`${config.source}: saved`)
       }
     } catch {
-      toast.error(`${source.label}: network error`)
+      toast.error(`${config.source}: network error`)
     } finally {
       setSaving(false)
     }
   }
 
-  async function clearScript() {
-    setClearing(true)
-    try {
-      const res = await fetch(`${API_BASE}/api/v1/news/scrapers/${source.id}/script`, {
-        method: 'DELETE',
-      })
-      if (!res.ok) {
-        const data = await res.json()
-        toast.error(`${source.label}: ${data.error}`)
-      } else {
-        setHasScript(false)
-        setScript(source.template)
-        toast.success(`${source.label}: script cleared — using default parser`)
-      }
-    } catch {
-      toast.error(`${source.label}: network error`)
-    } finally {
-      setClearing(false)
-    }
-  }
-
   return (
-    <div className="rounded-lg border bg-card text-card-foreground">
-      <div className="flex items-center justify-between px-4 py-3 border-b">
-        <div className="flex items-center gap-2">
-          <span className="font-medium">{source.label}</span>
+    <div className={`rounded-lg border bg-card text-card-foreground ${isSelected ? 'border-primary' : ''}`}>
+      <div
+        className="flex items-center justify-between px-4 py-3 cursor-pointer select-none"
+        onClick={onToggle}
+      >
+        <div className="flex items-center gap-3">
+          {/* Checkbox — stop propagation so it doesn't trigger collapse */}
+          <div onClick={(e) => e.stopPropagation()}>
+            <Checkbox
+              checked={isSelected}
+              onCheckedChange={onSelectChange}
+              aria-label={`Select ${config.source}`}
+            />
+          </div>
+          {isExpanded
+            ? <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
+            : <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />}
+          <span className="font-medium">{config.source}</span>
           <Badge variant={hasScript ? 'default' : 'secondary'} className="text-xs">
             {hasScript ? 'custom script' : 'default parser'}
           </Badge>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
           <Button size="sm" variant="outline" onClick={validate} disabled={validating}>
             {validating ? 'Validating…' : 'Validate'}
           </Button>
-          {hasScript && (
-            <Button size="sm" variant="ghost" onClick={clearScript} disabled={clearing} className="text-destructive hover:text-destructive">
-              {clearing ? 'Clearing…' : 'Clear Script'}
-            </Button>
-          )}
           <Button size="sm" onClick={save} disabled={saving}>
             {saving ? 'Saving…' : 'Save'}
           </Button>
         </div>
       </div>
 
-      <div className="p-4 space-y-4">
-        <div className="space-y-1.5">
-          <Label htmlFor={`feed-${source.id}`} className="text-xs text-muted-foreground">Feed URL</Label>
-          <Input
-            id={`feed-${source.id}`}
-            value={feedURL}
-            onChange={(e) => setFeedURL(e.target.value)}
-            className="font-mono text-xs h-8"
-          />
-        </div>
+      {isExpanded && (
+        <div className="border-t p-4 space-y-4">
+          <div className="space-y-1.5">
+            <Label htmlFor={`feed-${config.source}`} className="text-xs text-muted-foreground">Feed URL</Label>
+            <Input
+              id={`feed-${config.source}`}
+              value={feedURL}
+              onChange={(e) => handleFeedURLChange(e.target.value)}
+              className="font-mono text-xs h-8"
+            />
+          </div>
 
-        <div className="space-y-1.5">
-          <Label className="text-xs text-muted-foreground">
-            Parser Script
-            <span className="ml-1.5 text-muted-foreground/60">
-              — define <code className="text-xs bg-muted px-1 rounded">function parse(raw)</code>
-            </span>
-          </Label>
-          <div className="rounded-md overflow-hidden border">
-            <ScriptEditor value={script} onChange={setScript} height={320} />
+          <div className="space-y-1.5">
+            <Label className="text-xs text-muted-foreground">
+              Parser Script
+              <span className="ml-1.5 text-muted-foreground/60">
+                — define <code className="text-xs bg-muted px-1 rounded">function parse(raw)</code>
+              </span>
+            </Label>
+            <div className="rounded-md overflow-hidden border">
+              <ScriptEditor value={script} onChange={handleScriptChange} height={320} />
+            </div>
           </div>
         </div>
-      </div>
+      )}
     </div>
   )
 }
 
 function ScrapersPage() {
   const [configs, setConfigs] = useState<ScraperConfig[]>([])
+  const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [deleting, setDeleting] = useState(false)
+  const stateCache = useRef(new Map<string, CardState>())
+  const parentRef = useRef<HTMLDivElement>(null)
 
   const load = useCallback(() => {
     fetch(`${API_BASE}/api/v1/news/scrapers`)
@@ -203,25 +187,58 @@ function ScrapersPage() {
 
   useEffect(() => { load() }, [load])
 
-  // Merge: known sources first, then any extra sources from DB not in KNOWN_SOURCES
-  const allSources = useMemo<SourceDef[]>(() => {
-    const extras = configs
-      .filter((c) => !KNOWN_IDS.has(c.source))
-      .map((c) => ({
-        id: c.source,
-        label: c.source,
-        defaultFeedURL: c.feed_url,
-        template: RSS_TEMPLATE,
-      }))
-    return [...KNOWN_SOURCES, ...extras]
-  }, [configs])
-
-  function savedFor(id: string) {
-    return configs.find((c) => c.source === id)
+  function toggleExpanded(source: string) {
+    setExpanded((prev) => {
+      const next = new Set(prev)
+      if (next.has(source)) next.delete(source)
+      else next.add(source)
+      return next
+    })
   }
 
+  function toggleSelected(source: string, checked: boolean) {
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (checked) next.add(source)
+      else next.delete(source)
+      return next
+    })
+  }
+
+  async function deleteSelected() {
+    setDeleting(true)
+    try {
+      await Promise.all(
+        [...selected].map((source) =>
+          fetch(`${API_BASE}/api/v1/news/scrapers/${encodeURIComponent(source)}`, { method: 'DELETE' })
+        )
+      )
+      toast.success(`Deleted ${selected.size} scraper${selected.size !== 1 ? 's' : ''}`)
+      setSelected(new Set())
+      load()
+    } catch {
+      toast.error('Delete failed')
+    } finally {
+      setDeleting(false)
+    }
+  }
+
+  function getInitialState(config: ScraperConfig): CardState {
+    return stateCache.current.get(config.source) ?? {
+      feedURL: config.feed_url,
+      script: config.script || FALLBACK_SCRIPT,
+    }
+  }
+
+  const virtualizer = useVirtualizer({
+    count: configs.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: (i) => (expanded.has(configs[i]?.source ?? '') ? 492 : 57),
+    overscan: 3,
+  })
+
   return (
-    <div className="h-screen overflow-x-hidden overflow-y-auto bg-background text-foreground flex flex-col">
+    <div className="h-screen overflow-hidden bg-background text-foreground flex flex-col">
       <header className="sticky top-0 z-10 border-b bg-background/90 backdrop-blur-sm px-6 py-3 flex items-center gap-4 shrink-0">
         <h1 className="text-lg font-semibold tracking-tight">immaiwin</h1>
         <Separator orientation="vertical" className="h-5" />
@@ -235,21 +252,64 @@ function ScrapersPage() {
         </nav>
       </header>
 
-      <main className="max-w-4xl mx-auto w-full px-4 py-6 space-y-6">
-        <div className="flex items-start justify-between">
+      <div className="flex-1 overflow-hidden flex flex-col max-w-4xl mx-auto w-full px-4">
+        <div className="py-6 flex items-start justify-between shrink-0">
           <div>
             <h2 className="text-base font-semibold">News Scraper Config</h2>
             <p className="text-sm text-muted-foreground mt-0.5">
               Override feed URL and parser script per source. Leave script at default to use built-in parser.
             </p>
           </div>
-          <AddScraperDialog apiBase={API_BASE} onCreated={load} />
+          <div className="flex items-center gap-2">
+            {selected.size > 0 && (
+              <Button
+                size="sm"
+                variant="destructive"
+                onClick={deleteSelected}
+                disabled={deleting}
+                className="gap-1.5"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                {deleting ? 'Deleting…' : `Delete ${selected.size}`}
+              </Button>
+            )}
+            <AddScraperDialog apiBase={API_BASE} onCreated={load} />
+          </div>
         </div>
 
-        {allSources.map((source) => (
-          <ScraperCard key={source.id} source={source} saved={savedFor(source.id)} />
-        ))}
-      </main>
+        <div ref={parentRef} className="flex-1 overflow-y-auto pb-6">
+          <div style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
+            {virtualizer.getVirtualItems().map((vitem) => {
+              const config = configs[vitem.index]
+              return (
+                <div
+                  key={vitem.key}
+                  data-index={vitem.index}
+                  ref={virtualizer.measureElement}
+                  style={{
+                    position: 'absolute',
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    transform: `translateY(${vitem.start}px)`,
+                    paddingBottom: '1rem',
+                  }}
+                >
+                  <ScraperCard
+                    config={config}
+                    isExpanded={expanded.has(config.source)}
+                    isSelected={selected.has(config.source)}
+                    onToggle={() => toggleExpanded(config.source)}
+                    onSelectChange={(checked) => toggleSelected(config.source, !!checked)}
+                    initialState={getInitialState(config)}
+                    onStateChange={(s) => stateCache.current.set(config.source, s)}
+                  />
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      </div>
     </div>
   )
 }
