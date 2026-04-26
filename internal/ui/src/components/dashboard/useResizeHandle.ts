@@ -23,8 +23,8 @@ export function useResizeHandle(
       const dx = e.clientX - startRef.current.x
       const dy = e.clientY - startRef.current.y
       onResize(
-        Math.max(minWidth, startRef.current.w + dx),
-        Math.max(minHeight, startRef.current.h + dy),
+        Math.min(Math.max(minWidth, startRef.current.w + dx), window.innerWidth - 40),
+        Math.min(Math.max(minHeight, startRef.current.h + dy), window.innerHeight - 120),
       )
     },
     [onResize, minWidth, minHeight],

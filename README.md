@@ -80,7 +80,7 @@ To fully run the system, you need to start the API, the UI, and one or more work
 ```bash
 make api
 ```
-The API server will be available at `http://localhost:8080`.
+The API server will be available at `https://localhost:8080`.
 
 ### Start the UI (Development Mode)
 ```bash

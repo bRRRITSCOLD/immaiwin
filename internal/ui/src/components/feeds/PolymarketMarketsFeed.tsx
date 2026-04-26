@@ -92,7 +92,7 @@ function buildUrl(q: string, status: StatusFilter, sort: SortField, page: number
   return `${API_BASE}/api/v1/events?${params}`
 }
 
-export function MarketsFeed() {
+export function PolymarketMarketsFeed() {
   const [q, setQ] = useState('')
   const [inputValue, setInputValue] = useState('')
   const [status, setStatus] = useState<StatusFilter>('all')
@@ -196,7 +196,7 @@ export function MarketsFeed() {
   }, [pendingIds, allMarkets, watchlistData])
 
   return (
-    <div className="flex flex-col h-full gap-3">
+    <div className="flex flex-col flex-1 min-h-0 gap-3">
       {/* Search + filters */}
       <div className="flex gap-2 shrink-0 flex-wrap">
         <div className="relative flex-1 min-w-48">
