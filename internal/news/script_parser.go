@@ -5,6 +5,8 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"strings"
 	"time"
 
@@ -18,7 +20,11 @@ type ScriptParser struct {
 }
 
 func (p *ScriptParser) Parse(_ context.Context, in ParseInput) ([]ParsedArticle, error) {
-	vm, err := newScriptVM(p.script)
+	js, err := transpileTS(p.script)
+	if err != nil {
+		return nil, fmt.Errorf("transpile: %w", err)
+	}
+	vm, err := newScriptVM(js)
 	if err != nil {
 		return nil, fmt.Errorf("script compile: %w", err)
 	}
@@ -36,9 +42,13 @@ func (p *ScriptParser) Parse(_ context.Context, in ParseInput) ([]ParsedArticle,
 	return jsValueToArticles(result, in.Source)
 }
 
-// validateScript compiles the script and checks for a parse() function.
+// validateScript transpiles TS→JS then compiles in goja, checking for parse().
 func validateScript(script string) error {
-	vm, err := newScriptVM(script)
+	js, err := transpileTS(script)
+	if err != nil {
+		return err
+	}
+	vm, err := newScriptVM(js)
 	if err != nil {
 		return err
 	}
@@ -48,10 +58,14 @@ func validateScript(script string) error {
 	return nil
 }
 
-// newScriptVM creates a sandboxed goja VM with the script already executed.
-func newScriptVM(script string) (*goja.Runtime, error) {
-	vm := goja.New()
-
+// SetTransformBindings installs sync-only helpers into vm (no HTTP).
+// Used by both scraper scripts and workflow JS-transform nodes.
+//
+//   - $(html[, selector]) → jQuery-like Selection
+//   - parseRSS(xmlStr)    → []object
+//   - now()               → ISO-8601 UTC string
+//   - parseDate(str)      → ISO-8601 UTC string or ""
+func SetTransformBindings(vm *goja.Runtime) error {
 	// $(html) → Selection; $(html, selector) → Selection.Find(selector)
 	if err := vm.Set("$", func(call goja.FunctionCall) goja.Value {
 		html := call.Argument(0).String()
@@ -65,30 +79,70 @@ func newScriptVM(script string) (*goja.Runtime, error) {
 		}
 		return wrapSel(vm, sel)
 	}); err != nil {
-		return nil, fmt.Errorf("vm.Set $: %w", err)
+		return fmt.Errorf("vm.Set $: %w", err)
 	}
 
-	// parseRSS(xmlStr) → []object — parses generic RSS/Atom-style feed items
+	// parseRSS(xmlStr) → []object
 	if err := vm.Set("parseRSS", func(call goja.FunctionCall) goja.Value {
 		xmlStr := call.Argument(0).String()
 		items := parseGenericRSS(xmlStr)
 		return vm.ToValue(items)
 	}); err != nil {
-		return nil, fmt.Errorf("vm.Set parseRSS: %w", err)
+		return fmt.Errorf("vm.Set parseRSS: %w", err)
 	}
 
 	// now() → ISO-8601 UTC string
 	if err := vm.Set("now", func() string {
 		return time.Now().UTC().Format(time.RFC3339)
 	}); err != nil {
-		return nil, fmt.Errorf("vm.Set now: %w", err)
+		return fmt.Errorf("vm.Set now: %w", err)
 	}
 
 	// parseDate(str) → ISO-8601 UTC string or ""
 	if err := vm.Set("parseDate", func(call goja.FunctionCall) goja.Value {
 		return vm.ToValue(tryParseDate(call.Argument(0).String()))
 	}); err != nil {
-		return nil, fmt.Errorf("vm.Set parseDate: %w", err)
+		return fmt.Errorf("vm.Set parseDate: %w", err)
+	}
+
+	return nil
+}
+
+// newScriptVM creates a sandboxed goja VM with the script already executed.
+// Includes all sync helpers plus httpGet for scraper scripts.
+func newScriptVM(script string) (*goja.Runtime, error) {
+	vm := goja.New()
+
+	if err := SetTransformBindings(vm); err != nil {
+		return nil, err
+	}
+
+	// httpGet(url) → {ok: bool, status: int, body: string}
+	// Each call has a 15-second timeout to prevent hanging on slow/blocked URLs.
+	httpClient := &http.Client{Timeout: 15 * time.Second}
+	if err := vm.Set("httpGet", func(call goja.FunctionCall) goja.Value {
+		urlStr := call.Argument(0).String()
+		obj := vm.NewObject()
+		_ = obj.Set("ok", false)
+		_ = obj.Set("status", 0)
+		_ = obj.Set("body", "")
+		req, err := http.NewRequest(http.MethodGet, urlStr, nil)
+		if err != nil {
+			return obj
+		}
+		req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; immaiwin-scraper/1.0)")
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			return obj
+		}
+		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		_ = obj.Set("ok", resp.StatusCode >= 200 && resp.StatusCode < 300)
+		_ = obj.Set("status", resp.StatusCode)
+		_ = obj.Set("body", string(body))
+		return obj
+	}); err != nil {
+		return nil, fmt.Errorf("vm.Set httpGet: %w", err)
 	}
 
 	if _, err := vm.RunString(script); err != nil {

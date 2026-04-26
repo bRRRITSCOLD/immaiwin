@@ -9,6 +9,7 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as WorkflowsRouteImport } from './routes/workflows'
 import { Route as WatchlistRouteImport } from './routes/watchlist'
 import { Route as ScrapersRouteImport } from './routes/scrapers'
 import { Route as OptionsRouteImport } from './routes/options'
@@ -18,6 +19,11 @@ import { Route as FuturesRouteImport } from './routes/futures'
 import { Route as DashboardRouteImport } from './routes/dashboard'
 import { Route as IndexRouteImport } from './routes/index'
 
+const WorkflowsRoute = WorkflowsRouteImport.update({
+  id: '/workflows',
+  path: '/workflows',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const WatchlistRoute = WatchlistRouteImport.update({
   id: '/watchlist',
   path: '/watchlist',
@@ -68,6 +74,7 @@ export interface FileRoutesByFullPath {
   '/options': typeof OptionsRoute
   '/scrapers': typeof ScrapersRoute
   '/watchlist': typeof WatchlistRoute
+  '/workflows': typeof WorkflowsRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -78,6 +85,7 @@ export interface FileRoutesByTo {
   '/options': typeof OptionsRoute
   '/scrapers': typeof ScrapersRoute
   '/watchlist': typeof WatchlistRoute
+  '/workflows': typeof WorkflowsRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -89,6 +97,7 @@ export interface FileRoutesById {
   '/options': typeof OptionsRoute
   '/scrapers': typeof ScrapersRoute
   '/watchlist': typeof WatchlistRoute
+  '/workflows': typeof WorkflowsRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -101,6 +110,7 @@ export interface FileRouteTypes {
     | '/options'
     | '/scrapers'
     | '/watchlist'
+    | '/workflows'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -111,6 +121,7 @@ export interface FileRouteTypes {
     | '/options'
     | '/scrapers'
     | '/watchlist'
+    | '/workflows'
   id:
     | '__root__'
     | '/'
@@ -121,6 +132,7 @@ export interface FileRouteTypes {
     | '/options'
     | '/scrapers'
     | '/watchlist'
+    | '/workflows'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -132,10 +144,18 @@ export interface RootRouteChildren {
   OptionsRoute: typeof OptionsRoute
   ScrapersRoute: typeof ScrapersRoute
   WatchlistRoute: typeof WatchlistRoute
+  WorkflowsRoute: typeof WorkflowsRoute
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/workflows': {
+      id: '/workflows'
+      path: '/workflows'
+      fullPath: '/workflows'
+      preLoaderRoute: typeof WorkflowsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/watchlist': {
       id: '/watchlist'
       path: '/watchlist'
@@ -204,6 +224,7 @@ const rootRouteChildren: RootRouteChildren = {
   OptionsRoute: OptionsRoute,
   ScrapersRoute: ScrapersRoute,
   WatchlistRoute: WatchlistRoute,
+  WorkflowsRoute: WorkflowsRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

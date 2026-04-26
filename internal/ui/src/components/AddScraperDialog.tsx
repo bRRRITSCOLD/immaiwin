@@ -19,32 +19,38 @@ import { ScriptEditor } from '~/components/ScriptEditor'
 // ── templates ────────────────────────────────────────────────────────────────
 
 const RSS_TEMPLATE = `// parse(raw) receives raw RSS/XML string.
-// Helpers: parseRSS(xmlStr), now(), parseDate(str), $(html)
-function parse(raw) {
-  var items = parseRSS(raw)
-  return items.map(function(item) {
-    return {
-      url: item.link || item.guid || '',
-      title: item.title || '',
-      body: item.description || '',
-      scraped_at: item.pubDate ? parseDate(item.pubDate) : now()
-    }
-  })
+// TypeScript is supported — types are stripped before execution in goja.
+function parse(raw: string): Article[] {
+  const items = parseRSS(raw)
+  return items.map((item) => ({
+    url: item.link || item.guid || '',
+    title: item.title || '',
+    body: item.description || '',
+    scraped_at: item.pubDate ? parseDate(item.pubDate) : now(),
+  }))
 }`
 
 const HTML_TEMPLATE = `// parse(raw) receives raw HTML string.
-// Helpers: $(html), now(), parseRSS(xmlStr), parseDate(str)
-function parse(raw) {
-  var articles = []
-  $(raw).find('article').each(function(i, el) {
-    var title = el.find('h2, h3').first().text().trim()
+// TypeScript is supported — types are stripped before execution in goja.
+// httpGet(url) fetches a URL synchronously → {ok, status, body}
+function parse(raw: string): Article[] {
+  const articles: Article[] = []
+  $(raw).find('article').each((i, el) => {
+    const title = el.find('h2, h3').first().text().trim()
     if (!title) return
-    var a = el.find('a').first()
-    var link = a.length ? (a.attr('href') || '') : ''
+    const a = el.find('a').first()
+    let link = a.length ? (a.attr('href') ?? '') : ''
     if (!link) return
-    if (link.indexOf('/') === 0) link = 'https://example.com' + link
-    if (link.indexOf('http') !== 0) return
-    articles.push({ url: link, title: title, scraped_at: now() })
+    if (link.startsWith('/')) link = 'https://example.com' + link
+    if (!link.startsWith('http')) return
+
+    let body = ''
+    const res = httpGet(link)
+    if (res.ok) {
+      body = $(res.body).find('article').first().text().trim()
+    }
+
+    articles.push({ url: link, title, body, scraped_at: now() })
   })
   return articles
 }`

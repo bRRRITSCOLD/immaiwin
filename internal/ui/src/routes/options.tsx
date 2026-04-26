@@ -19,6 +19,7 @@ function OptionsPage() {
           <Link to="/futures" className="text-muted-foreground hover:text-foreground transition-colors">Futures</Link>
           <Link to="/dashboard" className="text-muted-foreground hover:text-foreground transition-colors">Dashboard</Link>
           <Link to="/scrapers" className="text-muted-foreground hover:text-foreground transition-colors">Scrapers</Link>
+          <Link to="/workflows" className="text-muted-foreground hover:text-foreground transition-colors">Workflows</Link>
         </nav>
       </header>
       <main className="max-w-3xl mx-auto w-full px-4 py-6 flex-1 min-h-0">

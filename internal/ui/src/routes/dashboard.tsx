@@ -45,6 +45,7 @@ function DashboardPage() {
             <Link to="/futures" className="text-muted-foreground hover:text-foreground transition-colors">Futures</Link>
             <Link to="/dashboard" className="text-foreground font-medium">Dashboard</Link>
             <Link to="/scrapers" className="text-muted-foreground hover:text-foreground transition-colors">Scrapers</Link>
+          <Link to="/workflows" className="text-muted-foreground hover:text-foreground transition-colors">Workflows</Link>
           </nav>
         </div>
         {/* Feed visibility toggles */}

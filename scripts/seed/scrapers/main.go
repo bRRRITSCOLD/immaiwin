@@ -1,9 +1,8 @@
 //go:build ignore
 
 // Seed default scraper configs into MongoDB.
-// Inserts feed_url + default JS parser script for each known source.
-// Safe to re-run: only updates feed_url on existing docs; never overwrites a
-// custom script a user has already saved.
+// Upserts feed_url + default JS parser script for each known source.
+// Re-running WILL overwrite existing scripts with the seeded defaults.
 //
 // Usage:
 //   go run ./scripts/seed/scrapers/main.go
@@ -86,11 +85,10 @@ function parse(raw) {
   return out
 }`
 
-// aljazeeraScript mirrors DefaultAljazeeraParser in Go.
-// Note: each(fn) callback signature is fn(index, element) — element is the second arg.
-const aljazeeraScript = `// Al Jazeera HTML parser — mirrors built-in Go default.
-// Extracts h3 article links from homepage HTML.
-// Note: body text is NOT extracted here; the worker fetches each article page separately.
+// aljazeeraScript extracts article links from the Al Jazeera homepage,
+// then fetches each article page via httpGet() to enrich with body text.
+const aljazeeraScript = `// Al Jazeera HTML parser — extracts titles/links from homepage, fetches body per article.
+// each(fn) callback: fn(index, element)
 function parse(raw) {
   var articles = []
   $(raw).find('h3').each(function(i, el) {
@@ -101,7 +99,26 @@ function parse(raw) {
     if (!link) return
     if (link.indexOf('/') === 0) link = 'https://www.aljazeera.com' + link
     if (link.indexOf('http') !== 0) return
-    articles.push({ url: link, title: title, scraped_at: now() })
+
+    var body = ''
+    var res = httpGet(link)
+    if (res.ok) {
+      var selectors = [
+        '[data-testid="ArticleBodyParagraph"]',
+        '.wysiwyg--all-content',
+        '.article-p-wrapper',
+        'article',
+      ]
+      for (var s = 0; s < selectors.length; s++) {
+        var container = $(res.body).find(selectors[s]).first()
+        if (container.length > 0) {
+          body = container.text().trim()
+          break
+        }
+      }
+    }
+
+    articles.push({ url: link, title: title, body: body, scraped_at: now() })
   })
   return articles
 }`
@@ -148,20 +165,15 @@ func main() {
 	col := mc.DB().Collection("news_scraper_configs")
 
 	for _, seed := range seeds {
-		// $set: always update feed_url
-		// $setOnInsert: only set source + script when inserting a new doc
-		//   → existing docs with custom scripts are NOT overwritten
 		_, err := col.UpdateOne(
 			ctx,
 			bson.M{"source": seed.Source},
 			bson.M{
 				"$set": bson.M{
+					"source":     seed.Source,
 					"feed_url":   seed.FeedURL,
+					"script":     seed.Script,
 					"updated_at": time.Now().UTC(),
-				},
-				"$setOnInsert": bson.M{
-					"source": seed.Source,
-					"script": seed.Script,
 				},
 			},
 			options.UpdateOne().SetUpsert(true),

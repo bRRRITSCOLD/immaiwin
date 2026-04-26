@@ -42,6 +42,7 @@
     "@tanstack/react-router": "^1.120.0",
     "@tanstack/react-start": "^1.120.0",
     "@tanstack/react-virtual": "^3.13.24",
+    "@xyflow/react": "^12.10.2",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cmdk": "^1.0.0",
@@ -50,7 +51,8 @@
     "react-dom": "^19.1.0",
     "sonner": "^1.7.0",
     "tailwind-merge": "^2.5.4",
-    "zod": "^4.3.6"
+    "zod": "^4.3.6",
+    "zustand": "^5.0.12"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.1.0",
