@@ -11,6 +11,7 @@ import (
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/workflow"
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
+	"go.mongodb.org/mongo-driver/v2/mongo"
 )
 
 type Server struct {
@@ -42,6 +43,8 @@ func NewServer(
 	sc handler.ScraperConfigStore,
 	wfStore handler.WorkflowStore,
 	wfExec *workflow.WorkflowExecutor,
+	connStore handler.ConnectionStore,
+	db *mongo.Database,
 ) *Server {
 	b := rediss.NewBroadcaster(rc, rediss.TradesChannel)
 	nb := rediss.NewBroadcaster(rc, rediss.NewsChannel)
@@ -77,6 +80,18 @@ func NewServer(
 	r.PUT("/api/v1/workflows/:id", handler.UpsertWorkflow(wfStore))
 	r.DELETE("/api/v1/workflows/:id", handler.DeleteWorkflow(wfStore))
 	r.POST("/api/v1/workflows/:id/run", handler.RunWorkflow(wfStore, wfExec))
+	r.GET("/api/v1/workflows/:id/ws-preview", handler.PreviewWorkflowWS(wfStore, connStore, db))
+
+	// Connections
+	r.GET("/api/v1/connections", handler.ListConnections(connStore))
+	r.PUT("/api/v1/connections/:id", handler.UpsertConnection(connStore))
+	r.DELETE("/api/v1/connections/:id", handler.DeleteConnection(connStore))
+	r.POST("/api/v1/connections/test", handler.TestConnection(db))
+
+	// Connection OAuth (generic)
+	r.GET("/auth/connections/:id/callback", handler.ConnectionOAuthCallback(connStore, db))
+	r.GET("/api/v1/connections/:id/oauth/url", handler.ConnectionOAuthURL(connStore, db, cfg.BaseURL))
+	r.GET("/api/v1/connections/:id/oauth/status", handler.ConnectionOAuthStatus(connStore, db))
 
 	// Polymarket markets
 	r.GET("/api/v1/markets", handler.GetMarkets(pm))

@@ -67,6 +67,21 @@ declare interface HttpResponse {
  * Returns {ok, status, body}. Never throws — check ok/status for errors.
  */
 declare function httpGet(url: string): HttpResponse;
+
+// Workflow JS Script globals
+/** Output of the previous node in the workflow pipeline. */
+declare var input: any;
+
+/** Workflow-level parameters (key-value strings set in the Params panel). */
+declare var params: Record<string, string>;
+
+/**
+ * Named step context. Access input/output/item of any named step:
+ *   context.stepName.input  — what the step received
+ *   context.stepName.output — what the step produced
+ *   context.stepName.item   — current iteration element (for_each body only)
+ */
+declare var context: Record<string, { input: any; output: any; item?: any }>;
 `
 
 // Snippet completions shown in addition to the IntelliSense from GOJA_LIB.
@@ -128,9 +143,19 @@ interface Props {
   onChange: (v: string) => void
   height?: number | string
   language?: 'typescript' | 'javascript'
+  options?: Record<string, unknown>
 }
 
-export function ScriptEditor({ value, onChange, height = 360, language = 'typescript' }: Props) {
+const defaultOptions = {
+  minimap: { enabled: false },
+  fontSize: 13,
+  wordWrap: 'on' as const,
+  scrollBeyondLastLine: false,
+  tabSize: 2,
+  automaticLayout: true,
+}
+
+export function ScriptEditor({ value, onChange, height = 360, language = 'typescript', options }: Props) {
   return (
     <Editor
       height={height}
@@ -139,14 +164,7 @@ export function ScriptEditor({ value, onChange, height = 360, language = 'typesc
       value={value}
       onChange={(v) => onChange(v ?? '')}
       beforeMount={handleBeforeMount}
-      options={{
-        minimap: { enabled: false },
-        fontSize: 13,
-        wordWrap: 'on',
-        scrollBeyondLastLine: false,
-        tabSize: 2,
-        automaticLayout: true,
-      }}
+      options={{ ...defaultOptions, ...options }}
     />
   )
 }

@@ -5,17 +5,19 @@ import (
 )
 
 type Config struct {
-	API     APIConfig     `envPrefix:"API_"`
-	UI      UIConfig      `envPrefix:"UI_"`
-	Worker  WorkerConfig  `envPrefix:"WORKER_"`
-	Redis   RedisConfig   `envPrefix:"REDIS_"`
-	MongoDB MongoDBConfig `envPrefix:"MONGODB_"`
-	Schwab  SchwabConfig  `envPrefix:"SCHWAB_"`
+	API           APIConfig     `envPrefix:"API_"`
+	UI            UIConfig      `envPrefix:"UI_"`
+	Worker        WorkerConfig  `envPrefix:"WORKER_"`
+	Redis         RedisConfig   `envPrefix:"REDIS_"`
+	MongoDB       MongoDBConfig `envPrefix:"MONGODB_"`
+	Schwab        SchwabConfig  `envPrefix:"SCHWAB_"`
+	EncryptionKey string        `env:"ENCRYPTION_KEY" envDefault:""`
 }
 
 type APIConfig struct {
 	Host        string `env:"HOST"     envDefault:"0.0.0.0"`
 	Port        int    `env:"PORT"     envDefault:"8080"`
+	BaseURL     string `env:"BASE_URL" envDefault:"https://127.0.0.1:8080"`
 	TLSCertFile string `env:"TLS_CERT" envDefault:""`
 	TLSKeyFile  string `env:"TLS_KEY"  envDefault:""`
 }

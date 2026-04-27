@@ -25,6 +25,9 @@ func main() {
 	wr.RegisterWorker(worker.NewsScraperWorker)
 	wr.RegisterWorker(worker.SchwabWatcherWorker)
 	wr.RegisterWorker(worker.SchwabFuturesWatcherWorker)
+	wr.RegisterWorker(worker.WorkflowCronWorker)
+	wr.RegisterWorker(worker.WorkflowRabbitMQWorker)
+	wr.RegisterWorker(worker.WorkflowWebSocketClientWorker)
 
 	if *list {
 		slog.Info("available workers", "names", strings.Join(wr.RegisteredWorkerNames(), ", "))
