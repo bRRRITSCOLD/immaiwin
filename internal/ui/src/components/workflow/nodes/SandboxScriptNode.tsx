@@ -1,17 +1,12 @@
 import { NodeResizer, type NodeProps, useReactFlow } from '@xyflow/react'
-import { Bug, Container, Maximize2 } from 'lucide-react'
+import { Bug, Container, HelpCircle, Maximize2, Package } from 'lucide-react'
 import { useState } from 'react'
-import { ScriptEditor } from '~/components/ScriptEditor'
+import { Link } from '@tanstack/react-router'
+import { Tooltip, TooltipTrigger, TooltipContent } from '~/components/ui/tooltip'
 import { StepNameInput } from './StepNameInput'
 import { DynamicHandles } from './DynamicHandles'
 import { NodeDebugPanel, BreakpointMarker } from '../RunResultsContext'
-import { SandboxDebugDialog } from '../SandboxDebugDialog'
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-} from '~/components/ui/dialog'
+import { SandboxDebugDialog, type DialogMode } from '../SandboxDebugDialog'
 
 const LANGUAGES = [
   { value: 'javascript', label: 'JavaScript' },
@@ -22,14 +17,6 @@ const LANGUAGES = [
 ] as const
 
 type SandboxLanguage = (typeof LANGUAGES)[number]['value']
-
-const monacoLanguageMap: Record<SandboxLanguage, string> = {
-  javascript: 'javascript',
-  python: 'python',
-  golang: 'go',
-  rust: 'rust',
-  php: 'php',
-}
 
 const borderColorMap: Record<SandboxLanguage, string> = {
   javascript: 'border-cyan-500',
@@ -71,6 +58,22 @@ output(json!({"hello": "world", "input": input}));`,
 output(["hello" => "world", "input" => $input]);`,
 }
 
+const defaultImageMap: Record<SandboxLanguage, string> = {
+  javascript: 'immaiwin/sandbox-node:20',
+  python: 'immaiwin/sandbox-python:3.12',
+  golang: 'immaiwin/sandbox-go:1.22',
+  rust: 'immaiwin/sandbox-rust:1.86',
+  php: 'immaiwin/sandbox-php:8.3',
+}
+
+const packagesPlaceholder: Record<SandboxLanguage, string> = {
+  javascript: 'e.g. cheerio, axios',
+  python: 'e.g. requests, beautifulsoup4',
+  golang: 'e.g. github.com/go-resty/resty/v2',
+  rust: 'e.g. serde, reqwest',
+  php: 'e.g. guzzlehttp/guzzle',
+}
+
 const templateValues = new Set(Object.values(helloWorldTemplates))
 
 export function SandboxScriptNode({ id, data, selected }: NodeProps) {
@@ -81,9 +84,16 @@ export function SandboxScriptNode({ id, data, selected }: NodeProps) {
   const memLimit = (data?.mem_limit as number) ?? 128
   const cpuLimit = (data?.cpu_limit as number) ?? 0.5
   const network = (data?.network as boolean) ?? false
-  const [open, setOpen] = useState(false)
-  const [debugOpen, setDebugOpen] = useState(false)
+  const customImage = (data?.custom_image as string) ?? ''
+  const packages = (data?.packages as string) ?? ''
+  const [dialogOpen, setDialogOpen] = useState(false)
+  const [dialogMode, setDialogMode] = useState<DialogMode>('run')
   const supportsDebug = language === 'javascript' || language === 'python'
+
+  function openDialog(mode: DialogMode) {
+    setDialogMode(mode)
+    setDialogOpen(true)
+  }
 
   const borderColor = borderColorMap[language] ?? 'border-cyan-500'
   const iconColor = iconColorMap[language] ?? 'text-cyan-500'
@@ -121,7 +131,7 @@ export function SandboxScriptNode({ id, data, selected }: NodeProps) {
           {supportsDebug && (
             <button
               className="nodrag text-muted-foreground hover:text-red-400 transition-colors"
-              onClick={() => setDebugOpen(true)}
+              onClick={() => openDialog('debug')}
               title="Debug"
             >
               <Bug className="h-3.5 w-3.5" />
@@ -130,7 +140,8 @@ export function SandboxScriptNode({ id, data, selected }: NodeProps) {
 
           <button
             className="nodrag text-muted-foreground hover:text-foreground transition-colors"
-            onClick={() => setOpen(true)}
+            onClick={() => openDialog('run')}
+            title="Open editor"
           >
             <Maximize2 className="h-3.5 w-3.5" />
           </button>
@@ -144,129 +155,128 @@ export function SandboxScriptNode({ id, data, selected }: NodeProps) {
           </p>
           <pre
             className="nodrag text-xs text-muted-foreground max-h-[72px] overflow-hidden leading-5 whitespace-pre-wrap cursor-pointer rounded bg-muted/30 px-2 py-1.5"
-            onClick={() => setOpen(true)}
+            onClick={() => openDialog('run')}
           >
             {script || <span className="italic opacity-60">click to edit script</span>}
           </pre>
         </div>
 
-        {/* Resource badges */}
-        <div className="px-3 pb-2 flex flex-wrap gap-1.5">
-          <span className="text-[9px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground">
-            {timeout}s timeout
-          </span>
-          <span className="text-[9px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground">
-            {memLimit}MB
-          </span>
-          <span className="text-[9px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground">
-            {cpuLimit} CPU
-          </span>
-          {network && (
-            <span className="text-[9px] px-1.5 py-0.5 rounded bg-orange-900/40 text-orange-300">
-              network
-            </span>
-          )}
+        {/* Resource controls */}
+        <div className="px-3 pb-2 flex flex-wrap items-center gap-x-2 gap-y-1">
+          <label className="nodrag flex items-center gap-1 text-[9px] text-muted-foreground">
+            Timeout
+            <input
+              type="number"
+              min={1}
+              max={300}
+              className="w-10 bg-muted border border-border rounded px-1 py-0.5 text-[9px] outline-none"
+              value={timeout}
+              onChange={(e) => updateNodeData(id, { timeout: Number(e.target.value) || 30 })}
+            />
+            <span>s</span>
+          </label>
+          <label className="nodrag flex items-center gap-1 text-[9px] text-muted-foreground">
+            Mem
+            <input
+              type="number"
+              min={16}
+              max={1024}
+              className="w-10 bg-muted border border-border rounded px-1 py-0.5 text-[9px] outline-none"
+              value={memLimit}
+              onChange={(e) => updateNodeData(id, { mem_limit: Number(e.target.value) || 128 })}
+            />
+            <span>MB</span>
+          </label>
+          <label className="nodrag flex items-center gap-1 text-[9px] text-muted-foreground">
+            CPU
+            <input
+              type="number"
+              min={0.1}
+              max={4}
+              step={0.1}
+              className="w-10 bg-muted border border-border rounded px-1 py-0.5 text-[9px] outline-none"
+              value={cpuLimit}
+              onChange={(e) => updateNodeData(id, { cpu_limit: Number(e.target.value) || 0.5 })}
+            />
+          </label>
+          <label className="nodrag flex items-center gap-1 text-[9px] text-muted-foreground cursor-pointer">
+            <input
+              type="checkbox"
+              checked={network}
+              onChange={(e) => updateNodeData(id, { network: e.target.checked })}
+              className="accent-cyan-500 h-2.5 w-2.5"
+            />
+            Network
+          </label>
         </div>
+
+        {/* Custom image */}
+        <div className="px-3 pb-2">
+          <label className="nodrag flex items-center gap-1 text-[9px] text-muted-foreground">
+            Image
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Link
+                  to="/docs/custom-images"
+                  target="_blank"
+                  className="nodrag inline-flex"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <HelpCircle className="h-2.5 w-2.5 text-muted-foreground hover:text-foreground transition-colors cursor-help" />
+                </Link>
+              </TooltipTrigger>
+              <TooltipContent side="top">
+                Click for docs &amp; examples
+              </TooltipContent>
+            </Tooltip>
+            <input
+              type="text"
+              className="flex-1 bg-muted border border-border rounded px-1.5 py-0.5 text-[9px] outline-none"
+              value={customImage}
+              onChange={(e) => updateNodeData(id, { custom_image: e.target.value })}
+              placeholder={defaultImageMap[language] ?? 'custom image tag'}
+            />
+          </label>
+        </div>
+
+        {/* Packages — auto-builds image with these installed */}
+        {!customImage && (
+          <div className="px-3 pb-2">
+            <label className="nodrag flex items-center gap-1 text-[9px] text-muted-foreground">
+              <Package className="h-2.5 w-2.5 shrink-0" />
+              Packages
+              <Tooltip>
+                <TooltipTrigger>
+                  <HelpCircle className="h-2.5 w-2.5 text-muted-foreground hover:text-foreground transition-colors cursor-help" />
+                </TooltipTrigger>
+                <TooltipContent side="top">
+                  Comma-separated. Auto-builds Docker image with these installed.
+                </TooltipContent>
+              </Tooltip>
+              <input
+                type="text"
+                className="flex-1 bg-muted border border-border rounded px-1.5 py-0.5 text-[9px] outline-none"
+                value={packages}
+                onChange={(e) => updateNodeData(id, { packages: e.target.value })}
+                placeholder={packagesPlaceholder[language] ?? 'comma-separated packages'}
+              />
+            </label>
+          </div>
+        )}
 
         <NodeDebugPanel id={id} />
       </div>
 
-      <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="max-w-5xl sm:max-w-5xl w-[95vw] h-[85vh] flex flex-col">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <Container className={`h-4 w-4 ${iconColor}`} />
-              Sandbox Script {data?.name ? `— ${data.name}` : ''}
-            </DialogTitle>
-          </DialogHeader>
-
-          {/* Controls row */}
-          <div className="flex flex-wrap items-center gap-3 text-xs">
-            <label className="flex items-center gap-1.5">
-              Language
-              <select
-                className="bg-muted border border-border rounded px-2 py-1 outline-none text-xs"
-                value={language}
-                onChange={(e) => handleLanguageChange(e.target.value)}
-              >
-                {LANGUAGES.map((l) => (
-                  <option key={l.value} value={l.value}>{l.label}</option>
-                ))}
-              </select>
-            </label>
-
-            <label className="flex items-center gap-1.5">
-              Timeout (s)
-              <input
-                type="number"
-                min={1}
-                max={300}
-                className="bg-muted border border-border rounded px-2 py-1 w-16 outline-none text-xs"
-                value={timeout}
-                onChange={(e) => updateNodeData(id, { timeout: Number(e.target.value) || 30 })}
-              />
-            </label>
-
-            <label className="flex items-center gap-1.5">
-              Memory (MB)
-              <input
-                type="number"
-                min={16}
-                max={1024}
-                className="bg-muted border border-border rounded px-2 py-1 w-16 outline-none text-xs"
-                value={memLimit}
-                onChange={(e) => updateNodeData(id, { mem_limit: Number(e.target.value) || 128 })}
-              />
-            </label>
-
-            <label className="flex items-center gap-1.5">
-              CPU
-              <input
-                type="number"
-                min={0.1}
-                max={4}
-                step={0.1}
-                className="bg-muted border border-border rounded px-2 py-1 w-16 outline-none text-xs"
-                value={cpuLimit}
-                onChange={(e) => updateNodeData(id, { cpu_limit: Number(e.target.value) || 0.5 })}
-              />
-            </label>
-
-            <label className="flex items-center gap-1.5 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={network}
-                onChange={(e) => updateNodeData(id, { network: e.target.checked })}
-                className="accent-cyan-500"
-              />
-              Network
-            </label>
-          </div>
-
-          <p className="text-xs text-muted-foreground">
-            Globals: <code className="text-xs">input</code> · <code className="text-xs">context</code> · <code className="text-xs">params</code> — call <code className="text-xs">output(val)</code> for result
-          </p>
-
-          <div className="flex-1 min-h-0">
-            <ScriptEditor
-              height="100%"
-              language={monacoLanguageMap[language]}
-              value={script}
-              onChange={(v) => updateNodeData(id, { script: v })}
-              options={{ fontSize: 14 }}
-            />
-          </div>
-        </DialogContent>
-      </Dialog>
-      {supportsDebug && (
-        <SandboxDebugDialog
-          open={debugOpen}
-          onOpenChange={setDebugOpen}
-          language={language}
-          code={script}
-          onCodeChange={(v) => updateNodeData(id, { script: v })}
-        />
-      )}
+      <SandboxDebugDialog
+        open={dialogOpen}
+        onOpenChange={setDialogOpen}
+        language={language}
+        code={script}
+        onCodeChange={(v) => updateNodeData(id, { script: v })}
+        initialMode={dialogMode}
+        customImage={customImage || undefined}
+        packages={packages || undefined}
+      />
       <DynamicHandles nodeId={id} nodeType="sandbox_script" data={data as Record<string, unknown>} />
     </div>
   )

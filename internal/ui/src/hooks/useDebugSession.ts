@@ -7,6 +7,7 @@ export interface DebugVariable {
   value: string
   type?: string
   variablesReference?: number
+  objectId?: string
 }
 
 export interface DebugStackFrame {
@@ -33,6 +34,7 @@ interface WsMessage {
   stream?: string
   data?: string
   error?: string
+  objectId?: string
 }
 
 export interface DebugSession {
@@ -42,15 +44,19 @@ export interface DebugSession {
   variables: DebugVariable[]
   callStack: DebugStackFrame[]
   output: DebugOutputLine[]
+  result: string | null
   error: string | null
 
-  start(language: string, code: string, input: unknown, breakpoints: { line: number; condition?: string }[]): void
+  start(language: string, code: string, input: unknown, context: Record<string, unknown>, breakpoints: { line: number; condition?: string }[], image?: string, packages?: string): void
   setBreakpoints(breakpoints: { line: number; condition?: string }[]): void
   continue_(): void
   stepOver(): void
   stepIn(): void
   stepOut(): void
   evaluate(expression: string): void
+  expandedVars: Record<string, DebugVariable[]>
+  expandVar(objectId: string): void
+  collapseVar(objectId: string): void
   disconnect(): void
 }
 
@@ -61,7 +67,9 @@ export function useDebugSession(): DebugSession {
   const [variables, setVariables] = useState<DebugVariable[]>([])
   const [callStack, setCallStack] = useState<DebugStackFrame[]>([])
   const [output, setOutput] = useState<DebugOutputLine[]>([])
+  const [result, setResult] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [expandedVars, setExpandedVars] = useState<Record<string, DebugVariable[]>>({})
   const wsRef = useRef<WebSocket | null>(null)
 
   const send = useCallback((msg: Record<string, unknown>) => {
@@ -85,9 +93,19 @@ export function useDebugSession(): DebugSession {
 
       case 'stopped':
         setStatus('paused')
-        if (msg.line) setCurrentLine(msg.line)
+        setCurrentLine(msg.line || null) // null when paused outside user code (e.g. runner.js debugger;)
         if (msg.variables) setVariables(msg.variables)
         if (msg.callStack) setCallStack(msg.callStack)
+        setExpandedVars({}) // clear expansions on new pause
+        // Show exception in console + error bar when paused on exception
+        if (msg.reason === 'exception' && msg.data) {
+          setError(msg.data)
+          setOutput(prev => [...prev, {
+            stream: 'stderr',
+            data: `Exception: ${msg.data}\n`,
+            timestamp: Date.now(),
+          }])
+        }
         break
 
       case 'variables':
@@ -105,6 +123,16 @@ export function useDebugSession(): DebugSession {
           data: msg.data ?? '',
           timestamp: Date.now(),
         }])
+        break
+
+      case 'result':
+        setResult(msg.data ?? null)
+        break
+
+      case 'expand':
+        if (msg.objectId && msg.variables) {
+          setExpandedVars(prev => ({ ...prev, [msg.objectId!]: msg.variables! }))
+        }
         break
 
       case 'evaluate':
@@ -129,7 +157,10 @@ export function useDebugSession(): DebugSession {
     language: string,
     code: string,
     input: unknown,
+    context: Record<string, unknown>,
     breakpoints: { line: number; condition?: string }[],
+    image?: string,
+    packages?: string,
   ) => {
     // Reset state
     setStatus('connecting')
@@ -138,6 +169,8 @@ export function useDebugSession(): DebugSession {
     setVariables([])
     setCallStack([])
     setOutput([])
+    setResult(null)
+    setExpandedVars({})
     setError(null)
 
     // Close existing WS
@@ -157,7 +190,10 @@ export function useDebugSession(): DebugSession {
         language,
         code,
         input,
+        context,
         breakpoints,
+        ...(image ? { image } : {}),
+        ...(packages ? { packages } : {}),
       }))
     }
 
@@ -204,6 +240,18 @@ export function useDebugSession(): DebugSession {
     send({ type: 'evaluate', expression })
   }, [send])
 
+  const expandVar = useCallback((objectId: string) => {
+    send({ type: 'expand', objectId })
+  }, [send])
+
+  const collapseVar = useCallback((objectId: string) => {
+    setExpandedVars(prev => {
+      const next = { ...prev }
+      delete next[objectId]
+      return next
+    })
+  }, [])
+
   const disconnect = useCallback(() => {
     send({ type: 'disconnect' })
     if (wsRef.current) {
@@ -220,7 +268,11 @@ export function useDebugSession(): DebugSession {
     variables,
     callStack,
     output,
+    result,
     error,
+    expandedVars,
+    expandVar,
+    collapseVar,
     start,
     setBreakpoints,
     continue_,

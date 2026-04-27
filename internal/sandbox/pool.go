@@ -139,6 +139,7 @@ func (p *Pool) createWarm(ctx context.Context, lang Language) (string, error) {
 
 	cfg := &container.Config{
 		Image:       img,
+		Labels:      map[string]string{sandboxLabel: "true"},
 		AttachStdin: true,
 		OpenStdin:   true,
 		StdinOnce:   true,

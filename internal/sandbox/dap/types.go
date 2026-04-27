@@ -54,6 +54,11 @@ type LaunchRequestArgs struct {
 	JustMyCode bool `json:"justMyCode,omitempty"`
 }
 
+type AttachRequestArgs struct {
+	JustMyCode     bool `json:"justMyCode,omitempty"`
+	RedirectOutput bool `json:"redirectOutput,omitempty"`
+}
+
 type SetBreakpointsArgs struct {
 	Source      Source             `json:"source"`
 	Breakpoints []SourceBreakpoint `json:"breakpoints"`
@@ -165,6 +170,7 @@ type Variable struct {
 	Value              string `json:"value"`
 	Type               string `json:"type,omitempty"`
 	VariablesReference int    `json:"variablesReference,omitempty"`
+	ObjectId           string `json:"objectId,omitempty"` // CDP object reference for expanding
 }
 
 type EvaluateResponseBody struct {

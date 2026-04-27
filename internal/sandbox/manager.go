@@ -12,17 +12,22 @@ import (
 	"time"
 
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/docker/go-connections/nat"
 )
 
+// sandboxLabel is applied to all sandbox containers for orphan cleanup.
+const sandboxLabel = "immaiwin.sandbox"
+
 // Manager creates and runs sandbox containers via the Docker daemon.
 type Manager struct {
 	cli           client.APIClient
 	runtime       string // OCI runtime override (e.g. "runsc" for gVisor); empty = default
 	pool          *Pool
+	builder       *ImageBuilder
 	portAlloc     *PortAllocator
 	debugMu       sync.Mutex
 	debugSessions map[string]*DebugSession
@@ -58,6 +63,7 @@ func NewManager(opts ...ManagerOption) (*Manager, error) {
 
 	m := &Manager{
 		cli:           cli,
+		builder:       NewImageBuilder(cli),
 		debugSessions: make(map[string]*DebugSession),
 	}
 	for _, o := range opts {
@@ -66,9 +72,75 @@ func NewManager(opts ...ManagerOption) (*Manager, error) {
 	return m, nil
 }
 
+// DockerClient exposes the underlying Docker client (e.g. for pool creation).
+func (m *Manager) DockerClient() client.APIClient {
+	return m.cli
+}
+
+// SetPool attaches a warm container pool post-construction.
+func (m *Manager) SetPool(p *Pool) {
+	m.pool = p
+}
+
 // Close releases the Docker client.
 func (m *Manager) Close() error {
 	return m.cli.Close()
+}
+
+// resolveImage determines the final image tag for a run.
+// Priority: custom_image > packages (auto-build) > default base.
+func (m *Manager) resolveImage(ctx context.Context, lang Language, customImage string, packages []string, debug bool) (string, error) {
+	// 1. Custom image wins
+	if customImage != "" {
+		return customImage, nil
+	}
+
+	// 2. Determine base image
+	var base string
+	if debug {
+		base = DebugImageForLanguage(lang)
+	} else {
+		base = ImageForLanguage(lang)
+	}
+	if base == "" {
+		return "", fmt.Errorf("sandbox: unsupported language: %s", lang)
+	}
+
+	// 3. If packages specified, auto-build on top of base
+	if len(packages) > 0 {
+		return m.builder.BuildOrReuse(ctx, lang, base, packages, debug)
+	}
+
+	return base, nil
+}
+
+// CleanupOrphans removes any sandbox containers left over from a previous
+// crashed session. Call once at startup before pool.Warm().
+func (m *Manager) CleanupOrphans(ctx context.Context) {
+	f := filters.NewArgs(filters.Arg("label", sandboxLabel+"=true"))
+	containers, err := m.cli.ContainerList(ctx, container.ListOptions{
+		All:     true,
+		Filters: f,
+	})
+	if err != nil {
+		slog.Warn("sandbox: orphan cleanup list failed", "err", err)
+		return
+	}
+	if len(containers) == 0 {
+		return
+	}
+	slog.Info("sandbox: cleaning up orphan containers", "count", len(containers))
+	for _, c := range containers {
+		rmCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		_ = m.cli.ContainerRemove(rmCtx, c.ID, container.RemoveOptions{Force: true})
+		cancel()
+		slog.Info("sandbox: removed orphan", "container", c.ID[:12])
+	}
+}
+
+// sandboxLabels returns the label map for sandbox containers.
+func sandboxLabels() map[string]string {
+	return map[string]string{sandboxLabel: "true"}
 }
 
 // Run executes user code in an isolated container and returns the result.
@@ -90,14 +162,16 @@ func (m *Manager) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 		req.CPULimit = DefaultCPULimit
 	}
 
-	img := ImageForLanguage(req.Language)
-	if img == "" {
-		return nil, fmt.Errorf("sandbox: unsupported language: %s", req.Language)
+	img, err := m.resolveImage(ctx, req.Language, req.Image, req.Packages, false)
+	if err != nil {
+		return nil, err
 	}
 
-	// Ensure image exists locally
-	if err := m.ensureImage(ctx, img); err != nil {
-		return nil, err
+	// Ensure image exists locally (for custom/base images; auto-built already local)
+	if len(req.Packages) == 0 {
+		if err := m.ensureImage(ctx, img); err != nil {
+			return nil, err
+		}
 	}
 
 	// Marshal the payload that the entrypoint reads from stdin.
@@ -112,47 +186,69 @@ func (m *Manager) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 		return nil, fmt.Errorf("sandbox: marshal payload: %w", err)
 	}
 
-	// Container config
-	cfg := &container.Config{
-		Image:       img,
-		AttachStdin: true,
-		OpenStdin:   true,
-		StdinOnce:   true,
-		Tty:         false,
-	}
-
-	// Host config — resource limits + isolation
-	nanoCPUs := int64(req.CPULimit * 1e9)
-	hostCfg := &container.HostConfig{
-		Resources: container.Resources{
-			Memory:   req.MemLimit,
-			NanoCPUs: nanoCPUs,
-			PidsLimit: intPtr(256), // Go/Rust compilers need many child processes
-		},
-		NetworkMode: "none",
-		AutoRemove:  false,
-		ReadonlyRootfs: false, // entrypoint may need /tmp
-	}
-
-	if req.Network {
-		hostCfg.NetworkMode = "bridge"
-	}
-	if m.runtime != "" {
-		hostCfg.Runtime = m.runtime
-	}
-
 	start := time.Now()
 
-	// Create container
-	resp, err := m.cli.ContainerCreate(ctx, cfg, hostCfg, nil, nil, "")
-	if err != nil {
-		return nil, fmt.Errorf("sandbox: create container: %w", err)
+	// Try warm pool first — only when limits match defaults, no network, no custom image, no packages
+	var containerID string
+	var fromPool bool
+
+	if m.pool != nil && req.Image == "" && len(req.Packages) == 0 && !req.Network &&
+		req.MemLimit == DefaultMemLimit &&
+		req.CPULimit == DefaultCPULimit {
+		if id := m.pool.Acquire(req.Language); id != "" {
+			containerID = id
+			fromPool = true
+			slog.Info("sandbox: pool acquired", "container", id[:12], "language", req.Language)
+		}
 	}
-	containerID := resp.ID
+
+	if !fromPool {
+		slog.Info("sandbox: cold start (no pool)", "language", req.Language)
+		// Container config
+		cfg := &container.Config{
+			Image:       img,
+			Labels:      sandboxLabels(),
+			AttachStdin: true,
+			OpenStdin:   true,
+			StdinOnce:   true,
+			Tty:         false,
+		}
+
+		// Host config — resource limits + isolation
+		nanoCPUs := int64(req.CPULimit * 1e9)
+		hostCfg := &container.HostConfig{
+			Resources: container.Resources{
+				Memory:    req.MemLimit,
+				NanoCPUs:  nanoCPUs,
+				PidsLimit: intPtr(256), // Go/Rust compilers need many child processes
+			},
+			NetworkMode:    "none",
+			AutoRemove:     false,
+			ReadonlyRootfs: false, // entrypoint may need /tmp
+		}
+
+		if req.Network {
+			hostCfg.NetworkMode = "bridge"
+		}
+		if m.runtime != "" {
+			hostCfg.Runtime = m.runtime
+		}
+
+		resp, err := m.cli.ContainerCreate(ctx, cfg, hostCfg, nil, nil, "")
+		if err != nil {
+			return nil, fmt.Errorf("sandbox: create container: %w", err)
+		}
+		containerID = resp.ID
+	}
+
 	defer func() {
-		rmCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		_ = m.cli.ContainerRemove(rmCtx, containerID, container.RemoveOptions{Force: true})
+		if fromPool {
+			m.pool.Release(context.Background(), containerID)
+		} else {
+			rmCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			_ = m.cli.ContainerRemove(rmCtx, containerID, container.RemoveOptions{Force: true})
+		}
 	}()
 
 	// Attach stdin to feed payload
@@ -230,6 +326,174 @@ func (m *Manager) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 	}, nil
 }
 
+// streamWriter implements io.Writer and sends each write as an OutputEvent.
+type streamWriter struct {
+	stream string
+	ch     chan<- OutputEvent
+}
+
+func (w *streamWriter) Write(p []byte) (int, error) {
+	w.ch <- OutputEvent{Stream: w.stream, Data: string(p)}
+	return len(p), nil
+}
+
+// StreamRun executes user code and streams stdout/stderr in real-time.
+// The returned channel receives OutputEvents until closed (after exit event).
+func (m *Manager) StreamRun(ctx context.Context, req RunRequest) (<-chan OutputEvent, error) {
+	if req.Timeout == 0 {
+		req.Timeout = DefaultTimeout
+	}
+	if req.MemLimit == 0 {
+		req.MemLimit = DefaultMemLimit
+	}
+	if req.CPULimit == 0 {
+		req.CPULimit = DefaultCPULimit
+	}
+
+	img, err := m.resolveImage(ctx, req.Language, req.Image, req.Packages, false)
+	if err != nil {
+		return nil, err
+	}
+	if len(req.Packages) == 0 {
+		if err := m.ensureImage(ctx, img); err != nil {
+			return nil, err
+		}
+	}
+
+	payload := map[string]any{
+		"code":    req.Code,
+		"input":   req.Input,
+		"context": req.Context,
+		"params":  req.Params,
+	}
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("sandbox: marshal payload: %w", err)
+	}
+
+	start := time.Now()
+
+	// Try pool — skip for custom images and packages (pool keyed by Language)
+	var containerID string
+	var fromPool bool
+
+	if m.pool != nil && req.Image == "" && len(req.Packages) == 0 && !req.Network &&
+		req.MemLimit == DefaultMemLimit &&
+		req.CPULimit == DefaultCPULimit {
+		if id := m.pool.Acquire(req.Language); id != "" {
+			containerID = id
+			fromPool = true
+			slog.Info("sandbox: pool acquired", "container", id[:12], "language", req.Language, "stream", true)
+		}
+	}
+
+	if !fromPool {
+		cfg := &container.Config{
+			Image:       img,
+			Labels:      sandboxLabels(),
+			AttachStdin: true,
+			OpenStdin:   true,
+			StdinOnce:   true,
+			Tty:         false,
+		}
+		nanoCPUs := int64(req.CPULimit * 1e9)
+		hostCfg := &container.HostConfig{
+			Resources: container.Resources{
+				Memory:    req.MemLimit,
+				NanoCPUs:  nanoCPUs,
+				PidsLimit: intPtr(256),
+			},
+			NetworkMode:    "none",
+			AutoRemove:     false,
+			ReadonlyRootfs: false,
+		}
+		if req.Network {
+			hostCfg.NetworkMode = "bridge"
+		}
+		if m.runtime != "" {
+			hostCfg.Runtime = m.runtime
+		}
+		resp, err := m.cli.ContainerCreate(ctx, cfg, hostCfg, nil, nil, "")
+		if err != nil {
+			return nil, fmt.Errorf("sandbox: create container: %w", err)
+		}
+		containerID = resp.ID
+	}
+
+	attachResp, err := m.cli.ContainerAttach(ctx, containerID, container.AttachOptions{
+		Stdin:  true,
+		Stdout: true,
+		Stderr: true,
+		Stream: true,
+	})
+	if err != nil {
+		m.cleanupContainer(fromPool, containerID)
+		return nil, fmt.Errorf("sandbox: attach: %w", err)
+	}
+
+	if err := m.cli.ContainerStart(ctx, containerID, container.StartOptions{}); err != nil {
+		attachResp.Close()
+		m.cleanupContainer(fromPool, containerID)
+		return nil, fmt.Errorf("sandbox: start: %w", err)
+	}
+
+	_, _ = attachResp.Conn.Write(payloadBytes)
+	_ = attachResp.CloseWrite()
+
+	ch := make(chan OutputEvent, 64)
+
+	go func() {
+		defer close(ch)
+		defer attachResp.Close()
+		defer m.cleanupContainer(fromPool, containerID)
+
+		// Stream stdout/stderr in real-time
+		stdoutW := &streamWriter{stream: "stdout", ch: ch}
+		stderrW := &streamWriter{stream: "stderr", ch: ch}
+		_, _ = stdcopy.StdCopy(stdoutW, stderrW, attachResp.Reader)
+
+		// Wait for exit
+		execCtx, cancel := context.WithTimeout(ctx, req.Timeout)
+		defer cancel()
+
+		waitCh, errCh := m.cli.ContainerWait(execCtx, containerID, container.WaitConditionNotRunning)
+
+		var exitCode int64
+		select {
+		case result := <-waitCh:
+			exitCode = result.StatusCode
+		case err := <-errCh:
+			ch <- OutputEvent{Stream: "exit", Error: fmt.Sprintf("wait: %v", err)}
+			return
+		case <-execCtx.Done():
+			killCtx, killCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer killCancel()
+			_ = m.cli.ContainerKill(killCtx, containerID, "SIGKILL")
+			ch <- OutputEvent{Stream: "exit", Error: fmt.Sprintf("execution timed out after %s", req.Timeout)}
+			return
+		}
+
+		ch <- OutputEvent{
+			Stream:   "exit",
+			ExitCode: int(exitCode),
+			Duration: time.Since(start).Round(time.Millisecond).String(),
+		}
+	}()
+
+	return ch, nil
+}
+
+// cleanupContainer removes a container, using pool.Release for pooled containers.
+func (m *Manager) cleanupContainer(fromPool bool, containerID string) {
+	if fromPool {
+		m.pool.Release(context.Background(), containerID)
+	} else {
+		rmCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = m.cli.ContainerRemove(rmCtx, containerID, container.RemoveOptions{Force: true})
+	}
+}
+
 // ensureImage pulls the image if not present locally.
 func (m *Manager) ensureImage(ctx context.Context, img string) error {
 	_, _, err := m.cli.ImageInspectWithRaw(ctx, img)
@@ -255,9 +519,10 @@ func (m *Manager) StartDebug(ctx context.Context, req DebugRequest) (*DebugSessi
 		return nil, fmt.Errorf("sandbox: debug ports not configured — use WithDebugPorts option")
 	}
 
-	img := DebugImageForLanguage(req.Language)
-	if img == "" {
-		return nil, fmt.Errorf("sandbox: language %s does not support debugging", req.Language)
+	// Resolve image: custom_image > packages (auto-build) > debug base
+	img, err := m.resolveImage(ctx, req.Language, req.Image, req.Packages, true)
+	if err != nil {
+		return nil, err
 	}
 
 	containerDebugPort := DebugPortForLanguage(req.Language)
@@ -265,8 +530,10 @@ func (m *Manager) StartDebug(ctx context.Context, req DebugRequest) (*DebugSessi
 		return nil, fmt.Errorf("sandbox: no debug port defined for %s", req.Language)
 	}
 
-	if err := m.ensureImage(ctx, img); err != nil {
-		return nil, err
+	if len(req.Packages) == 0 {
+		if err := m.ensureImage(ctx, img); err != nil {
+			return nil, err
+		}
 	}
 
 	hostPort, err := m.portAlloc.Acquire()
@@ -291,6 +558,7 @@ func (m *Manager) StartDebug(ctx context.Context, req DebugRequest) (*DebugSessi
 	containerPort := nat.Port(fmt.Sprintf("%d/tcp", containerDebugPort))
 	cfg := &container.Config{
 		Image:        img,
+		Labels:       sandboxLabels(),
 		AttachStdin:  true,
 		OpenStdin:    true,
 		StdinOnce:    true,

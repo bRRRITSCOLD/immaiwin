@@ -116,8 +116,9 @@ func NewServer(
 	r.PUT("/api/v1/futures/watchlist", handler.SyncFuturesWatchlist(fwl))
 	r.GET("/api/v1/futures/stream", handler.StreamFutures(fb))
 
-	// Sandbox debug (WebSocket)
+	// Sandbox (WebSocket)
 	r.GET("/api/v1/sandbox/debug", handler.DebugSandbox(sandboxMgr))
+	r.GET("/api/v1/sandbox/run", handler.RunSandbox(sandboxMgr))
 
 	return &Server{
 		cfg:                cfg,

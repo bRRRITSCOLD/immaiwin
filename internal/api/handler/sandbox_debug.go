@@ -26,8 +26,12 @@ type wsMessage struct {
 	Language    sandbox.Language     `json:"language,omitempty"`
 	Code        string               `json:"code,omitempty"`
 	Input       any                  `json:"input,omitempty"`
+	Context     map[string]any       `json:"context,omitempty"`
+	Image       string               `json:"image,omitempty"`    // custom Docker image override
+	Packages    string               `json:"packages,omitempty"` // comma-separated package names for auto-build
 	Breakpoints []sandbox.Breakpoint `json:"breakpoints,omitempty"`
 	Expression  string               `json:"expression,omitempty"`
+	ObjectId    string               `json:"objectId,omitempty"` // CDP object reference for expand
 	SessionID   string               `json:"session_id,omitempty"`
 	// Response fields
 	Reason    string           `json:"reason,omitempty"`
@@ -79,6 +83,9 @@ func DebugSandbox(mgr *sandbox.Manager) gin.HandlerFunc {
 				Language: msg.Language,
 				Code:     msg.Code,
 				Input:    msg.Input,
+				Context:  msg.Context,
+				Image:    msg.Image,
+				Packages: parsePackages(msg.Packages),
 				Network:  true,
 			},
 			Breakpoints: msg.Breakpoints,
@@ -192,8 +199,17 @@ func connectAndProxy(ws *websocket.Conn, session *sandbox.DebugSession, initialB
 				Data:      event.Data,
 			}
 			writeWS(ws, outMsg)
+
+			// Debug adapter says session over — close browser WS to unblock
+			// main read loop so connectAndProxy returns and StopDebug runs.
+			if event.Type == "terminated" {
+				ws.Close()
+				return
+			}
 		}
+		// Events channel closed without terminated event (adapter crashed) — notify browser
 		writeWS(ws, wsMessage{Type: "terminated"})
+		ws.Close()
 	}()
 
 	// Read browser commands → forward to debugger
@@ -233,6 +249,13 @@ func connectAndProxy(ws *websocket.Conn, session *sandbox.DebugSession, initialB
 			if err := debugController.Evaluate(msg.Expression); err != nil {
 				writeWS(ws, wsMessage{Type: "error", Error: err.Error()})
 			}
+		case "expand":
+			vars, err := debugController.Expand(msg.ObjectId)
+			if err != nil {
+				writeWS(ws, wsMessage{Type: "error", Error: err.Error()})
+			} else {
+				writeWS(ws, wsMessage{Type: "expand", ObjectId: msg.ObjectId, Variables: vars})
+			}
 		case "disconnect":
 			_ = debugController.Disconnect()
 			return nil
@@ -250,6 +273,7 @@ type debugProxy interface {
 	StepIn() error
 	StepOut() error
 	Evaluate(expr string) error
+	Expand(objectId string) ([]dap.Variable, error)
 	Disconnect() error
 	Close() error
 }
@@ -257,7 +281,9 @@ type debugProxy interface {
 // --- DAP proxy (Python / debugpy) ---
 
 type dapProxy struct {
-	client *dap.Client
+	client      *dap.Client
+	breakpoints []sandbox.Breakpoint
+	started     bool
 }
 
 func (p *dapProxy) Initialize() error {
@@ -265,6 +291,12 @@ func (p *dapProxy) Initialize() error {
 }
 
 func (p *dapProxy) SetBreakpoints(bps []sandbox.Breakpoint) error {
+	p.breakpoints = bps
+	if !p.started {
+		// Before Start() — store only. DAP requires: attach → initialized → setBreakpoints.
+		return nil
+	}
+	// After Start() — send to debugpy immediately (runtime breakpoint update)
 	var srcBps []dap.SourceBreakpoint
 	for _, bp := range bps {
 		srcBps = append(srcBps, dap.SourceBreakpoint{
@@ -276,10 +308,38 @@ func (p *dapProxy) SetBreakpoints(bps []sandbox.Breakpoint) error {
 }
 
 func (p *dapProxy) Start() error {
-	// DAP flow: launch → configurationDone → execution begins
-	if err := p.client.Launch("/sandbox/user_script.py"); err != nil {
+	// DAP protocol: initialize → attach → (initialized event) → setBreakpoints → configurationDone
+	// attach response is DEFERRED until after configurationDone (DAP spec), so fire-and-forget.
+
+	// 1. Attach (fire-and-forget)
+	if err := p.client.Attach(); err != nil {
 		return err
 	}
+
+	// 2. Wait for initialized event (adapter ready for breakpoint configuration)
+	select {
+	case <-p.client.Initialized():
+		slog.Info("dap-proxy: initialized event received")
+	case <-time.After(5 * time.Second):
+		return fmt.Errorf("timeout waiting for DAP initialized event")
+	}
+
+	// 3. Set breakpoints (stored from earlier SetBreakpoints call)
+	if len(p.breakpoints) > 0 {
+		var srcBps []dap.SourceBreakpoint
+		for _, bp := range p.breakpoints {
+			srcBps = append(srcBps, dap.SourceBreakpoint{
+				Line:      bp.Line,
+				Condition: bp.Condition,
+			})
+		}
+		if err := p.client.SetBreakpoints("/sandbox/user_script.py", srcBps); err != nil {
+			slog.Warn("dap-proxy: setBreakpoints failed", "err", err)
+		}
+	}
+
+	// 4. ConfigurationDone → debugpy unblocks wait_for_client() → entrypoint runs user code
+	p.started = true
 	return p.client.ConfigurationDone()
 }
 
@@ -287,9 +347,10 @@ func (p *dapProxy) Continue() error              { return p.client.Continue(1) }
 func (p *dapProxy) StepOver() error              { return p.client.Next(1) }
 func (p *dapProxy) StepIn() error                { return p.client.StepIn(1) }
 func (p *dapProxy) StepOut() error               { return p.client.StepOut(1) }
-func (p *dapProxy) Evaluate(expr string) error   { return p.client.Evaluate(expr, 0) }
-func (p *dapProxy) Disconnect() error            { return p.client.Disconnect() }
-func (p *dapProxy) Close() error                 { return p.client.Close() }
+func (p *dapProxy) Evaluate(expr string) error                   { return p.client.Evaluate(expr, 0) }
+func (p *dapProxy) Expand(_ string) ([]dap.Variable, error)      { return nil, fmt.Errorf("expand not supported for DAP") }
+func (p *dapProxy) Disconnect() error                            { return p.client.Disconnect() }
+func (p *dapProxy) Close() error                                 { return p.client.Close() }
 
 // --- CDP proxy (JavaScript / Node.js --inspect) ---
 
@@ -356,6 +417,9 @@ func (p *cdpProxy) Evaluate(expr string) error {
 	cfId := p.callFrameId
 	p.mu.Unlock()
 	return p.client.Evaluate(expr, cfId)
+}
+func (p *cdpProxy) Expand(objectId string) ([]dap.Variable, error) {
+	return p.client.ExpandObject(objectId)
 }
 func (p *cdpProxy) Disconnect() error { return p.client.Disconnect() }
 func (p *cdpProxy) Close() error      { return p.client.Close() }

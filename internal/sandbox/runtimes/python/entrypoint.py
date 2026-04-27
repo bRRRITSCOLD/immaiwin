@@ -93,6 +93,12 @@ def main():
 
     # Debug mode: use debugpy for DAP-based interactive debugging
     if os.environ.get("SANDBOX_DEBUG"):
+        # Allow full builtins in debug mode — container is already sandboxed by Docker
+        import builtins
+        namespace["__builtins__"] = builtins
+        # Restore real print so debugpy captures output via redirectOutput
+        namespace["print"] = original_print
+
         script_path = "/sandbox/user_script.py"
         with open(script_path, "w") as f:
             f.write(code)
@@ -109,7 +115,7 @@ def main():
         print("debugpy: client attached", file=sys.stderr)
 
         try:
-            exec(compile(code, "user_script.py", "exec"), namespace)
+            exec(compile(code, "/sandbox/user_script.py", "exec"), namespace)
         except Exception:
             traceback.print_exc(file=sys.stderr)
             sys.exit(1)
@@ -122,11 +128,13 @@ def main():
 
     result = _output_value if _output_set else None
 
-    try:
-        sys.stdout.write(json.dumps(result))
-    except (TypeError, ValueError) as e:
-        print(f"output serialization error: {e}", file=sys.stderr)
-        sys.stdout.write(json.dumps(str(result)))
+    # In debug mode, skip stdout JSON — debugpy captures it as noise in debug console
+    if not os.environ.get("SANDBOX_DEBUG"):
+        try:
+            sys.stdout.write(json.dumps(result))
+        except (TypeError, ValueError) as e:
+            print(f"output serialization error: {e}", file=sys.stderr)
+            sys.stdout.write(json.dumps(str(result)))
 
     sys.exit(0)
 

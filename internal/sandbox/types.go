@@ -24,6 +24,8 @@ type RunRequest struct {
 	MemLimit int64             `json:"mem_limit"` // bytes
 	CPULimit float64           `json:"cpu_limit"` // cores (e.g. 0.5)
 	Network  bool              `json:"network"`
+	Image    string            `json:"image,omitempty"`    // custom Docker image; overrides ImageForLanguage when set
+	Packages []string          `json:"packages,omitempty"` // extra packages to install (auto-builds image)
 }
 
 // RunResult holds the outcome of a sandbox execution.
@@ -36,9 +38,13 @@ type RunResult struct {
 }
 
 // OutputEvent streams stdout/stderr lines from a running sandbox.
+// Stream values: "stdout", "stderr", "exit".
 type OutputEvent struct {
-	Stream string `json:"stream"` // "stdout" or "stderr"
-	Data   string `json:"data"`
+	Stream   string `json:"stream"`
+	Data     string `json:"data,omitempty"`
+	ExitCode int    `json:"exit_code,omitempty"`
+	Duration string `json:"duration,omitempty"`
+	Error    string `json:"error,omitempty"`
 }
 
 // DefaultTimeout is the fallback execution timeout.

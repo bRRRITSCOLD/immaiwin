@@ -18,6 +18,7 @@ import { Route as MarketsRouteImport } from './routes/markets'
 import { Route as FuturesRouteImport } from './routes/futures'
 import { Route as DashboardRouteImport } from './routes/dashboard'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as DocsCustomImagesRouteImport } from './routes/docs.custom-images'
 
 const WorkflowsRoute = WorkflowsRouteImport.update({
   id: '/workflows',
@@ -64,6 +65,11 @@ const IndexRoute = IndexRouteImport.update({
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const DocsCustomImagesRoute = DocsCustomImagesRouteImport.update({
+  id: '/docs/custom-images',
+  path: '/docs/custom-images',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -75,6 +81,7 @@ export interface FileRoutesByFullPath {
   '/scrapers': typeof ScrapersRoute
   '/watchlist': typeof WatchlistRoute
   '/workflows': typeof WorkflowsRoute
+  '/docs/custom-images': typeof DocsCustomImagesRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -86,6 +93,7 @@ export interface FileRoutesByTo {
   '/scrapers': typeof ScrapersRoute
   '/watchlist': typeof WatchlistRoute
   '/workflows': typeof WorkflowsRoute
+  '/docs/custom-images': typeof DocsCustomImagesRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -98,6 +106,7 @@ export interface FileRoutesById {
   '/scrapers': typeof ScrapersRoute
   '/watchlist': typeof WatchlistRoute
   '/workflows': typeof WorkflowsRoute
+  '/docs/custom-images': typeof DocsCustomImagesRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -111,6 +120,7 @@ export interface FileRouteTypes {
     | '/scrapers'
     | '/watchlist'
     | '/workflows'
+    | '/docs/custom-images'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -122,6 +132,7 @@ export interface FileRouteTypes {
     | '/scrapers'
     | '/watchlist'
     | '/workflows'
+    | '/docs/custom-images'
   id:
     | '__root__'
     | '/'
@@ -133,6 +144,7 @@ export interface FileRouteTypes {
     | '/scrapers'
     | '/watchlist'
     | '/workflows'
+    | '/docs/custom-images'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -145,6 +157,7 @@ export interface RootRouteChildren {
   ScrapersRoute: typeof ScrapersRoute
   WatchlistRoute: typeof WatchlistRoute
   WorkflowsRoute: typeof WorkflowsRoute
+  DocsCustomImagesRoute: typeof DocsCustomImagesRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -212,6 +225,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/docs/custom-images': {
+      id: '/docs/custom-images'
+      path: '/docs/custom-images'
+      fullPath: '/docs/custom-images'
+      preLoaderRoute: typeof DocsCustomImagesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -225,6 +245,7 @@ const rootRouteChildren: RootRouteChildren = {
   ScrapersRoute: ScrapersRoute,
   WatchlistRoute: WatchlistRoute,
   WorkflowsRoute: WorkflowsRoute,
+  DocsCustomImagesRoute: DocsCustomImagesRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
