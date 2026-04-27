@@ -126,9 +126,19 @@ func main() {
 			slog.Error("failed to create sandbox manager", "err", err)
 			os.Exit(1)
 		}
-		defer mgr.Close()
+
+		// Remove orphan containers from previous crashed sessions
+		mgr.CleanupOrphans(ctx)
+
+		// Warm container pool for interpreted languages
+		pool := sandbox.NewPool(mgr.DockerClient(), cfg.Sandbox.PoolSize, cfg.Sandbox.Runtime)
+		pool.Warm(ctx, sandbox.LangJavaScript, sandbox.LangPython)
+		mgr.SetPool(pool)
+
+		defer pool.Close(context.Background())
+		defer func() { _ = mgr.Close() }()
 		sandboxMgr = mgr
-		slog.Info("sandbox manager enabled", "runtime", cfg.Sandbox.Runtime)
+		slog.Info("sandbox manager enabled", "runtime", cfg.Sandbox.Runtime, "pool_size", cfg.Sandbox.PoolSize)
 	}
 
 	wfExec := &workflow.WorkflowExecutor{

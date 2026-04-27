@@ -634,6 +634,17 @@ func (e *WorkflowExecutor) runSandboxScript(ctx context.Context, data map[string
 		cpuLimit = c
 	}
 	network, _ := data["network"].(bool)
+	customImage, _ := data["custom_image"].(string)
+
+	var packages []string
+	if pkgStr, ok := data["packages"].(string); ok && pkgStr != "" {
+		for _, p := range strings.Split(pkgStr, ",") {
+			p = strings.TrimSpace(p)
+			if p != "" {
+				packages = append(packages, p)
+			}
+		}
+	}
 
 	result, err := e.SandboxMgr.Run(ctx, sandbox.RunRequest{
 		Language: sandbox.Language(lang),
@@ -645,6 +656,8 @@ func (e *WorkflowExecutor) runSandboxScript(ctx context.Context, data map[string
 		MemLimit: memLimit,
 		CPULimit: cpuLimit,
 		Network:  network,
+		Image:    customImage,
+		Packages: packages,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("sandbox_script: %w", err)

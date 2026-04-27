@@ -430,7 +430,7 @@ function SchwabFields({ config, setField, connectionId, isSaved, disabled }: {
 }) {
   const [oauthStatus, setOauthStatus] = useState<'unknown' | 'authorized' | 'not_authorized'>('unknown')
   const [oauthUrls, setOauthUrls] = useState<{ authorize_url: string; callback_url: string } | null>(null)
-  const pollRef = useRef<ReturnType<typeof setInterval>>()
+  const pollRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined)
 
   const fetchOAuthStatus = useCallback(async () => {
     try {

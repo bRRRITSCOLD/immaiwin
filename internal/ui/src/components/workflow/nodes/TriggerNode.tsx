@@ -76,9 +76,9 @@ export function TriggerNode({ id, data, selected }: NodeProps) {
   }
 
   return (
-    <div className="relative min-w-[260px]">
+    <div className="relative min-w-[260px] h-full">
       <BreakpointMarker id={id} />
-      <div className="overflow-x-hidden rounded-lg border-2 border-blue-500 bg-card text-card-foreground shadow-sm">
+      <div className="overflow-x-hidden rounded-lg border-2 border-blue-500 bg-card text-card-foreground shadow-sm h-full">
         <NodeResizer minWidth={260} minHeight={80} isVisible={selected} />
         <div className="flex items-center gap-2 px-4 py-3 border-b border-blue-500/40">
           <Play className="h-4 w-4 text-blue-500 shrink-0" />

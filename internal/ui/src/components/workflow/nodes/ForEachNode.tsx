@@ -6,9 +6,9 @@ import { NodeDebugPanel, BreakpointMarker } from '../RunResultsContext'
 
 export function ForEachNode({ id, data, selected }: NodeProps) {
   return (
-    <div className="relative min-w-[220px]">
+    <div className="relative min-w-[220px] h-full">
       <BreakpointMarker id={id} />
-      <div className="overflow-x-hidden rounded-lg border-2 border-violet-500 bg-card text-card-foreground shadow-sm">
+      <div className="overflow-x-hidden rounded-lg border-2 border-violet-500 bg-card text-card-foreground shadow-sm h-full">
         <NodeResizer minWidth={220} minHeight={80} isVisible={selected} />
         <div className="flex items-center gap-2 px-4 py-2.5 border-b border-violet-500/40">
           <RefreshCw className="h-4 w-4 text-violet-400 shrink-0" />

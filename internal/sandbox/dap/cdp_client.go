@@ -23,8 +23,9 @@ type CDPClient struct {
 	seq      atomic.Int32
 	events   chan DebugEvent
 	done     chan struct{}
-	pending  sync.Map // id -> chan map[string]any (for waiting on responses)
-	scripts  sync.Map // url (string) -> scriptId (string) — tracks parsed scripts
+	pending    sync.Map // id -> chan map[string]any (for waiting on responses)
+	scripts    sync.Map // url (string) -> scriptId (string) — tracks parsed scripts
+	scriptURLs sync.Map // scriptId (string) -> url (string) — reverse lookup
 }
 
 // NewCDPClient connects to a Node.js --inspect endpoint.
@@ -36,7 +37,7 @@ func NewCDPClient(host string, port int, timeout time.Duration) (*CDPClient, err
 	if err != nil {
 		return nil, fmt.Errorf("cdp: get /json/list: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -138,11 +139,18 @@ func (c *CDPClient) sendAndWait(method string, params any, timeout time.Duration
 }
 
 // Enable enables the Debugger and Runtime domains (waits for responses).
+// Also sets pause-on-uncaught-exceptions so the debugger stops at throw
+// points instead of silently terminating.
 func (c *CDPClient) Enable() error {
 	if _, err := c.sendAndWait("Debugger.enable", nil, 5*time.Second); err != nil {
 		return err
 	}
 	slog.Info("cdp: Debugger.enable done")
+	if _, err := c.sendAndWait("Debugger.setPauseOnExceptions", map[string]any{
+		"state": "uncaught",
+	}, 5*time.Second); err != nil {
+		slog.Warn("cdp: setPauseOnExceptions failed", "err", err)
+	}
 	if _, err := c.sendAndWait("Runtime.enable", nil, 5*time.Second); err != nil {
 		return err
 	}
@@ -252,7 +260,7 @@ func (c *CDPClient) Evaluate(expr string, callFrameId string) error {
 	return err
 }
 
-// GetProperties fetches object properties.
+// GetProperties fetches object properties (fire-and-forget, response handled in readLoop).
 func (c *CDPClient) GetProperties(objectId string) error {
 	_, err := c.send("Runtime.getProperties", map[string]any{
 		"objectId":               objectId,
@@ -261,6 +269,70 @@ func (c *CDPClient) GetProperties(objectId string) error {
 		"accessorPropertiesOnly": false,
 	})
 	return err
+}
+
+// ExpandObject fetches child properties of an object by its CDP objectId.
+// Returns Variable slice with nested objectIds for further expansion.
+func (c *CDPClient) ExpandObject(objectId string) ([]Variable, error) {
+	resp, err := c.sendAndWait("Runtime.getProperties", map[string]any{
+		"objectId":      objectId,
+		"ownProperties": true,
+	}, 3*time.Second)
+	if err != nil {
+		return nil, err
+	}
+
+	result, _ := resp["result"].(map[string]any)
+	if result == nil {
+		return nil, nil
+	}
+
+	var vars []Variable
+	props, _ := result["result"].([]any)
+	for _, p := range props {
+		prop, ok := p.(map[string]any)
+		if !ok {
+			continue
+		}
+		name, _ := prop["name"].(string)
+		if name == "" || strings.HasPrefix(name, "__") {
+			continue
+		}
+
+		valObj, _ := prop["value"].(map[string]any)
+		if valObj == nil {
+			continue
+		}
+		typ, _ := valObj["type"].(string)
+		var value string
+		switch typ {
+		case "undefined":
+			value = "undefined"
+		case "object", "function":
+			if desc, ok := valObj["description"].(string); ok {
+				value = desc
+			} else {
+				value = fmt.Sprintf("[%s]", typ)
+			}
+		default:
+			if v, ok := valObj["value"]; ok {
+				value = fmt.Sprintf("%v", v)
+			}
+		}
+
+		v := Variable{
+			Name:  name,
+			Value: value,
+			Type:  typ,
+		}
+		if typ == "object" || typ == "function" {
+			if oid, ok := valObj["objectId"].(string); ok {
+				v.ObjectId = oid
+			}
+		}
+		vars = append(vars, v)
+	}
+	return vars, nil
 }
 
 // FindScriptId returns the CDP scriptId for a URL containing the given substring.
@@ -298,14 +370,25 @@ func (c *CDPClient) SetBreakpointByScriptId(scriptId string, line int, condition
 }
 
 // Disconnect terminates debugging.
+// Sends Debugger.disable so Node.js exits cleanly instead of
+// waiting for the debugger to disconnect.
 func (c *CDPClient) Disconnect() error {
-	_ = c.Resume()
+	_, _ = c.sendAndWait("Debugger.disable", nil, 2*time.Second)
+	_, _ = c.sendAndWait("Runtime.disable", nil, 2*time.Second)
 	return c.Close()
 }
 
 // readLoop reads CDP messages and dispatches events + responses.
 func (c *CDPClient) readLoop() {
 	defer close(c.events)
+	defer func() {
+		// Signal done so sendAndWait returns immediately instead of waiting for timeout
+		select {
+		case <-c.done:
+		default:
+			close(c.done)
+		}
+	}()
 
 	for {
 		select {
@@ -316,7 +399,7 @@ func (c *CDPClient) readLoop() {
 
 		_, raw, err := c.conn.ReadMessage()
 		if err != nil {
-			slog.Info("cdp: readLoop ended", "err", err)
+			slog.Debug("cdp: readLoop ended", "err", err)
 			return
 		}
 
@@ -359,6 +442,7 @@ func (c *CDPClient) handleCDPEvent(method string, msg map[string]any) {
 		scriptId, _ := params["scriptId"].(string)
 		if url != "" && scriptId != "" {
 			c.scripts.Store(url, scriptId)
+			c.scriptURLs.Store(scriptId, url)
 			slog.Info("cdp: scriptParsed", "url", url, "scriptId", scriptId)
 		}
 		return // don't emit as DebugEvent
@@ -391,10 +475,19 @@ func (c *CDPClient) handleCDPEvent(method string, msg map[string]any) {
 				text += fmt.Sprintf("%v", val)
 			}
 		}
-		de = DebugEvent{
-			Type:   "output",
-			Stream: stream,
-			Data:   text + "\n",
+		// Detect tagged sandbox output (final result from output() call)
+		const resultPrefix = "__SANDBOX_RESULT:"
+		if strings.HasPrefix(text, resultPrefix) {
+			de = DebugEvent{
+				Type: "result",
+				Data: strings.TrimPrefix(text, resultPrefix),
+			}
+		} else {
+			de = DebugEvent{
+				Type:   "output",
+				Stream: stream,
+				Data:   text + "\n",
+			}
 		}
 
 	case "Runtime.executionContextDestroyed", "Inspector.detached":
@@ -462,6 +555,17 @@ func (c *CDPClient) handlePausedEvent(params map[string]any) {
 		Reason: cdpReasonToDAP(reason),
 	}
 
+	// Extract exception description when paused on exception
+	if reason == "exception" || reason == "assert" {
+		if data, ok := params["data"].(map[string]any); ok {
+			if desc, ok := data["description"].(string); ok {
+				de.Data = desc
+			} else if className, ok := data["className"].(string); ok {
+				de.Data = className
+			}
+		}
+	}
+
 	frames, _ := params["callFrames"].([]any)
 	for _, f := range frames {
 		frame, ok := f.(map[string]any)
@@ -487,8 +591,25 @@ func (c *CDPClient) handlePausedEvent(params map[string]any) {
 		de.CallStack = append(de.CallStack, sf)
 	}
 
-	if len(de.CallStack) > 0 {
-		de.Line = de.CallStack[0].Line
+	// Set line only if paused in user_script.js (not runner.js or Node internals).
+	// Walk call stack to find first frame in user_script.js.
+	if len(frames) > 0 {
+		for _, f := range frames {
+			frame, ok := f.(map[string]any)
+			if !ok {
+				continue
+			}
+			loc, _ := frame["location"].(map[string]any)
+			scriptId, _ := loc["scriptId"].(string)
+			if scriptId != "" {
+				if url, ok := c.scriptURLs.Load(scriptId); ok {
+					if strings.Contains(url.(string), "user_script") {
+						de.Line = intFromAny(loc["lineNumber"]) + 1
+						break
+					}
+				}
+			}
+		}
 	}
 
 	// Extract callFrameId from first frame (for evaluate expressions)
@@ -586,11 +707,18 @@ func (c *CDPClient) fetchScopeVariables(scopeChain []any) []Variable {
 					value = fmt.Sprintf("%v", v)
 				}
 			}
-			vars = append(vars, Variable{
+			v := Variable{
 				Name:  name,
 				Value: value,
 				Type:  typ,
-			})
+			}
+			// Store objectId for expandable types so frontend can request children
+			if typ == "object" || typ == "function" {
+				if oid, ok := valObj["objectId"].(string); ok {
+					v.ObjectId = oid
+				}
+			}
+			vars = append(vars, v)
 		}
 	}
 	return vars

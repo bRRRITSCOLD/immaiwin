@@ -13,7 +13,7 @@ type PathFn = (params: {
   targetY: number
   sourcePosition: any
   targetPosition: any
-}) => [string, number, number]
+}) => [string, number, number, ...unknown[]]
 
 const pathFns: Record<string, PathFn> = {
   default: getBezierPath,

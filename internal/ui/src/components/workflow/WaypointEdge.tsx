@@ -15,7 +15,7 @@ type PathFn = (params: {
   targetY: number
   sourcePosition: any
   targetPosition: any
-}) => [string, number, number]
+}) => [string, number, number, ...unknown[]]
 
 const pathFns: Record<string, PathFn> = {
   default: getBezierPath,
@@ -60,17 +60,17 @@ export function WaypointEdge(props: EdgeProps) {
       { x: targetX, y: targetY },
     ]
     edgePath =
-      `M ${points[0].x},${points[0].y}` +
+      `M ${points[0]!.x},${points[0]!.y}` +
       points.slice(1).map((p) => ` L ${p.x},${p.y}`).join('')
 
     // Label at midpoint of full path
     const mid = Math.floor(points.length / 2)
     if (points.length % 2 === 0) {
-      labelX = (points[mid - 1].x + points[mid].x) / 2
-      labelY = (points[mid - 1].y + points[mid].y) / 2
+      labelX = (points[mid - 1]!.x + points[mid]!.x) / 2
+      labelY = (points[mid - 1]!.y + points[mid]!.y) / 2
     } else {
-      labelX = points[mid].x
-      labelY = points[mid].y
+      labelX = points[mid]!.x
+      labelY = points[mid]!.y
     }
   } else {
     const getPath = pathFns[routing] || getBezierPath

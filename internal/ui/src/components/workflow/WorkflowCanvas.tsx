@@ -283,7 +283,7 @@ function WorkflowCanvasInner({ workflow, onSave, onRun, onClearRun, lastRun }: P
   const paletteRef = useRef(selectedEdgeType)
   paletteRef.current = selectedEdgeType
 
-  const isValidConnection = useCallback((connection: Connection) => {
+  const isValidConnection = useCallback((connection: Edge | Connection) => {
     const pt = paletteRef.current
     if (!pt) return true // no palette → allow (legacy behavior)
     const srcNode = nodesRef.current.find((n) => n.id === connection.source)
@@ -333,7 +333,7 @@ function WorkflowCanvasInner({ workflow, onSave, onRun, onClearRun, lastRun }: P
         edge.sourceHandle = selectedEdgeType === 'start' ? '' : selectedEdgeType
         edge.data = { paletteType: selectedEdgeType }
       }
-      setEdges((eds) => addEdge(edge, eds))
+      setEdges((eds) => addEdge(edge, eds as any))
     },
     [setEdges, selectedEdgeType, nodes],
   )

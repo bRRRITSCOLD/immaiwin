@@ -7,6 +7,7 @@ import { WorkflowCanvas } from '~/components/workflow/WorkflowCanvas'
 import { useWorkflowStore, type Workflow, type Connection } from '~/components/workflow/useWorkflowStore'
 import type { RunResults } from '~/components/workflow/RunResultsContext'
 import type { Node, Edge } from '@xyflow/react'
+import { useQueryState } from '~/hooks/useQueryState'
 
 export const Route = createFileRoute('/workflows')({
   component: WorkflowsPage,
@@ -17,6 +18,16 @@ const API_BASE = import.meta.env['VITE_API_URL'] ?? 'http://localhost:8080'
 function WorkflowsPage() {
   const { workflows, activeId, setWorkflows, setConnections, setActive, activeWorkflow } = useWorkflowStore()
   const [lastRun, setLastRun] = useState<RunResults | null>(null)
+  const [qsWorkflow, setQsWorkflow] = useQueryState('workflow')
+
+  // Single function updates both store + URL atomically — no ping-pong
+  const selectWorkflow = useCallback(
+    (id: string | null) => {
+      setActive(id)
+      setQsWorkflow(id)
+    },
+    [setActive, setQsWorkflow],
+  )
 
   const load = useCallback(async () => {
     try {
@@ -37,12 +48,17 @@ function WorkflowsPage() {
     load()
   }, [load])
 
-  // auto-select first workflow
+  // Restore from URL on load, or auto-select first
   useEffect(() => {
-    if (workflows.length > 0 && !activeId) {
-      setActive(workflows[0].id)
+    if (workflows.length === 0) return
+    if (qsWorkflow && workflows.some((w) => w.id === qsWorkflow)) {
+      if (activeId !== qsWorkflow) setActive(qsWorkflow)
+    } else if (!activeId) {
+      selectWorkflow(workflows[0]!.id)
     }
-  }, [workflows, activeId, setActive])
+    // Only run on workflows load — not on activeId/qsWorkflow changes
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workflows])
 
   async function handleSave(nodes: Node[], edges: Edge[], params: Record<string, string>) {
     const wf = activeWorkflow()
@@ -108,7 +124,7 @@ function WorkflowsPage() {
       const grouped: RunResults = {}
       for (const step of steps) {
         if (!grouped[step.node_id]) grouped[step.node_id] = []
-        grouped[step.node_id].push(step)
+        grouped[step.node_id]!.push(step)
       }
       setLastRun(grouped)
 
@@ -157,7 +173,7 @@ function WorkflowsPage() {
       </header>
 
       <div className="flex flex-1 overflow-hidden">
-        <WorkflowSidebar onSelect={setActive} onReload={load} />
+        <WorkflowSidebar onSelect={selectWorkflow} onReload={load} />
         <main className="flex-1 overflow-hidden h-full">
           {active ? (
             <WorkflowCanvas key={active.id} workflow={active} onSave={handleSave} onRun={handleRun} onClearRun={() => setLastRun(null)} lastRun={lastRun ?? undefined} />

@@ -3,7 +3,7 @@ pre-commit:
   commands:
     build:
       priority: 1
-      run: go build ./...
+      run: go build ./... && cd internal/ui && pnpm run build && cd ../..
     lint:
       priority: 2
       run: golangci-lint run

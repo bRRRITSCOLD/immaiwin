@@ -9,8 +9,8 @@
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "verbatimModuleSyntax": true,
-    "ignoreDeprecations": "6.0",
-    "baseUrl": ".",
+    "skipLibCheck": true,
+    "noEmit": true,
     "paths": {
       "~/*": ["./src/*"]
     }
