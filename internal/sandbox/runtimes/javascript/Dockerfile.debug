@@ -1,0 +1,11 @@
+FROM node:20-alpine
+
+RUN adduser -D sandbox
+WORKDIR /sandbox
+COPY entrypoint.js .
+RUN chown -R sandbox:sandbox /sandbox
+
+EXPOSE 9229
+
+USER sandbox
+ENTRYPOINT ["node", "/sandbox/entrypoint.js"]

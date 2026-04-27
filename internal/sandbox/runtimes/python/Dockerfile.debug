@@ -1,0 +1,13 @@
+FROM python:3.12-alpine
+
+RUN pip install --no-cache-dir debugpy
+
+RUN adduser -D sandbox
+WORKDIR /sandbox
+COPY entrypoint.py .
+RUN chown -R sandbox:sandbox /sandbox
+
+EXPOSE 5678
+
+USER sandbox
+ENTRYPOINT ["python3", "/sandbox/entrypoint.py"]
