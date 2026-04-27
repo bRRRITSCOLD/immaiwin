@@ -1,14 +1,80 @@
-import { Globe, Play, Code2, Database, Bell, RefreshCw, Radio } from 'lucide-react'
+import { Globe, Play, Code2, Database, Bell, RefreshCw, Radio, ChevronDown, ChevronUp, CheckCircle2, XCircle, Circle, Plus, Pencil, Trash2, Plug, Download } from 'lucide-react'
+import { useState } from 'react'
+import { toast } from 'sonner'
 import { Separator } from '~/components/ui/separator'
 import { Button } from '~/components/ui/button'
-import { useWorkflowStore, type Workflow } from './useWorkflowStore'
+import { Badge } from '~/components/ui/badge'
+import { useWorkflowStore, type Workflow, type Connection, type EdgePaletteType } from './useWorkflowStore'
+import { ConnectionDialog } from './ConnectionDialog'
+import { AddWorkflowDialog } from './AddWorkflowDialog'
+
+const API_BASE = import.meta.env['VITE_API_URL'] ?? 'http://localhost:8080'
 
 interface Props {
   onSelect(id: string): void
+  onReload(): void
 }
 
-export function WorkflowSidebar({ onSelect }: Props) {
-  const { workflows, activeId } = useWorkflowStore()
+const edgePaletteItems: { type: EdgePaletteType; label: string; icon: React.ReactNode; color: string; border: string }[] = [
+  { type: 'start', label: 'Start', icon: <Play className="h-3.5 w-3.5" />, color: 'text-blue-500', border: 'border-blue-500' },
+  { type: 'success', label: 'Success', icon: <CheckCircle2 className="h-3.5 w-3.5" />, color: 'text-green-500', border: 'border-green-500' },
+  { type: 'error', label: 'Error', icon: <XCircle className="h-3.5 w-3.5" />, color: 'text-red-500', border: 'border-red-500' },
+  { type: 'item', label: 'Item', icon: <RefreshCw className="h-3.5 w-3.5" />, color: 'text-violet-400', border: 'border-violet-400' },
+  { type: 'receive', label: 'Receive', icon: <Circle className="h-3.5 w-3.5" />, color: 'text-gray-400', border: 'border-gray-400' },
+]
+
+export function WorkflowSidebar({ onSelect, onReload }: Props) {
+  const { workflows, connections, activeId, selectedEdgeType, setSelectedEdgeType, setConnections, setActive } = useWorkflowStore()
+  const [paletteOpen, setPaletteOpen] = useState(true)
+  const [edgePaletteOpen, setEdgePaletteOpen] = useState(true)
+  const [connectionsOpen, setConnectionsOpen] = useState(true)
+  const [dialogOpen, setDialogOpen] = useState(false)
+  const [editingConn, setEditingConn] = useState<Connection | null>(null)
+
+  async function reloadConnections() {
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/connections`)
+      const conns: Connection[] = await res.json()
+      setConnections(conns)
+    } catch {
+      toast.error('Failed to reload connections')
+    }
+  }
+
+  async function handleDeleteWorkflow(e: React.MouseEvent, id: string) {
+    e.stopPropagation()
+    try {
+      await fetch(`${API_BASE}/api/v1/workflows/${id}`, { method: 'DELETE' })
+      toast.success('Workflow deleted')
+      if (activeId === id) setActive(null)
+      onReload()
+    } catch {
+      toast.error('Failed to delete workflow')
+    }
+  }
+
+  function handleExportWorkflow(e: React.MouseEvent, wf: Workflow) {
+    e.stopPropagation()
+    const bundle = { version: 1, workflow: wf }
+    const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${wf.name.toLowerCase().replace(/\s+/g, '-')}.workflow.json`
+    a.click()
+    URL.revokeObjectURL(url)
+    toast.success('Workflow exported')
+  }
+
+  async function handleDeleteConn(id: string) {
+    try {
+      await fetch(`${API_BASE}/api/v1/connections/${id}`, { method: 'DELETE' })
+      toast.success('Connection deleted')
+      reloadConnections()
+    } catch {
+      toast.error('Failed to delete connection')
+    }
+  }
 
   function onDragStart(e: React.DragEvent, nodeType: string) {
     e.dataTransfer.setData('application/workflow-node-type', nodeType)
@@ -28,26 +94,141 @@ export function WorkflowSidebar({ onSelect }: Props) {
           <p className="px-2 text-xs text-muted-foreground">No workflows yet.</p>
         )}
         {workflows.map((wf: Workflow) => (
-          <Button
-            key={wf.id}
-            variant={activeId === wf.id ? 'secondary' : 'ghost'}
-            size="sm"
-            className="w-full justify-start text-sm"
-            onClick={() => onSelect(wf.id)}
-          >
-            {wf.name}
-          </Button>
+          <div key={wf.id} className="group flex items-center">
+            <Button
+              variant={activeId === wf.id ? 'secondary' : 'ghost'}
+              size="sm"
+              className="flex-1 justify-start text-sm truncate"
+              onClick={() => onSelect(wf.id)}
+            >
+              {wf.name}
+            </Button>
+            <button
+              className="opacity-0 group-hover:opacity-100 p-1 hover:text-foreground text-muted-foreground transition-opacity shrink-0"
+              onClick={(e) => handleExportWorkflow(e, wf)}
+              title="Export workflow"
+            >
+              <Download className="h-3.5 w-3.5" />
+            </button>
+            <button
+              className="opacity-0 group-hover:opacity-100 p-1 hover:text-destructive text-muted-foreground transition-opacity shrink-0"
+              onClick={(e) => handleDeleteWorkflow(e, wf.id)}
+              title="Delete workflow"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </button>
+          </div>
         ))}
+        <AddWorkflowDialog onCreated={onReload} />
+      </div>
+
+      <Separator />
+
+      {/* Connections */}
+      <div className="px-4 py-3 shrink-0">
+        <button
+          className="flex items-center justify-between w-full text-xs font-semibold text-muted-foreground uppercase tracking-wider"
+          onClick={() => setConnectionsOpen((v) => !v)}
+        >
+          Connections
+          {connectionsOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronUp className="h-3.5 w-3.5" />}
+        </button>
+        {connectionsOpen && (
+          <div className="space-y-1 mt-2">
+            {connections.length === 0 && (
+              <p className="text-[10px] text-muted-foreground">No connections yet.</p>
+            )}
+            {connections.map((conn) => (
+              <div key={conn.id} className="flex items-center gap-1.5 px-2 py-1.5 rounded-md hover:bg-accent text-xs group">
+                {conn.type === 'mongodb' ? (
+                  <Database className="h-3 w-3 text-green-500 shrink-0" />
+                ) : (
+                  <Radio className="h-3 w-3 text-orange-400 shrink-0" />
+                )}
+                <span className="flex-1 truncate">{conn.name}</span>
+                <Badge variant="outline" className="text-[9px] px-1 py-0">{conn.type}</Badge>
+                <button
+                  className="opacity-0 group-hover:opacity-100 p-0.5 hover:text-foreground text-muted-foreground transition-opacity"
+                  onClick={() => { setEditingConn(conn); setDialogOpen(true) }}
+                >
+                  <Pencil className="h-3 w-3" />
+                </button>
+                <button
+                  className="opacity-0 group-hover:opacity-100 p-0.5 hover:text-destructive text-muted-foreground transition-opacity"
+                  onClick={() => handleDeleteConn(conn.id)}
+                >
+                  <Trash2 className="h-3 w-3" />
+                </button>
+              </div>
+            ))}
+            <button
+              className="flex items-center gap-1.5 w-full px-2 py-1.5 rounded-md border border-dashed border-border text-xs text-muted-foreground hover:bg-accent transition-colors"
+              onClick={() => { setEditingConn(null); setDialogOpen(true) }}
+            >
+              <Plus className="h-3 w-3" />
+              Add Connection
+            </button>
+          </div>
+        )}
+      </div>
+
+      <ConnectionDialog
+        open={dialogOpen}
+        onOpenChange={setDialogOpen}
+        connection={editingConn}
+        onSaved={reloadConnections}
+      />
+
+      <Separator />
+
+      {/* Edge palette */}
+      <div className="px-4 py-3 shrink-0">
+        <button
+          className="flex items-center justify-between w-full text-xs font-semibold text-muted-foreground uppercase tracking-wider"
+          onClick={() => setEdgePaletteOpen((v) => !v)}
+        >
+          Edge Palette
+          {edgePaletteOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronUp className="h-3.5 w-3.5" />}
+        </button>
+        {edgePaletteOpen && (
+          <div className="space-y-2 mt-3">
+            <div className="grid grid-cols-2 gap-2">
+              {edgePaletteItems.map((item) => (
+                <button
+                  key={item.type}
+                  onClick={() => setSelectedEdgeType(item.type)}
+                  className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border text-xs font-medium transition-colors ${
+                    selectedEdgeType === item.type
+                      ? `${item.border} ${item.color} bg-accent border-2`
+                      : 'border-border text-muted-foreground hover:bg-accent'
+                  }`}
+                >
+                  <span className={item.color}>{item.icon}</span>
+                  {item.label}
+                </button>
+              ))}
+            </div>
+            {selectedEdgeType && (
+              <p className="text-[10px] text-muted-foreground">
+                Drag between handles. <kbd className="text-[10px] bg-muted px-1 rounded">Esc</kbd> to cancel.
+              </p>
+            )}
+          </div>
+        )}
       </div>
 
       <Separator />
 
       {/* Node palette */}
       <div className="px-4 py-3 shrink-0">
-        <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">
+        <button
+          className="flex items-center justify-between w-full text-xs font-semibold text-muted-foreground uppercase tracking-wider"
+          onClick={() => setPaletteOpen((v) => !v)}
+        >
           Node Palette
-        </p>
-        <div className="space-y-2">
+          {paletteOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronUp className="h-3.5 w-3.5" />}
+        </button>
+        {paletteOpen && <div className="space-y-2 mt-3">
           <PaletteItem
             icon={<Play className="h-3.5 w-3.5 text-blue-500" />}
             label="Trigger"
@@ -62,8 +243,8 @@ export function WorkflowSidebar({ onSelect }: Props) {
           />
           <PaletteItem
             icon={<Code2 className="h-3.5 w-3.5 text-yellow-400" />}
-            label="JS Transform"
-            nodeType="js_transform"
+            label="JS Script"
+            nodeType="js_script"
             onDragStart={onDragStart}
           />
           <PaletteItem
@@ -90,7 +271,7 @@ export function WorkflowSidebar({ onSelect }: Props) {
             nodeType="notify"
             onDragStart={onDragStart}
           />
-        </div>
+        </div>}
       </div>
     </aside>
   )

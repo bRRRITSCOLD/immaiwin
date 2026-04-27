@@ -8,7 +8,7 @@ type NodeType string
 const (
 	NodeTypeTrigger      NodeType = "trigger"
 	NodeTypeHTTPFetch    NodeType = "http_fetch"
-	NodeTypeJSTransform  NodeType = "js_transform"
+	NodeTypeJSScript     NodeType = "js_script"
 	NodeTypeForEach      NodeType = "for_each"
 	NodeTypeMongoUpsert  NodeType = "mongo_upsert"
 	NodeTypeRedisPublish NodeType = "redis_publish"
@@ -32,7 +32,7 @@ type Position struct {
 //
 // Node data fields by type:
 //   - http_fetch:    {"url": "https://...", "name": "fetchArticle"}
-//   - js_transform:  {"script": "return input.items.map(...)"}
+//   - js_script:     {"script": "return input.items.map(...)"}
 //   - mongo_upsert:  {"collection": "news_articles", "filter_field": "url"}
 //   - redis_publish: {"channel": "immaiwin:news:articles"}
 //   - notify:        {"message": "optional template"}
@@ -41,17 +41,20 @@ type Node struct {
 	Type     NodeType       `bson:"type"     json:"type"`
 	Position Position       `bson:"position" json:"position"`
 	Data     map[string]any `bson:"data"     json:"data"`
+	Width    *float64       `bson:"width,omitempty"  json:"width,omitempty"`
+	Height   *float64       `bson:"height,omitempty" json:"height,omitempty"`
 }
 
 // Edge connects two nodes.
 // SourceHandle "success" or "error" controls which branch is followed.
 type Edge struct {
-	ID           string `bson:"id"                       json:"id"`
-	Source       string `bson:"source"                   json:"source"`
-	Target       string `bson:"target"                   json:"target"`
-	SourceHandle string `bson:"source_handle,omitempty"  json:"sourceHandle,omitempty"`
-	TargetHandle string `bson:"target_handle,omitempty"  json:"targetHandle,omitempty"`
-	Label        string `bson:"label,omitempty"          json:"label,omitempty"`
+	ID           string         `bson:"id"                       json:"id"`
+	Source       string         `bson:"source"                   json:"source"`
+	Target       string         `bson:"target"                   json:"target"`
+	SourceHandle string         `bson:"source_handle,omitempty"  json:"sourceHandle,omitempty"`
+	TargetHandle string         `bson:"target_handle,omitempty"  json:"targetHandle,omitempty"`
+	Label        string         `bson:"label,omitempty"          json:"label,omitempty"`
+	Data         map[string]any `bson:"data,omitempty"           json:"data,omitempty"`
 }
 
 // Workflow is a named node-edge graph that describes a pipeline.

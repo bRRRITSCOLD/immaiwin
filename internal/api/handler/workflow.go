@@ -8,6 +8,7 @@ import (
 
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/workflow"
 	"github.com/gin-gonic/gin"
+	cronlib "github.com/robfig/cron/v3"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 )
 
@@ -50,6 +51,30 @@ func UpsertWorkflow(store WorkflowStore) gin.HandlerFunc {
 		}
 		wf.ID = id
 
+		// Validate cron expressions on trigger nodes w/ trigger_type=cron
+		cronParser := cronlib.NewParser(cronlib.Minute | cronlib.Hour | cronlib.Dom | cronlib.Month | cronlib.Dow)
+		for _, n := range wf.Nodes {
+			if n.Type != workflow.NodeTypeTrigger {
+				continue
+			}
+			tt, _ := n.Data["trigger_type"].(string)
+			if tt != "cron" {
+				continue
+			}
+			expr, _ := n.Data["cron"].(string)
+			if expr == "" {
+				continue
+			}
+			if _, err := cronParser.Parse(expr); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{
+					"error":   "invalid cron expression",
+					"node_id": n.ID,
+					"detail":  err.Error(),
+				})
+				return
+			}
+		}
+
 		saved, err := store.Upsert(c.Request.Context(), wf)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -86,6 +111,7 @@ func RunWorkflow(store WorkflowStore, exec *workflow.WorkflowExecutor) gin.Handl
 
 		var req struct {
 			StopAt string `json:"stop_at"`
+			Input  any    `json:"input,omitempty"`
 		}
 		_ = json.NewDecoder(c.Request.Body).Decode(&req)
 
@@ -99,7 +125,12 @@ func RunWorkflow(store WorkflowStore, exec *workflow.WorkflowExecutor) gin.Handl
 			return
 		}
 
-		steps, err := exec.Run(c.Request.Context(), wf, req.StopAt)
+		var steps []workflow.StepResult
+		if req.Input != nil {
+			steps, err = exec.Run(c.Request.Context(), wf, req.StopAt, req.Input)
+		} else {
+			steps, err = exec.Run(c.Request.Context(), wf, req.StopAt)
+		}
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return

@@ -66,6 +66,7 @@ func (r *WorkflowRepository) Upsert(ctx context.Context, wf workflow.Workflow) (
 		bson.M{
 			"$set": bson.M{
 				"name":       wf.Name,
+				"params":     wf.Params,
 				"nodes":      wf.Nodes,
 				"edges":      wf.Edges,
 				"updated_at": wf.UpdatedAt,

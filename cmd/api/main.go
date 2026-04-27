@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 	"os/signal"
 	"syscall"
 	"time"
@@ -86,13 +88,37 @@ func main() {
 		os.Exit(1)
 	}
 
-	wfExec := &workflow.WorkflowExecutor{
-		HTTPClient: &http.Client{Timeout: 30 * time.Second},
-		DB:         mongodb.NewRawDB(mc.DB()),
-		Pub:        rc,
+	var encKey []byte
+	if trimmed := strings.TrimSpace(cfg.EncryptionKey); trimmed != "" {
+		encKey, err = hex.DecodeString(trimmed)
+		if err != nil || len(encKey) != 32 {
+			slog.Error("ENCRYPTION_KEY must be 64 hex chars (32 bytes)", "len", len(trimmed), "err", err)
+			os.Exit(1)
+		}
 	}
 
-	srv := api.NewServer(cfg.API, rc, pm, wl, tr, nr, tokens, owl, fwl, sc, wfRepo, wfExec)
+	connRepo, err := mongodb.NewConnectionRepository(ctx, mc.DB(), encKey)
+	if err != nil {
+		slog.Error("failed to init connection repository", "err", err)
+		os.Exit(1)
+	}
+
+	defaultDB := mongodb.NewRawDB(mc.DB())
+	connResolver := workflow.NewConnectionResolver(connRepo, defaultDB, rc)
+	defer func() {
+		if err := connResolver.Close(); err != nil {
+			slog.Error("failed to close connection resolver", "err", err)
+		}
+	}()
+
+	wfExec := &workflow.WorkflowExecutor{
+		HTTPClient:   &http.Client{Timeout: 30 * time.Second},
+		DB:           defaultDB,
+		Pub:          rc,
+		ConnResolver: connResolver,
+	}
+
+	srv := api.NewServer(cfg.API, rc, pm, wl, tr, nr, tokens, owl, fwl, sc, wfRepo, wfExec, connRepo, mc.DB())
 
 	go func() {
 		slog.Info("api server listening", "addr", srv.Addr())

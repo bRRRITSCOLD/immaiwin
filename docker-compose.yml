@@ -14,6 +14,24 @@ services:
       timeout: 3s
       retries: 3
 
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: immaiwin-rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
   mongodb:
     image: mongo:7
     container_name: immaiwin-mongodb
@@ -32,6 +50,8 @@ services:
 
 volumes:
   redis-data:
+    driver: local
+  rabbitmq-data:
     driver: local
   mongodb-data:
     driver: local

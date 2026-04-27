@@ -94,7 +94,7 @@
 /* Strip xyflow node wrapper chrome — our custom node components own all styling */
 .react-flow__node-trigger,
 .react-flow__node-http_fetch,
-.react-flow__node-js_transform,
+.react-flow__node-js_script,
 .react-flow__node-for_each,
 .react-flow__node-mongo_upsert,
 .react-flow__node-redis_publish,

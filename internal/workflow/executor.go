@@ -50,9 +50,10 @@ type runCtx map[string]StepContext
 
 // WorkflowExecutor runs a Workflow graph node by node.
 type WorkflowExecutor struct {
-	HTTPClient *http.Client
-	DB         RawUpserter
-	Pub        Publisher
+	HTTPClient   *http.Client
+	DB           RawUpserter
+	Pub          Publisher
+	ConnResolver *ConnectionResolver
 }
 
 // adjEntry is one outgoing edge from a node.
@@ -66,7 +67,8 @@ type adjEntry struct {
 // once per element (not by the main BFS).
 // If stopAt is non-empty, execution halts after the node with that ID executes,
 // returning partial results (useful for debug/breakpoint runs).
-func (e *WorkflowExecutor) Run(ctx context.Context, wf Workflow, stopAt string) ([]StepResult, error) {
+// Optional initialInput is injected as trigger node output (used by event-driven triggers like RabbitMQ).
+func (e *WorkflowExecutor) Run(ctx context.Context, wf Workflow, stopAt string, initialInput ...any) ([]StepResult, error) {
 	byID := make(map[string]Node, len(wf.Nodes))
 	for _, n := range wf.Nodes {
 		byID[n.ID] = n
@@ -74,9 +76,15 @@ func (e *WorkflowExecutor) Run(ctx context.Context, wf Workflow, stopAt string) 
 
 	adj := make(map[string][]adjEntry, len(wf.Edges))
 	for _, edge := range wf.Edges {
+		h := strings.ToLower(edge.SourceHandle)
+		// Prefer paletteType for all edges (not just dh-*); legacy edges
+		// without paletteType fall through to sourceHandle for backwards compat.
+		if pt, ok := edge.Data["paletteType"].(string); ok && pt != "" {
+			h = strings.ToLower(pt)
+		}
 		adj[edge.Source] = append(adj[edge.Source], adjEntry{
 			targetID:     edge.Target,
-			sourceHandle: strings.ToLower(edge.SourceHandle),
+			sourceHandle: h,
 		})
 	}
 
@@ -88,10 +96,17 @@ func (e *WorkflowExecutor) Run(ctx context.Context, wf Workflow, stopAt string) 
 		nodeID string
 		input  any
 	}
+	// When initialInput is provided (e.g. from RabbitMQ message), trigger nodes
+	// produce that value as output instead of nil.
+	var triggerOutput any
+	if len(initialInput) > 0 {
+		triggerOutput = initialInput[0]
+	}
+
 	var queue []queueItem
 	for _, n := range wf.Nodes {
 		if n.Type == NodeTypeTrigger {
-			queue = append(queue, queueItem{nodeID: n.ID, input: nil})
+			queue = append(queue, queueItem{nodeID: n.ID, input: triggerOutput})
 		}
 	}
 
@@ -315,11 +330,11 @@ func (e *WorkflowExecutor) runNode(ctx context.Context, node Node, input any, wf
 	data := applyParamsToData(node.Data, params)
 	switch node.Type {
 	case NodeTypeTrigger:
-		return nil, nil
+		return input, nil // pass-through; initialInput flows via the queue item
 	case NodeTypeHTTPFetch:
 		return e.runHTTPFetch(ctx, data, input, wfCtx)
-	case NodeTypeJSTransform:
-		return runJSTransform(data, input, wfCtx, params)
+	case NodeTypeJSScript:
+		return runJSScript(data, input, wfCtx, params)
 	case NodeTypeForEach:
 		return nil, fmt.Errorf("for_each dispatched via runNode — use runForEach instead")
 	case NodeTypeMongoUpsert:
@@ -371,7 +386,7 @@ func (e *WorkflowExecutor) runHTTPFetch(_ context.Context, data map[string]any, 
 	}, nil
 }
 
-// runJSTransform runs user-supplied sync JS against input.
+// runJSScript runs user-supplied sync JS against input.
 // Script is wrapped: (function(input){ USER_SCRIPT })(input) so top-level return works.
 //
 // Globals available to scripts:
@@ -381,7 +396,7 @@ func (e *WorkflowExecutor) runHTTPFetch(_ context.Context, data map[string]any, 
 //	context.stepName.output    — what the named step produced
 //	context.stepName.item      — current element (for_each body only)
 //	params                     — workflow-level parameter map (params.key)
-func runJSTransform(data map[string]any, input any, wfCtx runCtx, params map[string]string) (any, error) {
+func runJSScript(data map[string]any, input any, wfCtx runCtx, params map[string]string) (any, error) {
 	script, _ := data["script"].(string)
 	if script == "" {
 		return input, nil // pass-through if no script
@@ -389,22 +404,22 @@ func runJSTransform(data map[string]any, input any, wfCtx runCtx, params map[str
 
 	vm := goja.New()
 	if err := news.SetTransformBindings(vm); err != nil {
-		return nil, fmt.Errorf("js_transform: setup: %w", err)
+		return nil, fmt.Errorf("js_script: setup: %w", err)
 	}
 	if err := vm.Set("input", input); err != nil {
-		return nil, fmt.Errorf("js_transform: set input: %w", err)
+		return nil, fmt.Errorf("js_script: set input: %w", err)
 	}
 	if err := vm.Set("context", wfCtxToJS(wfCtx)); err != nil {
-		return nil, fmt.Errorf("js_transform: set context: %w", err)
+		return nil, fmt.Errorf("js_script: set context: %w", err)
 	}
 	if err := vm.Set("params", params); err != nil {
-		return nil, fmt.Errorf("js_transform: set params: %w", err)
+		return nil, fmt.Errorf("js_script: set params: %w", err)
 	}
 
 	wrapped := fmt.Sprintf("(function(input) { %s })(input)", script)
 	result, err := vm.RunString(wrapped)
 	if err != nil {
-		return nil, fmt.Errorf("js_transform: runtime: %w", err)
+		return nil, fmt.Errorf("js_script: runtime: %w", err)
 	}
 	return result.Export(), nil
 }
@@ -452,6 +467,7 @@ func applyParamsToData(data map[string]any, params map[string]string) map[string
 
 // runMongoUpsert upserts a single document into the target collection.
 // Use for_each upstream to iterate arrays; this node handles one item at a time.
+// If data["connection_id"] is set and ConnResolver is available, uses that connection.
 func (e *WorkflowExecutor) runMongoUpsert(ctx context.Context, data map[string]any, input any) (any, error) {
 	collection, _ := data["collection"].(string)
 	filterField, _ := data["filter_field"].(string)
@@ -462,7 +478,17 @@ func (e *WorkflowExecutor) runMongoUpsert(ctx context.Context, data map[string]a
 	if filterField == "" {
 		return nil, fmt.Errorf("mongo_upsert: filter_field is required")
 	}
-	if e.DB == nil {
+
+	// Resolve DB — connection_id → specific connection, empty → default
+	db := e.DB
+	if connID, _ := data["connection_id"].(string); connID != "" && e.ConnResolver != nil {
+		resolved, err := e.ConnResolver.ResolveDB(ctx, connID)
+		if err != nil {
+			return nil, fmt.Errorf("mongo_upsert: %w", err)
+		}
+		db = resolved
+	}
+	if db == nil {
 		return nil, fmt.Errorf("mongo_upsert: no DB configured")
 	}
 
@@ -481,7 +507,7 @@ func (e *WorkflowExecutor) runMongoUpsert(ctx context.Context, data map[string]a
 		"$set":         item,
 		"$setOnInsert": bson.M{"created_at": time.Now().UTC()},
 	}
-	_, ins, err := e.DB.UpsertRaw(ctx, collection, filter, update, true)
+	_, ins, err := db.UpsertRaw(ctx, collection, filter, update, true)
 	if err != nil {
 		return nil, fmt.Errorf("mongo_upsert: %w", err)
 	}
@@ -493,19 +519,31 @@ func (e *WorkflowExecutor) runMongoUpsert(ctx context.Context, data map[string]a
 }
 
 // runRedisPublish publishes the JSON-serialised input to a Redis channel.
+// If data["connection_id"] is set and ConnResolver is available, uses that connection.
 func (e *WorkflowExecutor) runRedisPublish(ctx context.Context, data map[string]any, input any) (any, error) {
 	channel, _ := data["channel"].(string)
 	if channel == "" {
 		return nil, fmt.Errorf("redis_publish: channel is required")
 	}
-	if e.Pub == nil {
+
+	// Resolve publisher — connection_id → specific connection, empty → default
+	pub := e.Pub
+	if connID, _ := data["connection_id"].(string); connID != "" && e.ConnResolver != nil {
+		resolved, err := e.ConnResolver.ResolvePub(ctx, connID)
+		if err != nil {
+			return nil, fmt.Errorf("redis_publish: %w", err)
+		}
+		pub = resolved
+	}
+	if pub == nil {
 		return nil, fmt.Errorf("redis_publish: no publisher configured")
 	}
+
 	payload, err := json.Marshal(input)
 	if err != nil {
 		return nil, fmt.Errorf("redis_publish: marshal: %w", err)
 	}
-	if err := e.Pub.Publish(ctx, channel, payload); err != nil {
+	if err := pub.Publish(ctx, channel, payload); err != nil {
 		return nil, fmt.Errorf("redis_publish: %w", err)
 	}
 	return map[string]any{"channel": channel, "published": true}, nil

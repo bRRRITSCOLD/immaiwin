@@ -35,21 +35,29 @@ type tokenDoc struct {
 
 // TokenManager handles OAuth2 token lifecycle: authorize, exchange, refresh, storage.
 type TokenManager struct {
-	cfg  config.SchwabConfig
-	col  *mongo.Collection
-	http *http.Client
+	cfg   config.SchwabConfig
+	col   *mongo.Collection
+	http  *http.Client
+	docID string
 
 	mu          sync.RWMutex
 	accessToken string
 	expiresAt   time.Time
 }
 
-func NewTokenManager(cfg config.SchwabConfig, db *mongo.Database) *TokenManager {
+// NewTokenManagerWithID creates a TokenManager that stores tokens under a custom document ID.
+// Use this for per-connection tokens (e.g. "conn_tokens:<connection_id>").
+func NewTokenManagerWithID(cfg config.SchwabConfig, db *mongo.Database, docID string) *TokenManager {
 	return &TokenManager{
-		cfg:  cfg,
-		col:  db.Collection("schwab_tokens"),
-		http: &http.Client{Timeout: 15 * time.Second},
+		cfg:   cfg,
+		col:   db.Collection("schwab_tokens"),
+		http:  &http.Client{Timeout: 15 * time.Second},
+		docID: docID,
 	}
+}
+
+func NewTokenManager(cfg config.SchwabConfig, db *mongo.Database) *TokenManager {
+	return NewTokenManagerWithID(cfg, db, tokenDocID)
 }
 
 // AuthorizeURL returns the Schwab OAuth2 authorization URL to redirect the user to.
@@ -81,7 +89,7 @@ func (m *TokenManager) ExchangeCode(ctx context.Context, code string) error {
 // Load restores tokens from MongoDB into memory. Called at startup.
 func (m *TokenManager) Load(ctx context.Context) error {
 	var doc tokenDoc
-	err := m.col.FindOne(ctx, bson.M{"_id": tokenDocID}).Decode(&doc)
+	err := m.col.FindOne(ctx, bson.M{"_id": m.docID}).Decode(&doc)
 	if err == mongo.ErrNoDocuments {
 		return nil // not yet authorized — ok
 	}
@@ -101,7 +109,7 @@ func (m *TokenManager) Disconnect(ctx context.Context) error {
 	m.accessToken = ""
 	m.expiresAt = time.Time{}
 	m.mu.Unlock()
-	_, err := m.col.DeleteOne(ctx, bson.M{"_id": tokenDocID})
+	_, err := m.col.DeleteOne(ctx, bson.M{"_id": m.docID})
 	return err
 }
 
@@ -148,7 +156,7 @@ func (m *TokenManager) RunRefresher(ctx context.Context) {
 
 func (m *TokenManager) refresh(ctx context.Context) (string, error) {
 	var doc tokenDoc
-	if err := m.col.FindOne(ctx, bson.M{"_id": tokenDocID}).Decode(&doc); err != nil {
+	if err := m.col.FindOne(ctx, bson.M{"_id": m.docID}).Decode(&doc); err != nil {
 		return "", fmt.Errorf("schwab refresh: load tokens: %w", err)
 	}
 
@@ -204,14 +212,14 @@ func (m *TokenManager) postToken(ctx context.Context, body url.Values) (*tokenRe
 func (m *TokenManager) save(ctx context.Context, tr *tokenResponse) error {
 	exp := time.Now().UTC().Add(time.Duration(tr.ExpiresIn) * time.Second)
 	doc := tokenDoc{
-		ID:           tokenDocID,
+		ID:           m.docID,
 		AccessToken:  tr.AccessToken,
 		RefreshToken: tr.RefreshToken,
 		ExpiresAt:    exp,
 		UpdatedAt:    time.Now().UTC(),
 	}
 	_, err := m.col.UpdateOne(ctx,
-		bson.M{"_id": tokenDocID},
+		bson.M{"_id": m.docID},
 		bson.M{"$set": doc},
 		options.UpdateOne().SetUpsert(true),
 	)
