@@ -456,7 +456,7 @@ function DynamicHandleEl({
   return (
     <Handle
       type={isReceive ? 'target' : 'source'}
-      position={sideToPosition[dh.side]}
+      position={sideToPosition[dh.side] ?? Position.Right}
       id={dh.id}
       isConnectable
       onContextMenu={onContextMenu}

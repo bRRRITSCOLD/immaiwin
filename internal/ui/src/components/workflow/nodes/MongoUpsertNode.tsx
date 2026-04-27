@@ -11,9 +11,9 @@ export function MongoUpsertNode({ id, data, selected }: NodeProps) {
   const collection = (data?.collection as string) ?? ''
   const filterField = (data?.filter_field as string) ?? ''
   return (
-    <div className="relative min-w-[280px]">
+    <div className="relative min-w-[280px] h-full">
       <BreakpointMarker id={id} />
-      <div className="overflow-x-hidden rounded-lg border-2 border-green-600 bg-card text-card-foreground shadow-sm">
+      <div className="overflow-x-hidden rounded-lg border-2 border-green-600 bg-card text-card-foreground shadow-sm h-full">
         <NodeResizer minWidth={280} minHeight={80} isVisible={selected} />
         <div className="flex items-center gap-2 px-4 py-2.5 border-b border-green-600/40">
           <Database className="h-4 w-4 text-green-500 shrink-0" />

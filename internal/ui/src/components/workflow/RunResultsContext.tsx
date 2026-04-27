@@ -79,7 +79,7 @@ export function NodeDebugPanel({ id }: { id: string }) {
 
   const total = steps.length
   const idx = Math.min(iterIdx, total - 1)
-  const step = steps[idx]
+  const step = steps[idx]!
   const hasError = !!step.error
   const isMulti = total > 1
 

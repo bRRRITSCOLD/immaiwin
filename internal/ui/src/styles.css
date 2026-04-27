@@ -98,7 +98,9 @@
 .react-flow__node-for_each,
 .react-flow__node-mongo_upsert,
 .react-flow__node-redis_publish,
-.react-flow__node-notify {
+.react-flow__node-notify,
+.react-flow__node-sandbox_script,
+.react-flow__node-output {
   background: transparent;
   border: none;
   border-radius: 0;

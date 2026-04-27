@@ -281,6 +281,7 @@ function ScrapersPage() {
           <div style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
             {virtualizer.getVirtualItems().map((vitem) => {
               const config = configs[vitem.index]
+              if (!config) return null
               return (
                 <div
                   key={vitem.key}
