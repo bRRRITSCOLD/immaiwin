@@ -57,7 +57,7 @@ func DebugSandbox(mgr *sandbox.Manager) gin.HandlerFunc {
 			slog.Error("sandbox-debug: ws upgrade failed", "err", err)
 			return
 		}
-		defer ws.Close()
+		defer func() { _ = ws.Close() }()
 
 		// Wait for first message — must be "start"
 		_, raw, err := ws.ReadMessage()
@@ -96,7 +96,7 @@ func DebugSandbox(mgr *sandbox.Manager) gin.HandlerFunc {
 			writeWS(ws, wsMessage{Type: "error", Error: err.Error()})
 			return
 		}
-		defer mgr.StopDebug(session.ID)
+		defer func() { _ = mgr.StopDebug(session.ID) }()
 
 		writeWS(ws, wsMessage{Type: "started", SessionID: session.ID})
 
@@ -153,7 +153,7 @@ func connectAndProxy(ws *websocket.Conn, session *sandbox.DebugSession, initialB
 	if debugController == nil {
 		return fmt.Errorf("failed to connect to debug adapter")
 	}
-	defer debugController.Close()
+	defer func() { _ = debugController.Close() }()
 
 	// Initialize → set breakpoints → start execution
 	if err := debugController.Initialize(); err != nil {
@@ -203,13 +203,13 @@ func connectAndProxy(ws *websocket.Conn, session *sandbox.DebugSession, initialB
 			// Debug adapter says session over — close browser WS to unblock
 			// main read loop so connectAndProxy returns and StopDebug runs.
 			if event.Type == "terminated" {
-				ws.Close()
+				_ = ws.Close()
 				return
 			}
 		}
 		// Events channel closed without terminated event (adapter crashed) — notify browser
 		writeWS(ws, wsMessage{Type: "terminated"})
-		ws.Close()
+		_ = ws.Close()
 	}()
 
 	// Read browser commands → forward to debugger

@@ -13,7 +13,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/api/types/build"
 	"github.com/docker/docker/client"
 )
 
@@ -43,7 +43,7 @@ func (b *ImageBuilder) BuildOrReuse(ctx context.Context, lang Language, base str
 	tag := buildTag(base, packages)
 
 	// Check if image exists
-	_, _, err := b.cli.ImageInspectWithRaw(ctx, tag)
+	_, err := b.cli.ImageInspect(ctx, tag)
 	if err == nil {
 		slog.Info("sandbox: reusing existing package image", "tag", tag)
 		return tag, nil
@@ -57,7 +57,7 @@ func (b *ImageBuilder) BuildOrReuse(ctx context.Context, lang Language, base str
 		return "", fmt.Errorf("sandbox: tar context: %w", err)
 	}
 
-	resp, err := b.cli.ImageBuild(ctx, tarBuf, types.ImageBuildOptions{
+	resp, err := b.cli.ImageBuild(ctx, tarBuf, build.ImageBuildOptions{
 		Tags:       []string{tag},
 		Dockerfile: "Dockerfile",
 		Remove:     true,
@@ -66,7 +66,7 @@ func (b *ImageBuilder) BuildOrReuse(ctx context.Context, lang Language, base str
 	if err != nil {
 		return "", fmt.Errorf("sandbox: image build: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// Parse build output for errors
 	if err := parseBuildOutput(resp.Body); err != nil {

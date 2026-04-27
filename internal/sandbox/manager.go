@@ -496,7 +496,7 @@ func (m *Manager) cleanupContainer(fromPool bool, containerID string) {
 
 // ensureImage pulls the image if not present locally.
 func (m *Manager) ensureImage(ctx context.Context, img string) error {
-	_, _, err := m.cli.ImageInspectWithRaw(ctx, img)
+	_, err := m.cli.ImageInspect(ctx, img)
 	if err == nil {
 		return nil // already present
 	}
@@ -506,7 +506,7 @@ func (m *Manager) ensureImage(ctx context.Context, img string) error {
 	if err != nil {
 		return fmt.Errorf("sandbox: pull %s: %w", img, err)
 	}
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 	_, _ = io.Copy(io.Discard, reader)
 	return nil
 }

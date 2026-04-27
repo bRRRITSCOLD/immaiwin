@@ -37,7 +37,7 @@ func NewCDPClient(host string, port int, timeout time.Duration) (*CDPClient, err
 	if err != nil {
 		return nil, fmt.Errorf("cdp: get /json/list: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {

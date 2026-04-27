@@ -136,7 +136,7 @@ func main() {
 		mgr.SetPool(pool)
 
 		defer pool.Close(context.Background())
-		defer mgr.Close()
+		defer func() { _ = mgr.Close() }()
 		sandboxMgr = mgr
 		slog.Info("sandbox manager enabled", "runtime", cfg.Sandbox.Runtime, "pool_size", cfg.Sandbox.PoolSize)
 	}

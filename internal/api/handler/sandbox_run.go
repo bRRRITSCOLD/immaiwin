@@ -47,7 +47,7 @@ func RunSandbox(mgr *sandbox.Manager) gin.HandlerFunc {
 			slog.Error("sandbox-run: ws upgrade failed", "err", err)
 			return
 		}
-		defer ws.Close()
+		defer func() { _ = ws.Close() }()
 
 		// Wait for "run" message
 		_, raw, err := ws.ReadMessage()
