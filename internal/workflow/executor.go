@@ -10,9 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/news"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/sandbox"
-	"github.com/dop251/goja"
 	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
@@ -335,8 +333,6 @@ func (e *WorkflowExecutor) runNode(ctx context.Context, node Node, input any, wf
 		return input, nil // pass-through; initialInput flows via the queue item
 	case NodeTypeHTTPFetch:
 		return e.runHTTPFetch(ctx, data, input, wfCtx)
-	case NodeTypeJSScript:
-		return runJSScript(data, input, wfCtx, params)
 	case NodeTypeSandboxScript:
 		return e.runSandboxScript(ctx, data, input, wfCtx, params)
 	case NodeTypeForEach:
@@ -390,46 +386,8 @@ func (e *WorkflowExecutor) runHTTPFetch(_ context.Context, data map[string]any, 
 	}, nil
 }
 
-// runJSScript runs user-supplied sync JS against input.
-// Script is wrapped: (function(input){ USER_SCRIPT })(input) so top-level return works.
-//
-// Globals available to scripts:
-//
-//	input                      — output of the previous node
-//	context.stepName.input     — what the named step received
-//	context.stepName.output    — what the named step produced
-//	context.stepName.item      — current element (for_each body only)
-//	params                     — workflow-level parameter map (params.key)
-func runJSScript(data map[string]any, input any, wfCtx runCtx, params map[string]string) (any, error) {
-	script, _ := data["script"].(string)
-	if script == "" {
-		return input, nil // pass-through if no script
-	}
-
-	vm := goja.New()
-	if err := news.SetTransformBindings(vm); err != nil {
-		return nil, fmt.Errorf("js_script: setup: %w", err)
-	}
-	if err := vm.Set("input", input); err != nil {
-		return nil, fmt.Errorf("js_script: set input: %w", err)
-	}
-	if err := vm.Set("context", wfCtxToJS(wfCtx)); err != nil {
-		return nil, fmt.Errorf("js_script: set context: %w", err)
-	}
-	if err := vm.Set("params", params); err != nil {
-		return nil, fmt.Errorf("js_script: set params: %w", err)
-	}
-
-	wrapped := fmt.Sprintf("(function(input) { %s })(input)", script)
-	result, err := vm.RunString(wrapped)
-	if err != nil {
-		return nil, fmt.Errorf("js_script: runtime: %w", err)
-	}
-	return result.Export(), nil
-}
-
-// wfCtxToJS converts runCtx to map[string]any with lowercase keys so goja
-// exposes context.stepName.input / .output / .item (not .Input / .Output / .Item).
+// wfCtxToJS converts runCtx to map[string]any with lowercase keys so sandbox scripts
+// access context.stepName.input / .output / .item (not .Input / .Output / .Item).
 func wfCtxToJS(wfCtx runCtx) map[string]any {
 	js := make(map[string]any, len(wfCtx))
 	for name, sc := range wfCtx {
@@ -446,7 +404,7 @@ func wfCtxToJS(wfCtx runCtx) map[string]any {
 }
 
 // applyParamsToData resolves {{params.key}} placeholders in all string data fields.
-// The "script" key is skipped — JS transforms access params via the params global instead.
+// The "script" key is skipped — sandbox scripts access params via the params global instead.
 func applyParamsToData(data map[string]any, params map[string]string) map[string]any {
 	if len(params) == 0 {
 		return data

@@ -8,7 +8,6 @@ type NodeType string
 const (
 	NodeTypeTrigger      NodeType = "trigger"
 	NodeTypeHTTPFetch    NodeType = "http_fetch"
-	NodeTypeJSScript     NodeType = "js_script"
 	NodeTypeForEach      NodeType = "for_each"
 	NodeTypeMongoUpsert  NodeType = "mongo_upsert"
 	NodeTypeRedisPublish NodeType = "redis_publish"
@@ -33,7 +32,6 @@ type Position struct {
 //
 // Node data fields by type:
 //   - http_fetch:    {"url": "https://...", "name": "fetchArticle"}
-//   - js_script:     {"script": "return input.items.map(...)"}
 //   - mongo_upsert:  {"collection": "news_articles", "filter_field": "url"}
 //   - redis_publish: {"channel": "immaiwin:news:articles"}
 //   - notify:        {"message": "optional template"}

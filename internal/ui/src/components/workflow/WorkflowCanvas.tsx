@@ -19,7 +19,6 @@ import {
 import { WaypointEdge } from './WaypointEdge'
 import { TriggerNode } from './nodes/TriggerNode'
 import { HTTPFetchNode } from './nodes/HTTPFetchNode'
-import { JSScriptNode } from './nodes/JSScriptNode'
 import { ForEachNode } from './nodes/ForEachNode'
 import { MongoUpsertNode } from './nodes/MongoUpsertNode'
 import { RedisPublishNode } from './nodes/RedisPublishNode'
@@ -33,7 +32,6 @@ import { RunResultsContext, DebugContext, type RunResults } from './RunResultsCo
 const nodeTypes: NodeTypes = {
   trigger: TriggerNode,
   http_fetch: HTTPFetchNode,
-  js_script: JSScriptNode,
   for_each: ForEachNode,
   mongo_upsert: MongoUpsertNode,
   redis_publish: RedisPublishNode,
@@ -51,7 +49,6 @@ const edgeTypes: EdgeTypes = {
 const defaultNodeData: Record<string, Record<string, unknown>> = {
   trigger: { trigger_type: 'manual', name: '' },
   http_fetch: { url: '', name: '' },
-  js_script: { script: '', name: '' },
   for_each: { name: '' },
   mongo_upsert: { collection: '', filter_field: '', name: '' },
   redis_publish: { channel: '', name: '' },

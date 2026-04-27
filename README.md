@@ -85,7 +85,6 @@ Canvas-based editor powered by React Flow. Drag nodes, connect edges, run entire
 |------|---------|
 | `trigger` | Start workflow from WebSocket events, cron, or RabbitMQ |
 | `http_fetch` | Make HTTP requests (GET/POST/PUT/DELETE) |
-| `js_script` | Quick JavaScript transforms (goja — no container overhead) |
 | `sandbox_script` | Run code in isolated Docker container (any of 5 languages) |
 | `for_each` | Loop over arrays with isolated context per iteration |
 | `mongo_upsert` | Write/update MongoDB documents |
@@ -209,7 +208,7 @@ All data flows through Redis Pub/Sub and is exposed via Server-Sent Events:
 | **Containers** | Docker API (sandbox execution, debug sessions) |
 | **Sandbox Runtimes** | Node.js 20, Python 3.12, Go 1.22, Rust 1.86, PHP 8.3 |
 | **Debug Protocols** | DAP (Python/debugpy), CDP (JS/Node --inspect) |
-| **JS Engine** | goja (lightweight in-process JS for quick transforms) |
+| **JS Engine** | goja (scraper script runtime, jQuery-like selectors) |
 
 ---
 
@@ -356,7 +355,7 @@ make worker NAME=mongodb-writer                # Background MongoDB writes
 ## Roadmap
 
 - [x] Visual workflow canvas (React Flow)
-- [x] 8 node types (trigger, http_fetch, js_script, sandbox_script, for_each, mongo_upsert, redis_publish, notify)
+- [x] 7 node types (trigger, http_fetch, sandbox_script, for_each, mongo_upsert, redis_publish, notify)
 - [x] Multi-language sandbox execution (JS, Python, Go, Rust, PHP)
 - [x] Interactive debugging (DAP for Python, CDP for JavaScript)
 - [x] WebSocket workflow triggers with OAuth

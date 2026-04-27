@@ -1,4 +1,4 @@
-import { Globe, Play, Code2, Container, Database, Bell, RefreshCw, Radio, ChevronDown, ChevronUp, CheckCircle2, XCircle, Circle, Plus, Pencil, Trash2, Plug, Download } from 'lucide-react'
+import { Globe, Play, Container, Database, Bell, RefreshCw, Radio, ChevronDown, ChevronUp, CheckCircle2, XCircle, Circle, Plus, Pencil, Trash2, Plug, Download } from 'lucide-react'
 import { useState } from 'react'
 import { toast } from 'sonner'
 import { Separator } from '~/components/ui/separator'
@@ -239,12 +239,6 @@ export function WorkflowSidebar({ onSelect, onReload }: Props) {
             icon={<Globe className="h-3.5 w-3.5 text-sky-400" />}
             label="HTTP Fetch"
             nodeType="http_fetch"
-            onDragStart={onDragStart}
-          />
-          <PaletteItem
-            icon={<Code2 className="h-3.5 w-3.5 text-yellow-400" />}
-            label="JS Script"
-            nodeType="js_script"
             onDragStart={onDragStart}
           />
           <PaletteItem
