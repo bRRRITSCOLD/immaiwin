@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/news"
+	"github.com/bRRRITSCOLD/immaiwin-go/internal/sandbox"
 	"github.com/dop251/goja"
 	"go.mongodb.org/mongo-driver/v2/bson"
 )
@@ -54,6 +55,7 @@ type WorkflowExecutor struct {
 	DB           RawUpserter
 	Pub          Publisher
 	ConnResolver *ConnectionResolver
+	SandboxMgr   *sandbox.Manager
 }
 
 // adjEntry is one outgoing edge from a node.
@@ -166,7 +168,7 @@ func (e *WorkflowExecutor) Run(ctx context.Context, wf Workflow, stopAt string, 
 			if et.sourceHandle == "item" {
 				continue // for_each body; not traversed by main BFS
 			}
-			if et.sourceHandle == handle || et.sourceHandle == "" {
+			if et.sourceHandle == handle || et.sourceHandle == "" || et.sourceHandle == "start" {
 				if !visited[et.targetID] {
 					queue = append(queue, queueItem{nodeID: et.targetID, input: output})
 				}
@@ -335,6 +337,8 @@ func (e *WorkflowExecutor) runNode(ctx context.Context, node Node, input any, wf
 		return e.runHTTPFetch(ctx, data, input, wfCtx)
 	case NodeTypeJSScript:
 		return runJSScript(data, input, wfCtx, params)
+	case NodeTypeSandboxScript:
+		return e.runSandboxScript(ctx, data, input, wfCtx, params)
 	case NodeTypeForEach:
 		return nil, fmt.Errorf("for_each dispatched via runNode — use runForEach instead")
 	case NodeTypeMongoUpsert:
@@ -591,6 +595,64 @@ func applyTemplate(s string, input any, wfCtx runCtx) string {
 		}
 	}
 	return s
+}
+
+// runSandboxScript executes user code in an isolated Docker container.
+//
+// Node data fields:
+//
+//	data.language   string  "javascript" | "python"
+//	data.script     string  user code
+//	data.timeout    float64 seconds (default 30)
+//	data.mem_limit  float64 MB (default 128)
+//	data.cpu_limit  float64 cores (default 0.5)
+//	data.network    bool    allow outbound network (default false)
+func (e *WorkflowExecutor) runSandboxScript(ctx context.Context, data map[string]any, input any, wfCtx runCtx, params map[string]string) (any, error) {
+	if e.SandboxMgr == nil {
+		return nil, fmt.Errorf("sandbox_script: sandbox manager not configured")
+	}
+
+	lang, _ := data["language"].(string)
+	if lang == "" {
+		lang = "javascript"
+	}
+	script, _ := data["script"].(string)
+	if script == "" {
+		return input, nil // pass-through
+	}
+
+	timeout := 30 * time.Second
+	if t, ok := data["timeout"].(float64); ok && t > 0 {
+		timeout = time.Duration(t) * time.Second
+	}
+	memLimit := int64(sandbox.DefaultMemLimit)
+	if m, ok := data["mem_limit"].(float64); ok && m > 0 {
+		memLimit = int64(m) * 1024 * 1024
+	}
+	cpuLimit := sandbox.DefaultCPULimit
+	if c, ok := data["cpu_limit"].(float64); ok && c > 0 {
+		cpuLimit = c
+	}
+	network, _ := data["network"].(bool)
+
+	result, err := e.SandboxMgr.Run(ctx, sandbox.RunRequest{
+		Language: sandbox.Language(lang),
+		Code:     script,
+		Input:    input,
+		Context:  wfCtxToJS(wfCtx),
+		Params:   params,
+		Timeout:  timeout,
+		MemLimit: memLimit,
+		CPULimit: cpuLimit,
+		Network:  network,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("sandbox_script: %w", err)
+	}
+	if result.ExitCode != 0 {
+		return nil, fmt.Errorf("sandbox_script: exit code %d: %s", result.ExitCode, result.Stderr)
+	}
+	return result.Output, nil
 }
 
 // toSlice normalises input to []any. Single values become a one-element slice.

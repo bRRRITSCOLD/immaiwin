@@ -17,6 +17,7 @@ import (
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/mongodb"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/polymarket"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/rediss"
+	"github.com/bRRRITSCOLD/immaiwin-go/internal/sandbox"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/schwab"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/workflow"
 )
@@ -111,14 +112,34 @@ func main() {
 		}
 	}()
 
+	// Sandbox manager (optional — controlled by SANDBOX_ENABLED env)
+	var sandboxMgr *sandbox.Manager
+	if cfg.Sandbox.Enabled {
+		opts := []sandbox.ManagerOption{
+			sandbox.WithDebugPorts(19000, 19100),
+		}
+		if cfg.Sandbox.Runtime != "" {
+			opts = append(opts, sandbox.WithRuntime(cfg.Sandbox.Runtime))
+		}
+		mgr, err := sandbox.NewManager(opts...)
+		if err != nil {
+			slog.Error("failed to create sandbox manager", "err", err)
+			os.Exit(1)
+		}
+		defer mgr.Close()
+		sandboxMgr = mgr
+		slog.Info("sandbox manager enabled", "runtime", cfg.Sandbox.Runtime)
+	}
+
 	wfExec := &workflow.WorkflowExecutor{
 		HTTPClient:   &http.Client{Timeout: 30 * time.Second},
 		DB:           defaultDB,
 		Pub:          rc,
 		ConnResolver: connResolver,
+		SandboxMgr:   sandboxMgr,
 	}
 
-	srv := api.NewServer(cfg.API, rc, pm, wl, tr, nr, tokens, owl, fwl, sc, wfRepo, wfExec, connRepo, mc.DB())
+	srv := api.NewServer(cfg.API, rc, pm, wl, tr, nr, tokens, owl, fwl, sc, wfRepo, wfExec, connRepo, mc.DB(), sandboxMgr)
 
 	go func() {
 		slog.Info("api server listening", "addr", srv.Addr())

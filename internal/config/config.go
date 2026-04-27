@@ -11,6 +11,7 @@ type Config struct {
 	Redis         RedisConfig   `envPrefix:"REDIS_"`
 	MongoDB       MongoDBConfig `envPrefix:"MONGODB_"`
 	Schwab        SchwabConfig  `envPrefix:"SCHWAB_"`
+	Sandbox       SandboxConfig `envPrefix:"SANDBOX_"`
 	EncryptionKey string        `env:"ENCRYPTION_KEY" envDefault:""`
 }
 
@@ -47,6 +48,13 @@ type SchwabConfig struct {
 	ClientID     string `env:"CLIENT_ID"     envDefault:""`
 	ClientSecret string `env:"CLIENT_SECRET" envDefault:""`
 	CallbackURL  string `env:"CALLBACK_URL"  envDefault:"https://127.0.0.1:8080/auth/schwab/callback"`
+}
+
+type SandboxConfig struct {
+	Enabled    bool   `env:"ENABLED"     envDefault:"false"`
+	Runtime    string `env:"RUNTIME"     envDefault:""`         // OCI runtime (e.g. "runsc" for gVisor)
+	PoolSize   int    `env:"POOL_SIZE"   envDefault:"2"`        // warm containers per language
+	DockerHost string `env:"DOCKER_HOST" envDefault:""`         // override DOCKER_HOST env
 }
 
 func Load(opts ...Option) (*Config, error) {

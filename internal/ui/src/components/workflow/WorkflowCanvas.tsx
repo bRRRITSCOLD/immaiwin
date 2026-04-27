@@ -24,6 +24,7 @@ import { ForEachNode } from './nodes/ForEachNode'
 import { MongoUpsertNode } from './nodes/MongoUpsertNode'
 import { RedisPublishNode } from './nodes/RedisPublishNode'
 import { NotifyNode } from './nodes/NotifyNode'
+import { SandboxScriptNode } from './nodes/SandboxScriptNode'
 import { useWorkflowStore, type Workflow } from './useWorkflowStore'
 import { WorkflowParamsPanel } from './WorkflowParamsPanel'
 import { WorkflowHelpLegend } from './WorkflowHelpLegend'
@@ -37,6 +38,7 @@ const nodeTypes: NodeTypes = {
   mongo_upsert: MongoUpsertNode,
   redis_publish: RedisPublishNode,
   notify: NotifyNode,
+  sandbox_script: SandboxScriptNode,
 }
 
 const edgeTypes: EdgeTypes = {
@@ -54,6 +56,7 @@ const defaultNodeData: Record<string, Record<string, unknown>> = {
   mongo_upsert: { collection: '', filter_field: '', name: '' },
   redis_publish: { channel: '', name: '' },
   notify: { message: '', name: '' },
+  sandbox_script: { script: '', language: 'javascript', timeout: 30, mem_limit: 128, cpu_limit: 0.5, network: false, name: '' },
 }
 
 /**
@@ -510,7 +513,7 @@ function WorkflowCanvasInner({ workflow, onSave, onRun, onClearRun, lastRun }: P
           )}
           {debugMode && breakpointId && (
             <button
-              onClick={() => onRun(breakpointId)}
+              onClick={() => { updateActiveGraph(nodes, edges, params); onRun(breakpointId) }}
               className="rounded-md bg-orange-600 text-white px-3 py-1.5 text-sm font-medium hover:bg-orange-700 transition-colors"
             >
               Run ↓
@@ -532,7 +535,7 @@ function WorkflowCanvasInner({ workflow, onSave, onRun, onClearRun, lastRun }: P
           </button>
           {!debugMode && (
             <button
-              onClick={() => onRun()}
+              onClick={() => { updateActiveGraph(nodes, edges, params); onRun() }}
               className="rounded-md bg-green-700 text-white px-3 py-1.5 text-sm font-medium hover:bg-green-800 transition-colors"
             >
               Run

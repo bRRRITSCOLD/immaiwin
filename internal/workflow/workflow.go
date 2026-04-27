@@ -12,7 +12,8 @@ const (
 	NodeTypeForEach      NodeType = "for_each"
 	NodeTypeMongoUpsert  NodeType = "mongo_upsert"
 	NodeTypeRedisPublish NodeType = "redis_publish"
-	NodeTypeNotify       NodeType = "notify"
+	NodeTypeNotify        NodeType = "notify"
+	NodeTypeSandboxScript NodeType = "sandbox_script"
 )
 
 // Position holds the canvas (x, y) coordinates for a node.

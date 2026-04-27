@@ -67,6 +67,24 @@ function WorkflowsPage() {
   async function handleRun(stopAt?: string, input?: unknown) {
     const wf = activeWorkflow()
     if (!wf) return
+
+    // Auto-save before run so server has latest graph
+    try {
+      const saveRes = await fetch(`${API_BASE}/api/v1/workflows/${wf.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(wf),
+      })
+      if (!saveRes.ok) {
+        const data = await saveRes.json()
+        toast.error(`Auto-save failed: ${data.error}`)
+        return
+      }
+    } catch {
+      toast.error('Network error auto-saving before run')
+      return
+    }
+
     setLastRun(null) // clear stale results immediately before new run
     try {
       const bodyObj: Record<string, unknown> = {}

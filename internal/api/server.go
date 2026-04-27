@@ -8,6 +8,7 @@ import (
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/api/handler"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/config"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/rediss"
+	"github.com/bRRRITSCOLD/immaiwin-go/internal/sandbox"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/workflow"
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
@@ -45,6 +46,7 @@ func NewServer(
 	wfExec *workflow.WorkflowExecutor,
 	connStore handler.ConnectionStore,
 	db *mongo.Database,
+	sandboxMgr *sandbox.Manager,
 ) *Server {
 	b := rediss.NewBroadcaster(rc, rediss.TradesChannel)
 	nb := rediss.NewBroadcaster(rc, rediss.NewsChannel)
@@ -113,6 +115,9 @@ func NewServer(
 	r.GET("/api/v1/futures/watchlist", handler.GetFuturesWatchlist(fwl))
 	r.PUT("/api/v1/futures/watchlist", handler.SyncFuturesWatchlist(fwl))
 	r.GET("/api/v1/futures/stream", handler.StreamFutures(fb))
+
+	// Sandbox debug (WebSocket)
+	r.GET("/api/v1/sandbox/debug", handler.DebugSandbox(sandboxMgr))
 
 	return &Server{
 		cfg:                cfg,
