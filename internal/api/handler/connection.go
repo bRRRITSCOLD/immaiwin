@@ -23,6 +23,12 @@ type ConnectionStore interface {
 	Delete(ctx context.Context, id string) error
 }
 
+// ConnectionInvalidator drops cached resolved clients for a connection ID,
+// forcing the next workflow run to rebuild from current stored config.
+type ConnectionInvalidator interface {
+	Invalidate(connectionID string)
+}
+
 // ListConnections returns all stored connections.
 func ListConnections(store ConnectionStore) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -39,7 +45,9 @@ func ListConnections(store ConnectionStore) gin.HandlerFunc {
 }
 
 // UpsertConnection creates or updates a connection.
-func UpsertConnection(store ConnectionStore) gin.HandlerFunc {
+// invalidator is optional; when non-nil its cache is dropped after a
+// successful save so live workflow runs pick up the new config.
+func UpsertConnection(store ConnectionStore, invalidator ConnectionInvalidator) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id := c.Param("id")
 		if id == "" {
@@ -64,6 +72,7 @@ func UpsertConnection(store ConnectionStore) gin.HandlerFunc {
 			workflow.ConnectionTypeRabbitMQ:   true,
 			workflow.ConnectionTypePolymarket: true,
 			workflow.ConnectionTypeSchwab:     true,
+			workflow.ConnectionTypeAnthropic:  true,
 		}
 		if !validTypes[conn.Type] {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported connection type"})
@@ -102,6 +111,11 @@ func UpsertConnection(store ConnectionStore) gin.HandlerFunc {
 				c.JSON(http.StatusBadRequest, gin.H{"error": "config.client_secret is required for schwab"})
 				return
 			}
+		case workflow.ConnectionTypeAnthropic:
+			if conn.Config["api_key"] == "" {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "config.api_key is required for anthropic"})
+				return
+			}
 		}
 
 		saved, err := store.Upsert(c.Request.Context(), conn)
@@ -109,12 +123,16 @@ func UpsertConnection(store ConnectionStore) gin.HandlerFunc {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
+		if invalidator != nil {
+			invalidator.Invalidate(saved.ID)
+		}
 		c.JSON(http.StatusOK, saved)
 	}
 }
 
 // DeleteConnection removes the connection with the given ID.
-func DeleteConnection(store ConnectionStore) gin.HandlerFunc {
+// invalidator is optional; when non-nil its cache is dropped post-delete.
+func DeleteConnection(store ConnectionStore, invalidator ConnectionInvalidator) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id := c.Param("id")
 		if id == "" {
@@ -124,6 +142,9 @@ func DeleteConnection(store ConnectionStore) gin.HandlerFunc {
 		if err := store.Delete(c.Request.Context(), id); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
+		}
+		if invalidator != nil {
+			invalidator.Invalidate(id)
 		}
 		c.Status(http.StatusNoContent)
 	}

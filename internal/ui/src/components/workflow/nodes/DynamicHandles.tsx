@@ -23,6 +23,7 @@ const paletteColors: Record<string, string> = {
   success: '#22c55e',
   error: '#ef4444',
   item: '#a78bfa',
+  tool: '#c084fc',
   receive: '#888888',
 }
 
@@ -31,6 +32,7 @@ const allPaletteTypes: { type: EdgePaletteType; label: string; color: string }[]
   { type: 'success', label: 'Success', color: '#22c55e' },
   { type: 'error', label: 'Error', color: '#ef4444' },
   { type: 'item', label: 'Item', color: '#a78bfa' },
+  { type: 'tool', label: 'Tool', color: '#c084fc' },
   { type: 'receive', label: 'Receive', color: '#888888' },
 ]
 

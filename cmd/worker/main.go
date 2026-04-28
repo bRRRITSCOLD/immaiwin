@@ -27,6 +27,7 @@ func main() {
 	wr.RegisterWorker(worker.SchwabFuturesWatcherWorker)
 	wr.RegisterWorker(worker.WorkflowCronWorker)
 	wr.RegisterWorker(worker.WorkflowRabbitMQWorker)
+	wr.RegisterWorker(worker.WorkflowRedisSubscribeWorker)
 	wr.RegisterWorker(worker.WorkflowWebSocketClientWorker)
 
 	if *list {

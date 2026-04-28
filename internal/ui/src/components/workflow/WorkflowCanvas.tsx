@@ -20,8 +20,8 @@ import { WaypointEdge } from './WaypointEdge'
 import { TriggerNode } from './nodes/TriggerNode'
 import { HTTPRequestNode } from './nodes/HTTPRequestNode'
 import { ForEachNode } from './nodes/ForEachNode'
-import { MongoUpsertNode } from './nodes/MongoUpsertNode'
-import { RedisPublishNode } from './nodes/RedisPublishNode'
+import { MongoRequestNode } from './nodes/MongoRequestNode'
+import { RedisRequestNode } from './nodes/RedisRequestNode'
 import { NotifyNode } from './nodes/NotifyNode'
 import { SandboxScriptNode } from './nodes/SandboxScriptNode'
 import { AIAgentNode } from './nodes/AIAgentNode'
@@ -34,8 +34,8 @@ const nodeTypes: NodeTypes = {
   trigger: TriggerNode,
   http_request: HTTPRequestNode,
   for_each: ForEachNode,
-  mongo_upsert: MongoUpsertNode,
-  redis_publish: RedisPublishNode,
+  mongo_request: MongoRequestNode,
+  redis_request: RedisRequestNode,
   notify: NotifyNode,
   sandbox_script: SandboxScriptNode,
   ai_agent: AIAgentNode,
@@ -62,8 +62,8 @@ const defaultNodeData: Record<string, Record<string, unknown>> = {
     max_response_bytes: 10485760,
   },
   for_each: { name: '' },
-  mongo_upsert: { collection: '', filter_field: '', name: '' },
-  redis_publish: { channel: '', name: '' },
+  mongo_request: { collection: '', operation: 'find', batch_size: 100, name: '' },
+  redis_request: { operation: 'publish', channel: '', name: '' },
   notify: { message: '', name: '' },
   sandbox_script: { script: '', language: 'javascript', timeout: 30, mem_limit: 128, cpu_limit: 0.5, network: false, name: '' },
   ai_agent: {
@@ -135,6 +135,7 @@ const paletteColorMap: Record<string, { normal: string; selected: string }> = {
   success: { normal: '#22c55e', selected: '#86efac' },
   error:   { normal: '#ef4444', selected: '#fca5a5' },
   item:    { normal: '#a78bfa', selected: '#ddd6fe' },
+  tool:    { normal: '#c084fc', selected: '#e9d5ff' },
   receive: { normal: '#888888', selected: '#bbbbbb' },
 }
 

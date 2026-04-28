@@ -2,7 +2,7 @@ MODULE := github.com/bRRRITSCOLD/immaiwin-go
 CMDS    := api ui worker
 BINDIR  := bin
 
-.PHONY: setup build test lint clean api ui start-worker list-workers dev-ui docker-compose-up docker-compose-down certs sandbox-images sandbox-images-debug sandbox-images-push dev-teardown dev-teardown-sandbox dev-teardown-full
+.PHONY: setup build test lint clean api ui start-worker list-workers dev-ui docker-compose-up docker-compose-down certs sandbox-images sandbox-images-debug sandbox-images-push dev-teardown dev-teardown-sandbox dev-teardown-full dev-startup dev-startup-fresh
 
 build:
 	go build ./...
@@ -116,4 +116,48 @@ dev-teardown-full: dev-teardown ## DESTRUCTIVE: also uninstall k3s + remove regi
 	-@if dpkg -l runsc >/dev/null 2>&1; then sudo apt-get remove -y runsc; \
 	else echo "runsc not installed via apt; skipping"; fi
 	@echo "==> full teardown complete"
+
+# --- Dev startup ---
+# Inverse of dev-teardown: starts k3s, starts the local registry, brings up
+# docker compose. Idempotent — safe to re-run.
+dev-startup: ## start k3s, the local registry, and docker compose (inverse of dev-teardown)
+	@echo "==> starting k3s service"
+	-@if systemctl list-unit-files k3s.service >/dev/null 2>&1; then \
+	  if systemctl is-active --quiet k3s; then \
+	    echo "k3s already running"; \
+	  else \
+	    sudo systemctl start k3s; \
+	  fi; \
+	else \
+	  echo "k3s.service not installed; skipping (run 'sudo ./examples/k3s/setup.sh' to install)"; \
+	fi
+	@echo "==> starting local registry container"
+	-@if docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^registry$$'; then \
+	  echo "registry already running"; \
+	elif docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q '^registry$$'; then \
+	  docker start registry >/dev/null; \
+	else \
+	  echo "registry container missing — creating"; \
+	  docker run -d --restart=always -p 5000:5000 --name registry registry:2 >/dev/null; \
+	fi
+	@echo "==> starting docker compose stack"
+	-@$(MAKE) --no-print-directory docker-compose-up
+	@echo "==> dev startup complete"
+	@echo
+	@echo "Next: 'make api' (in another terminal: 'make dev-ui')."
+
+dev-startup-fresh: ## DESTRUCTIVE-leaning: full first-time bring-up (k3s setup script + sandbox images + docker compose)
+	@echo "==> running k3s setup script (idempotent)"
+	@if [ -x examples/k3s/setup.sh ]; then \
+	  sudo ./examples/k3s/setup.sh; \
+	else \
+	  echo "examples/k3s/setup.sh missing or not executable; skipping"; \
+	fi
+	@echo "==> building + pushing sandbox images"
+	@$(MAKE) --no-print-directory sandbox-images-push
+	@echo "==> bringing up docker compose stack"
+	@$(MAKE) --no-print-directory docker-compose-up
+	@echo "==> fresh dev environment ready"
+	@echo
+	@echo "Next: 'make api' (in another terminal: 'make dev-ui')."
 

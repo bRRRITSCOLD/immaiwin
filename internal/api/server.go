@@ -45,6 +45,7 @@ func NewServer(
 	wfStore handler.WorkflowStore,
 	wfExec *workflow.WorkflowExecutor,
 	connStore handler.ConnectionStore,
+	connInvalidator handler.ConnectionInvalidator,
 	db *mongo.Database,
 	sandboxRT sandbox.Runtime,
 ) *Server {
@@ -86,8 +87,8 @@ func NewServer(
 
 	// Connections
 	r.GET("/api/v1/connections", handler.ListConnections(connStore))
-	r.PUT("/api/v1/connections/:id", handler.UpsertConnection(connStore))
-	r.DELETE("/api/v1/connections/:id", handler.DeleteConnection(connStore))
+	r.PUT("/api/v1/connections/:id", handler.UpsertConnection(connStore, connInvalidator))
+	r.DELETE("/api/v1/connections/:id", handler.DeleteConnection(connStore, connInvalidator))
 	r.POST("/api/v1/connections/test", handler.TestConnection(db))
 
 	// Connection OAuth (generic)

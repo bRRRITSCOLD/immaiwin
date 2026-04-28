@@ -135,11 +135,10 @@ function WorkflowsPage() {
           hasError = true
         }
       }
-      // summarise mongo_upsert results — each step upserts one doc; count trues
-      const upsertSteps = steps.filter((s) => s.node_type === 'mongo_upsert' && !s.error)
-      if (upsertSteps.length > 0) {
-        const inserted = upsertSteps.filter((s) => (s.output as { upserted?: boolean } | undefined)?.upserted).length
-        toast.success(`Upserted ${inserted} / ${upsertSteps.length} docs`)
+      // summarise mongo_request results — count successful ops
+      const mongoSteps = steps.filter((s) => s.node_type === 'mongo_request' && !s.error)
+      if (mongoSteps.length > 0) {
+        toast.success(`${mongoSteps.length} mongo op${mongoSteps.length === 1 ? '' : 's'} succeeded`)
       }
       if (!hasError && steps.every((s) => !s.error)) {
         toast.success('Workflow completed')

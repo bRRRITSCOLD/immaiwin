@@ -85,10 +85,11 @@ Canvas-based editor powered by React Flow. Drag nodes, connect edges, run entire
 |------|---------|
 | `trigger` | Start workflow from WebSocket events, cron, or RabbitMQ |
 | `http_request` | Make HTTP requests with full Go http.Client parity (method, headers, query, body, auth, redirects, TLS, JSON parse) |
-| `sandbox_script` | Run code in isolated Docker container (any of 5 languages) |
+| `sandbox_script` | Run code in isolated container (5 languages, Docker or k3s+gVisor backend) |
+| `ai_agent` | Reason-act-observe LLM loop (Anthropic / OpenAI / Ollama) with edge-bound tool nodes + built-in `code_execute` |
 | `for_each` | Loop over arrays with isolated context per iteration |
-| `mongo_upsert` | Write/update MongoDB documents |
-| `redis_publish` | Publish messages to Redis channels |
+| `mongo_request` | Generic MongoDB ops: `find`, `find_one_and_update`, `find_one_and_replace`, `insert_one`, `insert_many`, `update_many`, `delete_one`, `delete_many`, `aggregate`, `count_documents`, `distinct`, `cursor_fetch` (server-side cursor pagination) |
+| `redis_request` | Generic Redis ops: `publish`, strings (`get`/`set`/`del`/`incr`/`decr`/`expire`/`ttl`/`exists`/`keys`/`mget`/`mset`), hashes (`hget`/`hset`/`hgetall`/`hdel`), lists (`lpush`/`rpush`/`lpop`/`rpop`/`lrange`/`llen`), sets (`sadd`/`srem`/`smembers`/`sismember`), sorted sets (`zadd`/`zrem`/`zrange`/`zscore`/`zincrby`), streams producer (`xadd`/`xrange`/`xlen`). Subscribe-side will become a trigger node. |
 | `notify` | Send notifications |
 
 Every node supports named steps — downstream nodes access upstream results via `context.stepName.output`.
@@ -155,7 +156,7 @@ Every sandbox container runs with defense-in-depth:
 | Layer | Protection |
 |-------|-----------|
 | **Container isolation** | Separate PID/network/mount namespaces |
-| **gVisor** (planned) | User-space kernel — intercepts all syscalls |
+| **gVisor** (`runsc`) | User-space kernel — intercepts all syscalls; opt-in via the k3s backend (`SANDBOX_BACKEND=k3s` + `SANDBOX_K3S_RUNTIMECLASS=gvisor`) |
 | **Non-root** | Runs as uid 65534 (nobody) |
 | **No network** | `--network=none` by default, opt-in per node |
 | **Resource limits** | CPU 0.5 cores, 128MB RAM, 256 PIDs, 30s timeout |
@@ -166,10 +167,11 @@ This is what makes AI agent integration safe — an agent can write and execute 
 
 ### Workflow Triggers
 
-Three ways to kick off workflows:
+Four ways to kick off workflows:
 
 - **Cron** — schedule workflows on any interval (`workflow-cron` worker)
 - **RabbitMQ** — trigger from message queue events (`workflow-rabbitmq` worker)
+- **Redis Subscribe** — trigger from Redis pub/sub channels and patterns (`workflow-redis-subscribe` worker)
 - **WebSocket** — connect to external WebSocket sources with OAuth, trigger on incoming messages (`workflow-ws-client` worker)
 
 WebSocket triggers support OAuth connections — authenticate with any service, then stream their WebSocket data into your workflow. Preview incoming data with SSE before wiring up the full flow.
@@ -201,13 +203,14 @@ All data flows through Redis Pub/Sub and is exposed via Server-Sent Events:
 | Component | Technology |
 |-----------|-----------|
 | **API** | Go 1.22+, Gin, gorilla/websocket |
-| **Frontend** | React 19, TanStack Start, React Flow, Monaco Editor, Tailwind CSS, shadcn/ui |
+| **Frontend** | React 19, TanStack Start, TanStack Form + zod, React Flow, Monaco Editor, Tailwind CSS, shadcn/ui |
 | **Database** | MongoDB (documents, configs, workflows) |
 | **Cache/PubSub** | Redis (real-time streaming, inter-service messaging) |
 | **Message Queue** | RabbitMQ (workflow triggers, event-driven execution) |
-| **Containers** | Docker API (sandbox execution, debug sessions) |
+| **Containers** | Docker API (default) or k3s + gVisor (opt-in via `SANDBOX_BACKEND=k3s`) |
 | **Sandbox Runtimes** | Node.js 20, Python 3.12, Go 1.22, Rust 1.86, PHP 8.3 |
 | **Debug Protocols** | DAP (Python/debugpy), CDP (JS/Node --inspect) |
+| **LLM Providers** | Anthropic, OpenAI, Ollama (configurable per agent node via Connection) |
 | **JS Engine** | goja (scraper script runtime, jQuery-like selectors) |
 
 ---
@@ -241,19 +244,31 @@ Starts MongoDB, Redis, and RabbitMQ.
 ### 3. Build sandbox images
 
 ```bash
-# Runtime images (required for sandbox_script nodes)
-docker build -t immaiwin/sandbox-node:20 internal/sandbox/runtimes/javascript/
-docker build -t immaiwin/sandbox-python:3.12 internal/sandbox/runtimes/python/
-docker build -t immaiwin/sandbox-go:1.22 internal/sandbox/runtimes/golang/
-docker build -t immaiwin/sandbox-rust:1.86 internal/sandbox/runtimes/rust/
-docker build -t immaiwin/sandbox-php:8.3 internal/sandbox/runtimes/php/
+make sandbox-images           # 5 runtime images (JS, Python, Go, Rust, PHP)
+make sandbox-images-debug     # 2 debug images (JS, Python — required for interactive debugging)
 
-# Debug images (required for interactive debugging)
-docker build -f internal/sandbox/runtimes/javascript/Dockerfile.debug \
-  -t immaiwin/sandbox-node-debug:20 internal/sandbox/runtimes/javascript/
-docker build -f internal/sandbox/runtimes/python/Dockerfile.debug \
-  -t immaiwin/sandbox-python-debug:3.12 internal/sandbox/runtimes/python/
+# k3s backend only — push to the local registry that the cluster pulls from:
+make sandbox-images-push      # build + push all of the above (default REGISTRY=localhost:5000)
+make sandbox-images-push REGISTRY=registry.local:5000
 ```
+
+### 3b. (Optional) k3s + gVisor backend
+
+Skip this for the default Docker backend. To run sandboxes in a single-node
+k3s cluster with gVisor (`runsc`) syscall-level isolation:
+
+```bash
+sudo ./examples/k3s/setup.sh   # installs runsc, k3s, registry; idempotent
+make sandbox-images-push       # publishes images to localhost:5000
+
+# in .env:
+# SANDBOX_BACKEND=k3s
+# SANDBOX_K3S_RUNTIMECLASS=gvisor
+# SANDBOX_IMAGE_REGISTRY=localhost:5000
+```
+
+See `examples/k3s/README.md` for prerequisites and `examples/k3s/MIGRATION.md`
+for porting to upstream Kubernetes (kubeadm / EKS / GKE / AKS).
 
 ### 4. Setup and run
 
@@ -269,19 +284,30 @@ make dev-ui     # Start frontend (http://localhost:3000)
 make list-workers                              # See all available workers
 make worker NAME=workflow-cron                 # Cron-triggered workflows
 make worker NAME=workflow-rabbitmq             # RabbitMQ-triggered workflows
+make worker NAME=workflow-redis-subscribe      # Redis pub/sub-triggered workflows
 make worker NAME=workflow-ws-client            # WebSocket-triggered workflows
 make worker NAME=news-scraper                  # News scraper
 make worker NAME=mongodb-writer                # Background MongoDB writes
 ```
 
-### 6. Tear down (end of session)
+### 6. Start / tear down a session
 
-Three tiers, pick what you need.
+Inverse pair. Soft start in the morning, soft stop at night — state is
+preserved on disk between sessions.
+
+```bash
+# Soft start — start k3s, start the local registry, bring up docker compose.
+# Idempotent; skips anything already running.
+make dev-startup
+
+# First-time bring-up from a clean machine (runs examples/k3s/setup.sh,
+# builds + pushes sandbox images, brings up docker compose).
+make dev-startup-fresh
+```
 
 ```bash
 # Soft stop — bring down docker compose, k3s, and the local registry.
-# Cluster + volume state preserved on disk; restart later with
-# `sudo systemctl start k3s && docker start registry && make docker-compose-up`.
+# Cluster + volume state preserved on disk; bring it back with `make dev-startup`.
 make dev-teardown
 
 # Cluster stays up; just delete sandbox pods (override ns/kubeconfig if needed).
@@ -353,18 +379,25 @@ What each touches:
 | `POST` | `/api/v1/workflows/:id/run` | Execute workflow |
 | `GET` | `/api/v1/workflows/:id/ws-preview` | SSE preview of WebSocket trigger data |
 
-### Sandbox Debugging
+### Sandbox
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/api/v1/sandbox/debug` | WebSocket upgrade for interactive debug session |
+| `GET` | `/api/v1/sandbox/run` | WebSocket upgrade for one-shot sandbox runs (streams stdout/stderr/output) |
 
-### Connections (OAuth/WebSocket Sources)
+### Connections (data sources, OAuth, LLM providers)
+
+Supported types: `mongodb`, `redis`, `rabbitmq`, `polymarket`, `schwab`, `anthropic`, `openai`, `ollama`.
+
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/api/v1/connections` | List saved connections |
 | `PUT` | `/api/v1/connections/:id` | Create/update connection |
 | `DELETE` | `/api/v1/connections/:id` | Delete connection |
-| `POST` | `/api/v1/connections/test` | Test connection |
+| `POST` | `/api/v1/connections/test` | Test connection (driver dial / API ping) |
+| `GET` | `/api/v1/connections/:id/oauth/url` | Begin OAuth flow (Schwab) |
+| `GET` | `/api/v1/connections/:id/oauth/status` | OAuth connection status |
+| `GET` | `/auth/connections/:id/callback` | OAuth redirect target |
 
 ### News Scrapers
 | Method | Path | Description |
@@ -384,20 +417,30 @@ What each touches:
 
 ## Roadmap
 
+### Done
 - [x] Visual workflow canvas (React Flow)
-- [x] 7 node types (trigger, http_request, sandbox_script, for_each, mongo_upsert, redis_publish, notify)
+- [x] 8 node types (trigger, http_request, sandbox_script, ai_agent, for_each, mongo_request, redis_request, notify)
 - [x] Multi-language sandbox execution (JS, Python, Go, Rust, PHP)
 - [x] Interactive debugging (DAP for Python, CDP for JavaScript)
 - [x] WebSocket workflow triggers with OAuth
 - [x] Custom scraper scripts (goja + jQuery-like selectors)
 - [x] Real-time streaming (SSE)
-- [ ] gVisor integration (syscall-level isolation)
+- [x] HTTP Request node with full Go `http.Client` parity (method, headers, query, body, auth, redirects, TLS, JSON parse)
+- [x] gVisor integration (syscall-level isolation via k3s `RuntimeClass=runsc`)
+- [x] Kubernetes-API sandbox backend (single-node k3s today; portable to upstream Kubernetes — see `examples/k3s/MIGRATION.md`)
+- [x] AI agent node (reason-act-observe loop, Anthropic / OpenAI / Ollama, edge-bound tool nodes, built-in `code_execute`)
+- [x] LLM connection types (`anthropic`, `openai`, `ollama`)
+- [x] Workflow run persistence (`workflow_runs` collection) + agent trace logging
+- [x] Custom sandbox images (`data.custom_image` per node)
+- [x] Per-node package list (`data.packages`) for installable runtimes
+- [x] Streaming sandbox runs (WebSocket `/api/v1/sandbox/run`, stdout/stderr/output frames)
+
+### In progress / next
 - [ ] Container pool warm starts (sub-100ms cold start)
-- [ ] AI agent integration (safe code execution via sandbox)
-- [ ] Package management (per-script deps, image layer caching)
-- [ ] Streaming output during execution (SSE for stdout/stderr)
-- [ ] Kubernetes migration (horizontal scaling)
-- [ ] Custom sandbox images (user-built with pre-installed deps)
+- [ ] Image-layer caching for `packages` to skip per-run installs
+- [ ] Multi-node Kubernetes validation (HPA, pod priority, ResourceQuotas)
+- [ ] Skills + plugins layer (`.private/ai-automation/SKILLS-AND-PLUGINS-PLAN.md`)
+- [ ] Per-tenant isolation (namespaces, RBAC, secret scoping)
 
 ---
 
@@ -407,6 +450,8 @@ What each touches:
 make lint                  # Run golangci-lint
 make test                  # Run all tests
 make clean                 # Clean build artifacts
+make dev-startup           # Start k3s + local registry + docker compose (inverse of dev-teardown)
+make dev-startup-fresh     # First-time bring-up: setup.sh + sandbox images + compose
 make dev-teardown          # Stop docker compose + k3s + local registry (state preserved)
 make dev-teardown-sandbox  # Delete pods in the sandbox namespace (cluster stays up)
 make dev-teardown-full     # DESTRUCTIVE: uninstall k3s, remove registry + gVisor

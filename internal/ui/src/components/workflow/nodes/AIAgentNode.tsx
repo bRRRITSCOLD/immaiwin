@@ -1,9 +1,10 @@
 import { NodeResizer, type NodeProps, useReactFlow } from '@xyflow/react'
-import { Bot, Wrench } from 'lucide-react'
+import { Bot, Wrench, HelpCircle } from 'lucide-react'
 import { useState } from 'react'
 import { Textarea } from '~/components/ui/textarea'
 import { Input } from '~/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '~/components/ui/select'
+import { Tooltip, TooltipTrigger, TooltipContent } from '~/components/ui/tooltip'
 import { StepNameInput } from './StepNameInput'
 import { DynamicHandles } from './DynamicHandles'
 import { NodeDebugPanel, BreakpointMarker } from '../RunResultsContext'
@@ -125,7 +126,22 @@ export function AIAgentNode({ id, data, selected }: NodeProps) {
               </div>
               <div className="grid grid-cols-2 gap-2">
                 <div>
-                  <p className="text-[10px] text-muted-foreground">Max iterations</p>
+                  <div className="flex items-center gap-1">
+                    <p className="text-[10px] text-muted-foreground">Max iterations</p>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <button type="button" className="nodrag text-muted-foreground hover:text-foreground" aria-label="Max iterations help">
+                          <HelpCircle className="h-3 w-3" />
+                        </button>
+                      </TooltipTrigger>
+                      <TooltipContent side="top" className="max-w-[280px] text-[11px] leading-snug">
+                        <p className="font-medium mb-1">ReAct loop iteration cap.</p>
+                        <p>One iteration = 1 LLM call + (optional) tool calls + observations fed back. Loop ends when the model returns text instead of tool calls (final answer).</p>
+                        <p className="mt-1">Typical run: 1 iter to call a tool, 1 iter to summarize → set ≥ 2. Multi-step research may need 4–8.</p>
+                        <p className="mt-1">Hitting the cap aborts with "max iterations exceeded". Raise if the agent keeps cutting off mid-task; lower to bound cost.</p>
+                      </TooltipContent>
+                    </Tooltip>
+                  </div>
                   <Input
                     className="nodrag h-7 text-xs"
                     type="number"

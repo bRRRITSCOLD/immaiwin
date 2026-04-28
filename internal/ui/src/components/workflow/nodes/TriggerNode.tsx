@@ -19,6 +19,7 @@ const triggerTypes = [
   { value: 'manual', label: 'Manual' },
   { value: 'cron', label: 'Cron Schedule' },
   { value: 'rabbitmq', label: 'RabbitMQ' },
+  { value: 'redis_subscribe', label: 'Redis Subscribe' },
   { value: 'polymarket_ws', label: 'Polymarket WS' },
   { value: 'schwab_ws', label: 'Schwab WS' },
 ] as const
@@ -59,6 +60,7 @@ export function TriggerNode({ id, data, selected }: NodeProps) {
   const triggerType = ((data.trigger_type as string) || 'manual') as TriggerType
   const isCron = triggerType === 'cron'
   const isRabbitMQ = triggerType === 'rabbitmq'
+  const isRedisSubscribe = triggerType === 'redis_subscribe'
   const isPolymarketWS = triggerType === 'polymarket_ws'
   const isSchwabWS = triggerType === 'schwab_ws'
 
@@ -86,6 +88,11 @@ export function TriggerNode({ id, data, selected }: NodeProps) {
           {isRabbitMQ && (
             <div className="ml-auto">
               <ConnectionPicker nodeId={id} connectionType="rabbitmq" data={data as Record<string, unknown>} activeColor="text-blue-500" />
+            </div>
+          )}
+          {isRedisSubscribe && (
+            <div className="ml-auto">
+              <ConnectionPicker nodeId={id} connectionType="redis" data={data as Record<string, unknown>} activeColor="text-blue-500" />
             </div>
           )}
           {isPolymarketWS && (
@@ -175,6 +182,36 @@ export function TriggerNode({ id, data, selected }: NodeProps) {
                 <label htmlFor={`${id}-auto-ack`} className="text-xs text-muted-foreground cursor-pointer">
                   Auto-acknowledge
                 </label>
+              </div>
+            </div>
+          )}
+          {isRedisSubscribe && (
+            <div className="space-y-2">
+              <div className="space-y-0.5">
+                <label className="text-xs text-muted-foreground">Channels</label>
+                <Textarea
+                  className="nodrag font-mono text-xs min-h-[60px]"
+                  placeholder="One channel per line"
+                  value={(data.channels as string) ?? ''}
+                  onChange={(e) => updateNodeData(id, { channels: e.target.value })}
+                />
+                <p className="text-[10px] text-muted-foreground">
+                  Exact channel match. Each message triggers a workflow run with{' '}
+                  <code className="text-[10px]">{'{{input.channel}}'}</code>,{' '}
+                  <code className="text-[10px]">{'{{input.payload}}'}</code> available.
+                </p>
+              </div>
+              <div className="space-y-0.5">
+                <label className="text-xs text-muted-foreground">Patterns</label>
+                <Textarea
+                  className="nodrag font-mono text-xs min-h-[60px]"
+                  placeholder={'One glob pattern per line\ne.g. immaiwin:news:*'}
+                  value={(data.patterns as string) ?? ''}
+                  onChange={(e) => updateNodeData(id, { patterns: e.target.value })}
+                />
+                <p className="text-[10px] text-muted-foreground">
+                  Optional glob patterns (Redis PSUBSCRIBE). Mix freely with channels above.
+                </p>
               </div>
             </div>
           )}

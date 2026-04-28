@@ -250,14 +250,14 @@ export function WorkflowSidebar({ onSelect, onReload }: Props) {
           />
           <PaletteItem
             icon={<Database className="h-3.5 w-3.5 text-green-500" />}
-            label="Mongo Upsert"
-            nodeType="mongo_upsert"
+            label="Mongo Request"
+            nodeType="mongo_request"
             onDragStart={onDragStart}
           />
           <PaletteItem
             icon={<Radio className="h-3.5 w-3.5 text-orange-400" />}
-            label="Redis Publish"
-            nodeType="redis_publish"
+            label="Redis Request"
+            nodeType="redis_request"
             onDragStart={onDragStart}
           />
           <PaletteItem
