@@ -13,6 +13,7 @@ The user's code runs in a restricted namespace. Available globals:
 Call `output(val)` to produce a result.
 """
 
+import builtins
 import json
 import os
 import sys
@@ -88,15 +89,18 @@ def main():
         "True": True,
         "False": False,
         "None": None,
-        "__builtins__": {},
+        # Container (gVisor / k3s) is the real isolation boundary; restricting
+        # __builtins__ here is theatre that breaks `import` for legitimate
+        # use cases (3rd-party packages, stdlib). Mirrors the JS sandbox
+        # decision to drop the vm-context restriction in favour of the
+        # container as the boundary. Debug mode already exposes full builtins.
+        "__builtins__": builtins,
     }
 
     # Debug mode: use debugpy for DAP-based interactive debugging
     if os.environ.get("SANDBOX_DEBUG"):
-        # Allow full builtins in debug mode — container is already sandboxed by Docker
-        import builtins
-        namespace["__builtins__"] = builtins
-        # Restore real print so debugpy captures output via redirectOutput
+        # Restore real print so debugpy captures output via redirectOutput.
+        # __builtins__ is already populated above; no override needed here.
         namespace["print"] = original_print
 
         script_path = "/sandbox/user_script.py"

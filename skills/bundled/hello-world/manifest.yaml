@@ -1,0 +1,45 @@
+id: hello-world
+version: 0.1.0
+name: "Hello World"
+description: "Reference skill demonstrating manifest layout, prompt fragment, and a single sandbox-run tool. Safe to enable on any agent — no network, no secrets."
+
+author:
+  name: "immaiwin"
+  url: "https://github.com/bRRRITSCOLD/immaiwin"
+
+license: MIT
+
+api_version: 1
+min_platform_version: 0.5.0
+
+tools:
+  - id: say_hello
+    file: tools/say_hello.py
+    language: python
+    description: "Return a polite greeting for a name. Demonstrates a skill-supplied tool that runs in the sandbox."
+    input_schema:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          description: "Person to greet."
+        formal:
+          type: boolean
+          description: "If true, use a formal greeting; otherwise casual."
+          default: false
+    timeout_secs: 10
+
+prompt:
+  fragment: prompts/system.md
+
+memory:
+  default_policy:
+    max_messages: 20
+    summarize_at: 18
+
+capabilities:
+  network: {}
+  storage:
+    read: false
+    write: false

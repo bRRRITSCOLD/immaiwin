@@ -84,10 +84,25 @@ func (e *WorkflowExecutor) runAIAgent(ctx context.Context, node Node, data map[s
 		userInputText = string(b)
 	}
 
-	// 4. Tool catalog
-	catalog, err := e.buildAgentToolCatalog(node, env, wfCtx, params)
+	// 4. Tool catalog (also populates env.skillSystemFragments if skills opted in)
+	catalog, err := e.buildAgentToolCatalog(node, env, wfCtx, params, input)
 	if err != nil {
 		return nil, fmt.Errorf("ai_agent: build tool catalog: %w", err)
+	}
+
+	// Append skill-supplied system-prompt fragments. Skill fragments come
+	// AFTER the agent-author prompt so explicit per-agent instructions
+	// take precedence over generic skill guidance.
+	if len(env.skillSystemFragments) > 0 {
+		var sb strings.Builder
+		sb.WriteString(systemPrompt)
+		for _, frag := range env.skillSystemFragments {
+			if sb.Len() > 0 {
+				sb.WriteString("\n\n")
+			}
+			sb.WriteString(frag)
+		}
+		systemPrompt = sb.String()
 	}
 
 	// 5. Memory (optional)
@@ -119,6 +134,14 @@ func (e *WorkflowExecutor) runAIAgent(ctx context.Context, node Node, data map[s
 		// Best-effort persistence; don't fail the run on trace errors.
 		if env.runID != "" && e.RunRepo != nil {
 			_ = e.RunRepo.AppendTrace(ctx, env.runID, node.ID, ev)
+		}
+		// Mirror onto the run-level event stream so live UI clients see
+		// agent loop progress in real time. Mapping is direct: trace
+		// types map onto RunEvent types one-for-one. Missing types map
+		// to no-op (defensive) so adding a new TraceEvent.Type never
+		// breaks the stream.
+		if env.events != nil {
+			env.events.Emit(traceToRunEvent(ev, node))
 		}
 	}
 
@@ -238,17 +261,37 @@ func (e *WorkflowExecutor) runAIAgent(ctx context.Context, node Node, data map[s
 }
 
 // buildAgentToolCatalog assembles the tools available to one agent run:
-// edge-bound nodes (data.as_tool) + built-in code_execute. Skills wired in P1.11.
+//  1. Built-in `code_execute` (if SandboxRT is configured).
+//  2. Skill-supplied tools (if SkillRes is configured AND data.skills is set).
+//  3. Edge-bound `as_tool` target nodes.
+//
+// Order matters: collisions resolve in the order tools are added, so a
+// later registration with the same name is dropped (NewToolCatalog.Add
+// rejects duplicates with a logged warn). Built-ins win over skill tools
+// win over node tools — that's by design so reserved names stay reserved.
 func (e *WorkflowExecutor) buildAgentToolCatalog(agent Node, env *runEnv,
-	wfCtx runCtx, params map[string]string) (*ToolCatalog, error) {
+	wfCtx runCtx, params map[string]string, input any) (*ToolCatalog, error) {
 
 	cat := NewToolCatalog()
 
-	// Built-in code_execute (if sandbox available)
+	// 1. Built-in code_execute (if sandbox available)
 	if def, h, ok := builtinCodeExecuteTool(e.SandboxRT); ok {
 		if err := cat.Add(def, h); err != nil {
 			return nil, err
 		}
+	}
+
+	// 2. Skill-supplied tools (P1.11). Reads data.skills as []SkillReq,
+	// resolves to a lockfile via SkillRes, then registers each tool with the
+	// agent using a `<sanitized-slug>__<tool_id>` prefix to avoid collisions.
+	skillFragments, err := e.appendSkillTools(agent, cat, params, wfCtx, input)
+	if err != nil {
+		return nil, err
+	}
+	if len(skillFragments) > 0 {
+		// Stash for runAIAgent to append onto the system prompt. We thread it
+		// through env to avoid changing this function's signature.
+		env.skillSystemFragments = skillFragments
 	}
 
 	// Edge-bound nodes
@@ -281,6 +324,18 @@ func (e *WorkflowExecutor) buildAgentToolCatalog(agent Node, env *runEnv,
 					return "", fmt.Errorf("tool %s: bad args: %w", toolName, err)
 				}
 			}
+			// Emit step_start for the tool-invoked node so live-stream
+			// clients see it transition into running. BFS skips these
+			// nodes (they're agent-driven), so without this hook the
+			// canvas stays grey on tool calls until the final snapshot.
+			if env, ok := envFromCtx(ctx); ok && env.events != nil {
+				env.events.Emit(stampNow(RunEvent{
+					Type:     EventStepStart,
+					NodeID:   targetNode.ID,
+					NodeType: targetNode.Type,
+				}))
+			}
+
 			out, err := e.runNode(ctx, targetNode, argInput, wfCtx, params)
 
 			// Record a StepResult for the tool-invoked node so the UI shows
@@ -291,6 +346,21 @@ func (e *WorkflowExecutor) buildAgentToolCatalog(agent Node, env *runEnv,
 					sr.Error = err.Error()
 				}
 				env.toolSteps.add(sr)
+			}
+
+			// Mirror step_done so the canvas flips to success/error live.
+			if env, ok := envFromCtx(ctx); ok && env.events != nil {
+				done := RunEvent{
+					Type:     EventStepDone,
+					NodeID:   targetNode.ID,
+					NodeType: targetNode.Type,
+					Output:   out,
+				}
+				if err != nil {
+					done.Error = err.Error()
+					done.IsError = true
+				}
+				env.events.Emit(stampNow(done))
 			}
 
 			if err != nil {
@@ -311,6 +381,65 @@ func (e *WorkflowExecutor) buildAgentToolCatalog(agent Node, env *runEnv,
 }
 
 // --- helpers ---
+
+// traceToRunEvent converts an agent TraceEvent into a streaming RunEvent.
+// Done here (not on TraceEvent itself) so the agent package owns the
+// trace shape and the run-level stream owns its own. NodeID is stamped
+// from the agent node so consumers can route events into the correct
+// per-node UI slot.
+func traceToRunEvent(t TraceEvent, agentNode Node) RunEvent {
+	ev := RunEvent{
+		At:       t.At,
+		NodeID:   agentNode.ID,
+		NodeType: agentNode.Type,
+		Iter:     t.Iter,
+		Text:     t.Text,
+		ToolName: t.ToolName,
+		ToolID:   t.ToolID,
+		ToolArgs: t.ToolArgs,
+		Result:   stringifyResult(t.Result),
+		IsError:  t.IsError,
+	}
+	if t.Usage != nil {
+		ev.Usage = &Usage{
+			InputTokens:  t.Usage.InputTokens,
+			OutputTokens: t.Usage.OutputTokens,
+			TotalTokens:  t.Usage.TotalTokens,
+			CostUSD:      t.Usage.CostUSD,
+		}
+	}
+	switch t.Type {
+	case "iter_start":
+		ev.Type = EventAgentIter
+	case "llm_call":
+		ev.Type = EventAgentLLM
+	case "tool_call":
+		ev.Type = EventAgentToolCall
+	case "tool_result":
+		ev.Type = EventAgentToolResult
+	case "final":
+		ev.Type = EventAgentFinal
+	}
+	return ev
+}
+
+// stringifyResult coerces a trace-result value (string OR JSON-shaped any)
+// into a single string for streaming consumers. Pre-stringified handlers
+// pass through unchanged; structured payloads land as compact JSON so
+// the UI can render them verbatim.
+func stringifyResult(v any) string {
+	if v == nil {
+		return ""
+	}
+	if s, ok := v.(string); ok {
+		return s
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return fmt.Sprintf("%v", v)
+	}
+	return string(b)
+}
 
 func getIntData(data map[string]any, key string, def int) int {
 	if v, ok := data[key]; ok {

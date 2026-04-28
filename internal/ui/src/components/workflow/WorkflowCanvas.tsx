@@ -28,7 +28,7 @@ import { AIAgentNode } from './nodes/AIAgentNode'
 import { useWorkflowStore, type Workflow } from './useWorkflowStore'
 import { WorkflowParamsPanel } from './WorkflowParamsPanel'
 import { WorkflowHelpLegend } from './WorkflowHelpLegend'
-import { RunResultsContext, DebugContext, type RunResults } from './RunResultsContext'
+import { RunResultsContext, RunStatusContext, DebugContext, type RunResults } from './RunResultsContext'
 
 const nodeTypes: NodeTypes = {
   trigger: TriggerNode,
@@ -232,6 +232,9 @@ interface Props {
   onRun(stopAt?: string, input?: unknown): void
   onClearRun(): void
   lastRun?: RunResults
+  // True while a workflow run is in flight. Threaded into RunStatusContext
+  // so child nodes can render "idle" vs "not executed" correctly.
+  runRunning?: boolean
 }
 
 const routingCycle = ['default', 'smoothstep', 'step', 'straight'] as const
@@ -276,7 +279,7 @@ interface EdgeMenuState {
   flowY: number
 }
 
-function WorkflowCanvasInner({ workflow, onSave, onRun, onClearRun, lastRun }: Props) {
+function WorkflowCanvasInner({ workflow, onSave, onRun, onClearRun, lastRun, runRunning }: Props) {
   const { updateActiveGraph, selectedEdgeType, setSelectedEdgeType, attachingFrom, setAttachingFrom } = useWorkflowStore()
   const { screenToFlowPosition } = useReactFlow()
   const [nodes, setNodes, onNodesChange] = useNodesState(workflow.nodes)
@@ -467,6 +470,7 @@ function WorkflowCanvasInner({ workflow, onSave, onRun, onClearRun, lastRun }: P
 
   return (
     <DebugContext.Provider value={{ debugMode, breakpointId, toggleBreakpoint }}>
+    <RunStatusContext.Provider value={{ running: !!runRunning }}>
     <RunResultsContext.Provider value={lastRun ?? null}>
       <div className="w-full h-full flex flex-col">
       <div ref={reactFlowWrapper} className={`flex-1 relative ${selectedEdgeType ? 'cursor-crosshair' : ''}`}>
@@ -602,6 +606,7 @@ function WorkflowCanvasInner({ workflow, onSave, onRun, onClearRun, lastRun }: P
       )}
       </div>
     </RunResultsContext.Provider>
+    </RunStatusContext.Provider>
     </DebugContext.Provider>
   )
 }

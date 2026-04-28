@@ -7,6 +7,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '~
 import { Tooltip, TooltipTrigger, TooltipContent } from '~/components/ui/tooltip'
 import { StepNameInput } from './StepNameInput'
 import { DynamicHandles } from './DynamicHandles'
+import { SkillsPanel } from './SkillsPanel'
 import { NodeDebugPanel, BreakpointMarker } from '../RunResultsContext'
 import { useWorkflowStore } from '../useWorkflowStore'
 
@@ -197,6 +198,7 @@ export function AIAgentNode({ id, data, selected }: NodeProps) {
           </p>
         </div>
 
+        <SkillsPanel nodeId={id} data={data as Record<string, unknown>} />
         <NodeDebugPanel id={id} />
       </div>
       <DynamicHandles nodeId={id} nodeType="ai_agent" data={data as Record<string, unknown>} />

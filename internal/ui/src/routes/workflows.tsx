@@ -1,5 +1,5 @@
 import { createFileRoute, Link } from '@tanstack/react-router'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import { Separator } from '~/components/ui/separator'
 import { WorkflowSidebar } from '~/components/workflow/WorkflowSidebar'
@@ -8,6 +8,7 @@ import { useWorkflowStore, type Workflow, type Connection } from '~/components/w
 import type { RunResults } from '~/components/workflow/RunResultsContext'
 import type { Node, Edge } from '@xyflow/react'
 import { useQueryState } from '~/hooks/useQueryState'
+import { useWorkflowRunStream } from '~/hooks/useWorkflowRunStream'
 
 export const Route = createFileRoute('/workflows')({
   component: WorkflowsPage,
@@ -19,6 +20,69 @@ function WorkflowsPage() {
   const { workflows, activeId, setWorkflows, setConnections, setActive, activeWorkflow } = useWorkflowStore()
   const [lastRun, setLastRun] = useState<RunResults | null>(null)
   const [qsWorkflow, setQsWorkflow] = useQueryState('workflow')
+  const stream = useWorkflowRunStream()
+
+  // Mirror the live stream's per-node state into the existing RunResults
+  // shape so NodeDebugPanel keeps working untouched. Done as a derived
+  // memo so each event tick re-renders the canvas.
+  const liveRun = useMemo<RunResults | null>(() => {
+    const ids = Object.keys(stream.nodes)
+    if (ids.length === 0) return null
+    const out: RunResults = {}
+    for (const id of ids) {
+      const n = stream.nodes[id]!
+      // Map NodeRunState.status → StepResult.status so NodeDebugPanel
+      // can show a live "running" indicator until the corresponding
+      // step_done event lands. Pending nodes (only step_start seen) read
+      // as 'running'; that matches user expectation that a node which
+      // has begun but not completed should NOT show green.
+      let status: 'running' | 'done' | 'error' | undefined
+      if (n.status === 'pending' || n.status === 'running') {
+        status = 'running'
+      } else if (n.status === 'error') {
+        status = 'error'
+      } else if (n.status === 'done') {
+        status = 'done'
+      }
+      out[id] = [
+        {
+          node_id: n.nodeId,
+          node_type: n.nodeType ?? '',
+          output: n.output,
+          error: n.error,
+          status,
+        },
+      ]
+    }
+    return out
+  }, [stream.nodes])
+
+  // When a stream is active, prefer its live snapshot; otherwise fall
+  // back to whatever the last completed run produced.
+  const displayedRun = stream.status === 'idle' ? lastRun : liveRun
+
+  // On `run_done`, freeze the live snapshot into lastRun and let the
+  // stream reset (next run starts from a clean slate). Toast errors
+  // surfaced via stream.events.
+  useEffect(() => {
+    if (stream.status !== 'done' && stream.status !== 'error') return
+    setLastRun(liveRun)
+    let hasError = false
+    for (const ev of stream.events) {
+      if (ev.type === 'step_done' && ev.is_error) {
+        toast.error(`[${ev.node_type}] ${ev.error ?? 'error'}`)
+        hasError = true
+      }
+      if (ev.type === 'error') {
+        toast.error(ev.error ?? 'run error')
+        hasError = true
+      }
+    }
+    if (!hasError && stream.status === 'done') {
+      toast.success('Workflow completed')
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stream.status])
 
   // Single function updates both store + URL atomically — no ping-pong
   const selectWorkflow = useCallback(
@@ -84,7 +148,9 @@ function WorkflowsPage() {
     const wf = activeWorkflow()
     if (!wf) return
 
-    // Auto-save before run so server has latest graph
+    // Auto-save before run so the server has the latest graph. Streaming
+    // run won't pick up unsaved canvas changes either, so the auto-save
+    // step is unchanged from the legacy POST flow.
     try {
       const saveRes = await fetch(`${API_BASE}/api/v1/workflows/${wf.id}`, {
         method: 'PUT',
@@ -101,51 +167,9 @@ function WorkflowsPage() {
       return
     }
 
-    setLastRun(null) // clear stale results immediately before new run
-    try {
-      const bodyObj: Record<string, unknown> = {}
-      if (stopAt) bodyObj.stop_at = stopAt
-      if (input !== undefined) bodyObj.input = input
-
-      const res = await fetch(`${API_BASE}/api/v1/workflows/${wf.id}/run`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: Object.keys(bodyObj).length > 0 ? JSON.stringify(bodyObj) : undefined,
-      })
-      const data = await res.json()
-      if (!res.ok) {
-        toast.error(`Run failed: ${data.error}`)
-        return
-      }
-      const steps: Array<{ node_id: string; node_type: string; output?: unknown; error?: string }> =
-        data.steps ?? []
-
-      // group results by node_id for debug panels
-      const grouped: RunResults = {}
-      for (const step of steps) {
-        if (!grouped[step.node_id]) grouped[step.node_id] = []
-        grouped[step.node_id]!.push(step)
-      }
-      setLastRun(grouped)
-
-      let hasError = false
-      for (const step of steps) {
-        if (step.error) {
-          toast.error(`[${step.node_type}] ${step.error}`)
-          hasError = true
-        }
-      }
-      // summarise mongo_request results — count successful ops
-      const mongoSteps = steps.filter((s) => s.node_type === 'mongo_request' && !s.error)
-      if (mongoSteps.length > 0) {
-        toast.success(`${mongoSteps.length} mongo op${mongoSteps.length === 1 ? '' : 's'} succeeded`)
-      }
-      if (!hasError && steps.every((s) => !s.error)) {
-        toast.success('Workflow completed')
-      }
-    } catch {
-      toast.error('Network error running workflow')
-    }
+    // Hand off to the WS stream — the hook resets prior state internally.
+    setLastRun(null)
+    stream.run(wf.id, input, stopAt)
   }
 
   const active = activeWorkflow()
@@ -175,7 +199,15 @@ function WorkflowsPage() {
         <WorkflowSidebar onSelect={selectWorkflow} onReload={load} />
         <main className="flex-1 overflow-hidden h-full">
           {active ? (
-            <WorkflowCanvas key={active.id} workflow={active} onSave={handleSave} onRun={handleRun} onClearRun={() => setLastRun(null)} lastRun={lastRun ?? undefined} />
+            <WorkflowCanvas
+              key={active.id}
+              workflow={active}
+              onSave={handleSave}
+              onRun={handleRun}
+              onClearRun={() => { stream.reset(); setLastRun(null) }}
+              lastRun={displayedRun ?? undefined}
+              runRunning={stream.status === 'connecting' || stream.status === 'running'}
+            />
           ) : (
             <div className="flex h-full items-center justify-center text-muted-foreground text-sm">
               Select a workflow to view its canvas

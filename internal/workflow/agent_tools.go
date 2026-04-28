@@ -9,29 +9,7 @@ import (
 
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/llm"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/sandbox"
-	"go.mongodb.org/mongo-driver/v2/bson"
 )
-
-// asMap normalises a value loaded from BSON or JSON into a map[string]any.
-// MongoDB driver v2 decodes nested documents inside `map[string]any` fields
-// as bson.D (slice of key-value), not map[string]any, so a plain type
-// assertion fails silently. JSON decode (e.g. UI imports) yields
-// map[string]any directly. This helper accepts either form.
-func asMap(v any) (map[string]any, bool) {
-	switch m := v.(type) {
-	case map[string]any:
-		return m, true
-	case bson.M:
-		return map[string]any(m), true
-	case bson.D:
-		out := make(map[string]any, len(m))
-		for _, el := range m {
-			out[el.Key] = el.Value
-		}
-		return out, true
-	}
-	return nil, false
-}
 
 // ToolCatalog holds the tools an agent has access to during one run.
 // Tools come from three sources, in priority order if names collide:
@@ -180,7 +158,7 @@ Set network=true ONLY when the task requires HTTP egress.`,
 // asToolDef extracts a ToolDef from a target node's data.as_tool block.
 // Returns ok=false when the node hasn't opted in.
 func asToolDef(target Node, prefix string) (llm.ToolDef, bool) {
-	at, ok := asMap(target.Data["as_tool"])
+	at, ok := mapAny(target.Data["as_tool"])
 	if !ok {
 		return llm.ToolDef{}, false
 	}
@@ -209,7 +187,7 @@ func asToolDef(target Node, prefix string) (llm.ToolDef, bool) {
 	case nil:
 		schema = json.RawMessage(`{"type":"object"}`)
 	default:
-		if m, ok := asMap(v); ok {
+		if m, ok := mapAny(v); ok {
 			b, err := json.Marshal(m)
 			if err != nil {
 				return llm.ToolDef{}, false

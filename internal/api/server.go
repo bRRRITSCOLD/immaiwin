@@ -46,6 +46,7 @@ func NewServer(
 	wfExec *workflow.WorkflowExecutor,
 	connStore handler.ConnectionStore,
 	connInvalidator handler.ConnectionInvalidator,
+	skillBackend *handler.SkillBackend,
 	db *mongo.Database,
 	sandboxRT sandbox.Runtime,
 ) *Server {
@@ -83,6 +84,7 @@ func NewServer(
 	r.PUT("/api/v1/workflows/:id", handler.UpsertWorkflow(wfStore))
 	r.DELETE("/api/v1/workflows/:id", handler.DeleteWorkflow(wfStore))
 	r.POST("/api/v1/workflows/:id/run", handler.RunWorkflow(wfStore, wfExec))
+	r.GET("/api/v1/workflows/:id/run/stream", handler.RunWorkflowWS(wfStore, wfExec))
 	r.GET("/api/v1/workflows/:id/ws-preview", handler.PreviewWorkflowWS(wfStore, connStore, db))
 
 	// Connections
@@ -90,6 +92,12 @@ func NewServer(
 	r.PUT("/api/v1/connections/:id", handler.UpsertConnection(connStore, connInvalidator))
 	r.DELETE("/api/v1/connections/:id", handler.DeleteConnection(connStore, connInvalidator))
 	r.POST("/api/v1/connections/test", handler.TestConnection(db))
+
+	// Skills (P1.10/P1.12). When skills are disabled at boot the backend is
+	// nil and the handlers respond with empty/disabled responses; the routes
+	// are still registered so the UI can call them unconditionally.
+	r.GET("/api/v1/skills", handler.ListSkills(skillBackend))
+	r.POST("/api/v1/skills/refresh", handler.RefreshSkills(skillBackend))
 
 	// Connection OAuth (generic)
 	r.GET("/auth/connections/:id/callback", handler.ConnectionOAuthCallback(connStore, db))

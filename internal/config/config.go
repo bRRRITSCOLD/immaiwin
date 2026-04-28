@@ -12,7 +12,16 @@ type Config struct {
 	MongoDB       MongoDBConfig `envPrefix:"MONGODB_"`
 	Schwab        SchwabConfig  `envPrefix:"SCHWAB_"`
 	Sandbox       SandboxConfig `envPrefix:"SANDBOX_"`
+	Skills        SkillsConfig  `envPrefix:"SKILLS_"`
 	EncryptionKey string        `env:"ENCRYPTION_KEY" envDefault:""`
+}
+
+// SkillsConfig configures the agent skills system (P1.9–P1.12).
+// Disabled by default; set Enabled=true and provide a directory of bundles
+// (or just rely on the Mongo registry) to expose skills to AI agents.
+type SkillsConfig struct {
+	Enabled bool   `env:"ENABLED" envDefault:"false"`
+	Dir     string `env:"DIR"     envDefault:"/var/lib/immaiwin/skills"`
 }
 
 type APIConfig struct {

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/sandbox"
+	"github.com/bRRRITSCOLD/immaiwin-go/internal/skills"
 	"github.com/redis/go-redis/v9"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
@@ -128,8 +129,13 @@ type WorkflowExecutor struct {
 	ConnResolver *ConnectionResolver
 	SandboxRT    sandbox.Runtime
 	// AI agent dependencies (optional — agent nodes error if unset).
-	Memory  AgentMemory      // chat memory backend
-	RunRepo WorkflowRunStore // for run persistence + agent traces
+	Memory   AgentMemory      // chat memory backend
+	RunRepo  WorkflowRunStore // for run persistence + agent traces
+	SkillRes *skills.Resolver // skill bundle resolver (P1.11); nil disables skill loading
+	// Default event emitter for runs that don't pass one explicitly.
+	// Per-run emitter (passed to RunWithEvents) takes precedence; this
+	// fallback is mostly for unit tests + non-streaming code paths.
+	Events EventEmitter
 
 	// cursor cache for find/aggregate pagination. Lazy-initialised on first mongo_request use.
 	cursors     *cursorCache
@@ -224,6 +230,18 @@ type runEnv struct {
 	// the executor's BFS loop finishes so the UI shows success/error
 	// status on the tool-bound nodes.
 	toolSteps *toolStepCollector
+
+	// skillSystemFragments is a per-agent-run scratch slot for the
+	// `prompts/system.md` fragment from each loaded skill. Populated by
+	// buildAgentToolCatalog; read by runAIAgent when constructing the
+	// final system prompt. Lives on runEnv (not the catalog) so we don't
+	// have to thread an extra return through buildAgentToolCatalog.
+	skillSystemFragments []string
+
+	// events is the per-run event emitter — fan-out to WS clients,
+	// run-repo, etc. Always non-nil after Run() configures it (defaults
+	// to the executor's Events field, then to a no-op).
+	events EventEmitter
 }
 
 // toolStepCollector accumulates StepResults from tool-invoked node runs.
@@ -268,7 +286,16 @@ type adjEntry struct {
 // If stopAt is non-empty, execution halts after the node with that ID executes,
 // returning partial results (useful for debug/breakpoint runs).
 // Optional initialInput is injected as trigger node output (used by event-driven triggers like RabbitMQ).
+//
+// Events are emitted to e.Events (or a no-op when nil). Use RunWithEvents
+// when callers need to attach a per-invocation emitter (WS handler, tests).
 func (e *WorkflowExecutor) Run(ctx context.Context, wf Workflow, stopAt string, initialInput ...any) ([]StepResult, error) {
+	return e.RunWithEvents(ctx, wf, stopAt, e.Events, initialInput...)
+}
+
+// RunWithEvents is Run with an explicit per-invocation EventEmitter. Pass
+// nil to disable streaming (still records traces via RunRepo as before).
+func (e *WorkflowExecutor) RunWithEvents(ctx context.Context, wf Workflow, stopAt string, emitter EventEmitter, initialInput ...any) ([]StepResult, error) {
 	byID := make(map[string]Node, len(wf.Nodes))
 	for _, n := range wf.Nodes {
 		byID[n.ID] = n
@@ -321,12 +348,17 @@ func (e *WorkflowExecutor) Run(ctx context.Context, wf Workflow, stopAt string, 
 	// Stash run env so agent loop (and any future node type that needs
 	// graph access) can find tool-edges + node lookup tables without us
 	// expanding every handler's signature.
+	if emitter == nil {
+		emitter = noopEmitter{}
+	}
+
 	env := &runEnv{
 		wf:        &wf,
 		byID:      byID,
 		adj:       adj,
 		tenantID:  "default",
 		toolSteps: &toolStepCollector{},
+		events:    emitter,
 	}
 	ctx = context.WithValue(ctx, runEnvKey, env)
 
@@ -349,6 +381,12 @@ func (e *WorkflowExecutor) Run(ctx context.Context, wf Workflow, stopAt string, 
 			extraResults []StepResult
 		)
 
+		emitter.Emit(stampNow(RunEvent{
+			Type:     EventStepStart,
+			NodeID:   node.ID,
+			NodeType: node.Type,
+		}))
+
 		if node.Type == NodeTypeForEach {
 			output, extraResults, err = e.runForEach(ctx, node, item.input, adj, byID, wfCtx, params, stopAt)
 			results = append(results, extraResults...)
@@ -370,6 +408,18 @@ func (e *WorkflowExecutor) Run(ctx context.Context, wf Workflow, stopAt string, 
 		}
 		results = append(results, sr)
 
+		stepDone := RunEvent{
+			Type:     EventStepDone,
+			NodeID:   node.ID,
+			NodeType: node.Type,
+			Output:   output,
+		}
+		if err != nil {
+			stepDone.Error = err.Error()
+			stepDone.IsError = true
+		}
+		emitter.Emit(stampNow(stepDone))
+
 		if stopAt != "" && node.ID == stopAt {
 			return results, nil
 		}
@@ -390,6 +440,8 @@ func (e *WorkflowExecutor) Run(ctx context.Context, wf Workflow, stopAt string, 
 	// as executed. Order matches tool-call sequence (agent loop adds
 	// per-call) — preserved by the mutex-guarded slice.
 	results = append(results, env.toolSteps.drain()...)
+
+	emitter.Emit(stampNow(RunEvent{Type: EventRunDone}))
 
 	return results, nil
 }
@@ -782,13 +834,13 @@ func buildHTTPClient(base *http.Client, data map[string]any) *http.Client {
 }
 
 // stringMap coerces an arbitrary value into map[string]string. Accepts
-// map[string]string and map[string]any (values stringified). Returns nil on
-// type mismatch.
+// map[string]string, map[string]any, bson.M, and bson.D (values stringified).
+// Returns nil on type mismatch.
 func stringMap(v any) map[string]string {
-	switch m := v.(type) {
-	case map[string]string:
+	if m, ok := v.(map[string]string); ok {
 		return m
-	case map[string]any:
+	}
+	if m, ok := mapAny(v); ok {
 		out := make(map[string]string, len(m))
 		for k, val := range m {
 			out[k] = fmt.Sprint(val)
@@ -942,10 +994,7 @@ func bsonM(v any) (bson.M, error) {
 	if v == nil {
 		return nil, nil
 	}
-	switch m := v.(type) {
-	case bson.M:
-		return m, nil
-	case map[string]any:
+	if m, ok := mapAny(v); ok {
 		return bson.M(m), nil
 	}
 	return nil, fmt.Errorf("expected object/map, got %T", v)
@@ -964,10 +1013,10 @@ func bsonPipeline(v any) ([]bson.M, error) {
 	if v == nil {
 		return nil, fmt.Errorf("pipeline is required")
 	}
-	switch p := v.(type) {
-	case []bson.M:
+	if p, ok := v.([]bson.M); ok {
 		return p, nil
-	case []any:
+	}
+	if p, ok := sliceAny(v); ok {
 		out := make([]bson.M, len(p))
 		for i, stage := range p {
 			m, err := bsonM(stage)
@@ -986,10 +1035,10 @@ func bsonDocs(v any) ([]bson.M, error) {
 	if v == nil {
 		return nil, fmt.Errorf("documents is required")
 	}
-	switch d := v.(type) {
-	case []bson.M:
+	if d, ok := v.([]bson.M); ok {
 		return d, nil
-	case []any:
+	}
+	if d, ok := sliceAny(v); ok {
 		out := make([]bson.M, len(d))
 		for i, doc := range d {
 			m, err := bsonM(doc)
@@ -1081,7 +1130,7 @@ func (e *WorkflowExecutor) mongoFindOneAndUpdate(ctx context.Context, db MongoCl
 			opts.SetReturnDocument(options.Before)
 		}
 	}
-	if af, ok := data["array_filters"].([]any); ok {
+	if af, ok := sliceAny(data["array_filters"]); ok {
 		filters := make([]any, 0, len(af))
 		for _, f := range af {
 			m, err := bsonM(f)
@@ -1193,7 +1242,7 @@ func (e *WorkflowExecutor) mongoUpdateMany(ctx context.Context, db MongoClient, 
 	if upsert, _ := data["upsert"].(bool); upsert {
 		opts.SetUpsert(true)
 	}
-	if af, ok := data["array_filters"].([]any); ok {
+	if af, ok := sliceAny(data["array_filters"]); ok {
 		filters := make([]any, 0, len(af))
 		for _, f := range af {
 			m, err := bsonM(f)
@@ -2058,10 +2107,10 @@ func scoreMap(v any) (map[string]float64, error) {
 	if v == nil {
 		return nil, nil
 	}
-	switch m := v.(type) {
-	case map[string]float64:
+	if m, ok := v.(map[string]float64); ok {
 		return m, nil
-	case map[string]any:
+	}
+	if m, ok := mapAny(v); ok {
 		out := make(map[string]float64, len(m))
 		for k, val := range m {
 			f, ok := toFloat64(val)
@@ -2080,10 +2129,10 @@ func anyMap(v any) (map[string]any, error) {
 	if v == nil {
 		return nil, nil
 	}
-	switch m := v.(type) {
-	case map[string]any:
+	if m, ok := mapAny(v); ok {
 		return m, nil
-	case map[string]string:
+	}
+	if m, ok := v.(map[string]string); ok {
 		out := make(map[string]any, len(m))
 		for k, val := range m {
 			out[k] = val
@@ -2128,23 +2177,23 @@ func runNotify(data map[string]any, input any) (any, error) {
 //	{{context.stepName.output.FIELD}} — field from named step's output
 //	{{context.stepName.item.FIELD}}   — current iteration element (for_each body only)
 func applyTemplate(s string, input any, wfCtx runCtx) string {
-	if m, ok := input.(map[string]any); ok {
+	if m, ok := mapAny(input); ok {
 		for k, v := range m {
 			s = strings.ReplaceAll(s, "{{input."+k+"}}", fmt.Sprint(v))
 		}
 	}
 	for name, sc := range wfCtx {
-		if m, ok := sc.Input.(map[string]any); ok {
+		if m, ok := mapAny(sc.Input); ok {
 			for k, v := range m {
 				s = strings.ReplaceAll(s, "{{context."+name+".input."+k+"}}", fmt.Sprint(v))
 			}
 		}
-		if m, ok := sc.Output.(map[string]any); ok {
+		if m, ok := mapAny(sc.Output); ok {
 			for k, v := range m {
 				s = strings.ReplaceAll(s, "{{context."+name+".output."+k+"}}", fmt.Sprint(v))
 			}
 		}
-		if m, ok := sc.Item.(map[string]any); ok {
+		if m, ok := mapAny(sc.Item); ok {
 			for k, v := range m {
 				s = strings.ReplaceAll(s, "{{context."+name+".item."+k+"}}", fmt.Sprint(v))
 			}
