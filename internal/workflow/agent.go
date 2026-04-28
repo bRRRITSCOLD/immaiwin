@@ -204,7 +204,14 @@ func (e *WorkflowExecutor) runAIAgent(ctx context.Context, node Node, data map[s
 				obs, err := catalog.Execute(loopCtx, call.Name, call.Input)
 				isErr := err != nil
 				if isErr {
-					obs = err.Error()
+					// Prefer the handler's rich string (often includes stderr +
+					// exit code) so the LLM can self-diagnose. Fall back to
+					// err.Error() only when the handler returned no detail.
+					if obs == "" {
+						obs = err.Error()
+					} else {
+						obs = obs + "\nerror: " + err.Error()
+					}
 				}
 				results = append(results, llm.ToolResultBlock(call.ID, obs, isErr))
 				emitTrace(TraceEvent{
@@ -245,18 +252,24 @@ func (e *WorkflowExecutor) buildAgentToolCatalog(agent Node, env *runEnv,
 	}
 
 	// Edge-bound nodes
+	var toolEdges, optedIn int
 	for _, et := range env.adj[agent.ID] {
 		if et.sourceHandle != EdgeHandleTool {
 			continue
 		}
+		toolEdges++
 		target, ok := env.byID[et.targetID]
 		if !ok {
+			slog.Warn("ai_agent: tool edge target missing", "agent", agent.ID, "target", et.targetID)
 			continue
 		}
 		def, ok := asToolDef(target, "")
 		if !ok {
+			slog.Warn("ai_agent: tool edge target did not opt in (data.as_tool missing or disabled)",
+				"agent", agent.ID, "target", target.ID, "type", target.Type)
 			continue // node didn't opt in
 		}
+		optedIn++
 		// Snapshot so the closure doesn't capture loop-mutated vars.
 		targetNode := target
 		toolName := def.Name
@@ -269,6 +282,17 @@ func (e *WorkflowExecutor) buildAgentToolCatalog(agent Node, env *runEnv,
 				}
 			}
 			out, err := e.runNode(ctx, targetNode, argInput, wfCtx, params)
+
+			// Record a StepResult for the tool-invoked node so the UI shows
+			// success/error on it (otherwise NodeDebugPanel renders "not executed").
+			if env, ok := envFromCtx(ctx); ok && env.toolSteps != nil {
+				sr := StepResult{NodeID: targetNode.ID, NodeType: targetNode.Type, Output: out}
+				if err != nil {
+					sr.Error = err.Error()
+				}
+				env.toolSteps.add(sr)
+			}
+
 			if err != nil {
 				return "", err
 			}
@@ -281,6 +305,8 @@ func (e *WorkflowExecutor) buildAgentToolCatalog(agent Node, env *runEnv,
 		}
 	}
 
+	slog.Info("ai_agent: tool catalog built",
+		"agent", agent.ID, "tool_edges", toolEdges, "opted_in", optedIn, "total_tools", len(cat.Defs()))
 	return cat, nil
 }
 

@@ -1,0 +1,318 @@
+{
+  "version": 1,
+  "workflow": {
+    "id": "096e7314-37b7-49b1-840b-5f6b13ff2ffc",
+    "name": "AI Weather Agent → Redis",
+    "params": {
+      "city": "San Francisco",
+      "redis_channel": "weather.alerts",
+      "weather_format": "%l:+%C,+%t,+humidity+%h,+wind+%w"
+    },
+    "nodes": [
+      {
+        "id": "trigger-1",
+        "type": "trigger",
+        "position": {
+          "x": -461.5,
+          "y": 49.5
+        },
+        "data": {
+          "handles": [
+            {
+              "id": "start-out",
+              "side": "right",
+              "offset": 50,
+              "paletteType": "start"
+            },
+            {
+              "side": "top",
+              "offset": 50,
+              "paletteType": "receive",
+              "id": "in-top"
+            },
+            {
+              "paletteType": "receive",
+              "id": "in-left",
+              "side": "left",
+              "offset": 50
+            },
+            {
+              "paletteType": "receive",
+              "id": "in-bottom",
+              "side": "bottom",
+              "offset": 50
+            }
+          ],
+          "name": "manual_start",
+          "trigger_type": "manual"
+        },
+        "measured": {
+          "width": 260,
+          "height": 159
+        },
+        "selected": false,
+        "dragging": false
+      },
+      {
+        "id": "agent-1",
+        "type": "ai_agent",
+        "position": {
+          "x": -271.15433152504,
+          "y": 490.57383705899974
+        },
+        "data": {
+          "handles": [
+            {
+              "offset": 25,
+              "paletteType": "tool",
+              "id": "tool",
+              "side": "right"
+            },
+            {
+              "id": "success",
+              "side": "right",
+              "offset": 60,
+              "paletteType": "success"
+            },
+            {
+              "id": "error",
+              "side": "right",
+              "offset": 85,
+              "paletteType": "error"
+            },
+            {
+              "id": "in-top",
+              "side": "top",
+              "offset": 50,
+              "paletteType": "receive"
+            },
+            {
+              "id": "in-left",
+              "side": "left",
+              "offset": 50,
+              "paletteType": "receive"
+            },
+            {
+              "side": "bottom",
+              "offset": 50,
+              "paletteType": "receive",
+              "id": "in-bottom"
+            }
+          ],
+          "llm_connection_id": "97c9e71b-d635-4618-8c53-cbb3770e2b5a",
+          "max_iterations": 4,
+          "max_tokens": 1024,
+          "max_tool_calls_per_iter": 2,
+          "name": "weather_agent",
+          "system_prompt": "You are a weather assistant.\n\nWorkflow:\n1. Call the get_weather tool with the city name. It returns a short text line, e.g. 'San Francisco: Partly cloudy, +54°F, humidity 80%, wind →3km/h'.\n2. Call the publish_weather tool with a JSON object: { city, summary, temp_f } where summary is one short sentence in Fahrenheit.\n3. Return a brief confirmation as your final answer (the workflow consumes the published message via Redis pub/sub).",
+          "temperature": 0.2,
+          "timeout_seconds": 120,
+          "user_input": "Get the current weather for {{params.city}}."
+        },
+        "width": 539,
+        "height": 708,
+        "measured": {
+          "width": 539,
+          "height": 708
+        },
+        "selected": false,
+        "dragging": false,
+        "resizing": false
+      },
+      {
+        "id": "http-1",
+        "type": "http_request",
+        "position": {
+          "x": 776,
+          "y": -96
+        },
+        "data": {
+          "accept_any_status": false,
+          "as_tool": {
+            "enabled": true,
+            "name": "get_weather",
+            "description": "Fetch the current weather for a city. Returns a JSON object with temperature, conditions, humidity, wind, etc.",
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "city": {
+                  "type": "string",
+                  "description": "City name, e.g. \"San Francisco\" or \"Tokyo\"."
+                }
+              },
+              "required": [
+                "city"
+              ]
+            }
+          },
+          "follow_redirects": true,
+          "handles": [
+            {
+              "paletteType": "success",
+              "id": "success",
+              "side": "right",
+              "offset": 35
+            },
+            {
+              "paletteType": "error",
+              "id": "error",
+              "side": "right",
+              "offset": 65
+            },
+            {
+              "offset": 50,
+              "paletteType": "receive",
+              "id": "in-top",
+              "side": "top"
+            },
+            {
+              "id": "in-left",
+              "side": "left",
+              "offset": 50,
+              "paletteType": "receive"
+            },
+            {
+              "id": "in-bottom",
+              "side": "bottom",
+              "offset": 50,
+              "paletteType": "receive"
+            }
+          ],
+          "headers": {
+            "Accept": "text/plain"
+          },
+          "max_redirects": 10,
+          "max_response_bytes": 1048576,
+          "method": "GET",
+          "name": "get_weather",
+          "parse_json": false,
+          "timeout_seconds": 20,
+          "tls_insecure_skip_verify": false,
+          "url": "https://wttr.in/{{input.city}}?format={{params.weather_format}}&u",
+          "user_agent": "immaiwin-agent/1.0"
+        },
+        "width": 416,
+        "measured": {
+          "width": 416,
+          "height": 735
+        },
+        "selected": false,
+        "height": 735,
+        "resizing": false,
+        "dragging": false
+      },
+      {
+        "id": "redis-1",
+        "type": "redis_request",
+        "position": {
+          "x": 687.15433152504,
+          "y": 872.1921607068912
+        },
+        "data": {
+          "as_tool": {
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "city": {
+                  "type": "string",
+                  "description": "City the summary is for."
+                },
+                "summary": {
+                  "type": "string",
+                  "description": "One-sentence weather summary in Fahrenheit."
+                },
+                "temp_f": {
+                  "description": "Current temperature in Fahrenheit.",
+                  "type": "number"
+                }
+              },
+              "required": [
+                "city",
+                "summary"
+              ]
+            },
+            "enabled": true,
+            "name": "publish_weather",
+            "description": "Publish a weather summary to the Redis channel so downstream subscribers receive it. Provide a JSON object with city, summary, and temp_f."
+          },
+          "channel": "{{params.redis_channel}}",
+          "handles": [
+            {
+              "id": "success",
+              "side": "right",
+              "offset": 35,
+              "paletteType": "success"
+            },
+            {
+              "paletteType": "error",
+              "id": "error",
+              "side": "right",
+              "offset": 65
+            },
+            {
+              "id": "in-top",
+              "side": "top",
+              "offset": 50,
+              "paletteType": "receive"
+            },
+            {
+              "id": "in-left",
+              "side": "left",
+              "offset": 50,
+              "paletteType": "receive"
+            },
+            {
+              "id": "in-bottom",
+              "side": "bottom",
+              "offset": 50,
+              "paletteType": "receive"
+            }
+          ],
+          "name": "publish_weather",
+          "operation": "publish",
+          "start": 0,
+          "stop": -1
+        },
+        "width": 320,
+        "measured": {
+          "width": 320,
+          "height": 638
+        },
+        "selected": false,
+        "dragging": false
+      }
+    ],
+    "edges": [
+      {
+        "id": "edge-trigger-agent",
+        "source": "trigger-1",
+        "target": "agent-1",
+        "sourceHandle": "start-out",
+        "data": {
+          "paletteType": "start"
+        }
+      },
+      {
+        "id": "edge-agent-redis",
+        "source": "agent-1",
+        "target": "redis-1",
+        "sourceHandle": "tool",
+        "data": {
+          "paletteType": "tool"
+        }
+      },
+      {
+        "source": "agent-1",
+        "sourceHandle": "tool",
+        "target": "http-1",
+        "targetHandle": "in-left",
+        "id": "e-1777394443488",
+        "data": {
+          "paletteType": "tool"
+        }
+      }
+    ],
+    "created_at": "2026-04-28T16:07:37.087Z",
+    "updated_at": "2026-04-28T16:10:21.555Z"
+  }
+}

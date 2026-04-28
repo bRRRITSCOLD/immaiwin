@@ -3,7 +3,9 @@ package workflow
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,10 +14,14 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/sandbox"
+	"github.com/redis/go-redis/v9"
 	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
 // defaultMaxResponseBytes caps http_request response body size when the node
@@ -23,14 +29,72 @@ import (
 // preventing runaway memory.
 const defaultMaxResponseBytes int64 = 10 * 1024 * 1024
 
-// Publisher broadcasts serialised payloads to a named channel.
-type Publisher interface {
+// RedisClient executes Redis operations on behalf of redis_request nodes.
+// Producer-side only — no Subscribe (the sub side will become a trigger node).
+type RedisClient interface {
 	Publish(ctx context.Context, channel string, payload []byte) error
+
+	// strings
+	Get(ctx context.Context, key string) (string, error)
+	Set(ctx context.Context, key, value string, ttl time.Duration) error
+	Del(ctx context.Context, keys ...string) (int64, error)
+	Incr(ctx context.Context, key string) (int64, error)
+	Decr(ctx context.Context, key string) (int64, error)
+	Expire(ctx context.Context, key string, ttl time.Duration) (bool, error)
+	TTL(ctx context.Context, key string) (time.Duration, error)
+	Exists(ctx context.Context, keys ...string) (int64, error)
+	Keys(ctx context.Context, pattern string) ([]string, error)
+	MGet(ctx context.Context, keys ...string) ([]any, error)
+	MSet(ctx context.Context, pairs map[string]string) error
+
+	// hashes
+	HGet(ctx context.Context, key, field string) (string, error)
+	HSet(ctx context.Context, key string, fields map[string]string) (int64, error)
+	HGetAll(ctx context.Context, key string) (map[string]string, error)
+	HDel(ctx context.Context, key string, fields ...string) (int64, error)
+
+	// lists
+	LPush(ctx context.Context, key string, values ...any) (int64, error)
+	RPush(ctx context.Context, key string, values ...any) (int64, error)
+	LPop(ctx context.Context, key string) (string, error)
+	RPop(ctx context.Context, key string) (string, error)
+	LRange(ctx context.Context, key string, start, stop int64) ([]string, error)
+	LLen(ctx context.Context, key string) (int64, error)
+
+	// sets
+	SAdd(ctx context.Context, key string, members ...any) (int64, error)
+	SRem(ctx context.Context, key string, members ...any) (int64, error)
+	SMembers(ctx context.Context, key string) ([]string, error)
+	SIsMember(ctx context.Context, key string, member any) (bool, error)
+
+	// sorted sets
+	ZAdd(ctx context.Context, key string, members map[string]float64) (int64, error)
+	ZRem(ctx context.Context, key string, members ...any) (int64, error)
+	ZRange(ctx context.Context, key string, start, stop int64) ([]string, error)
+	ZScore(ctx context.Context, key, member string) (float64, error)
+	ZIncrBy(ctx context.Context, key string, increment float64, member string) (float64, error)
+
+	// streams (producer + range)
+	XAdd(ctx context.Context, stream string, values map[string]any) (string, error)
+	XRange(ctx context.Context, stream, start, stop string) ([]redis.XMessage, error)
+	XLen(ctx context.Context, stream string) (int64, error)
 }
 
-// RawUpserter persists arbitrary documents to a named collection.
-type RawUpserter interface {
-	UpsertRaw(ctx context.Context, collection string, filter, update bson.M, upsert bool) (matched, inserted int64, err error)
+// MongoClient executes generic MongoDB operations against a database.
+// Implementations live in internal/mongodb (default db) and inline in
+// connection_resolver.go (per-connection resolved clients).
+type MongoClient interface {
+	Find(ctx context.Context, collection string, filter bson.M, opts *options.FindOptionsBuilder) (*mongo.Cursor, error)
+	FindOneAndUpdate(ctx context.Context, collection string, filter, update bson.M, opts *options.FindOneAndUpdateOptionsBuilder) (bson.M, error)
+	FindOneAndReplace(ctx context.Context, collection string, filter, replacement bson.M, opts *options.FindOneAndReplaceOptionsBuilder) (bson.M, error)
+	InsertOne(ctx context.Context, collection string, doc bson.M) (any, error)
+	InsertMany(ctx context.Context, collection string, docs []bson.M, opts *options.InsertManyOptionsBuilder) ([]any, error)
+	UpdateMany(ctx context.Context, collection string, filter, update bson.M, opts *options.UpdateManyOptionsBuilder) (matched, modified, upserted int64, err error)
+	DeleteOne(ctx context.Context, collection string, filter bson.M) (int64, error)
+	DeleteMany(ctx context.Context, collection string, filter bson.M) (int64, error)
+	Aggregate(ctx context.Context, collection string, pipeline []bson.M, opts *options.AggregateOptionsBuilder) (*mongo.Cursor, error)
+	CountDocuments(ctx context.Context, collection string, filter bson.M, opts *options.CountOptionsBuilder) (int64, error)
+	Distinct(ctx context.Context, collection, field string, filter bson.M) ([]any, error)
 }
 
 // StepResult holds the outcome of a single node execution.
@@ -59,13 +123,90 @@ type runCtx map[string]StepContext
 // WorkflowExecutor runs a Workflow graph node by node.
 type WorkflowExecutor struct {
 	HTTPClient   *http.Client
-	DB           RawUpserter
-	Pub          Publisher
+	DB           MongoClient
+	Redis        RedisClient
 	ConnResolver *ConnectionResolver
 	SandboxRT    sandbox.Runtime
 	// AI agent dependencies (optional — agent nodes error if unset).
 	Memory  AgentMemory      // chat memory backend
 	RunRepo WorkflowRunStore // for run persistence + agent traces
+
+	// cursor cache for find/aggregate pagination. Lazy-initialised on first mongo_request use.
+	cursors     *cursorCache
+	cursorsOnce sync.Once
+}
+
+// cursorCache stores open *mongo.Cursor instances for cursor_fetch ops.
+// Cursors expire after defaultCursorTTL idle and are closed by the janitor.
+type cursorCache struct {
+	mu      sync.Mutex
+	entries map[string]*storedCursor
+}
+
+type storedCursor struct {
+	cur      *mongo.Cursor
+	lastUsed time.Time
+}
+
+const defaultCursorTTL = 10 * time.Minute
+
+func (e *WorkflowExecutor) cursorCache() *cursorCache {
+	e.cursorsOnce.Do(func() {
+		c := &cursorCache{entries: make(map[string]*storedCursor)}
+		e.cursors = c
+		go c.janitor()
+	})
+	return e.cursors
+}
+
+func (c *cursorCache) put(cur *mongo.Cursor) string {
+	id := newCursorID()
+	c.mu.Lock()
+	c.entries[id] = &storedCursor{cur: cur, lastUsed: time.Now()}
+	c.mu.Unlock()
+	return id
+}
+
+func (c *cursorCache) take(id string) *mongo.Cursor {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entry, ok := c.entries[id]
+	if !ok {
+		return nil
+	}
+	entry.lastUsed = time.Now()
+	return entry.cur
+}
+
+func (c *cursorCache) drop(id string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if entry, ok := c.entries[id]; ok {
+		_ = entry.cur.Close(context.Background())
+		delete(c.entries, id)
+	}
+}
+
+func (c *cursorCache) janitor() {
+	t := time.NewTicker(time.Minute)
+	defer t.Stop()
+	for range t.C {
+		now := time.Now()
+		c.mu.Lock()
+		for id, entry := range c.entries {
+			if now.Sub(entry.lastUsed) > defaultCursorTTL {
+				_ = entry.cur.Close(context.Background())
+				delete(c.entries, id)
+			}
+		}
+		c.mu.Unlock()
+	}
+}
+
+func newCursorID() string {
+	var b [16]byte
+	_, _ = rand.Read(b[:])
+	return hex.EncodeToString(b[:])
 }
 
 // runEnv carries per-run graph context that the agent loop needs but
@@ -77,6 +218,33 @@ type runEnv struct {
 	adj      map[string][]adjEntry
 	runID    string // WorkflowRun.ID for trace persistence; empty if no RunRepo
 	tenantID string // "default" until multi-tenant
+
+	// toolSteps collects StepResults for nodes invoked as agent tools
+	// (bypassing the main BFS). Drained into the run-level results when
+	// the executor's BFS loop finishes so the UI shows success/error
+	// status on the tool-bound nodes.
+	toolSteps *toolStepCollector
+}
+
+// toolStepCollector accumulates StepResults from tool-invoked node runs.
+// Goroutine-safe; agent loops fan tool calls out concurrently.
+type toolStepCollector struct {
+	mu    sync.Mutex
+	steps []StepResult
+}
+
+func (c *toolStepCollector) add(sr StepResult) {
+	c.mu.Lock()
+	c.steps = append(c.steps, sr)
+	c.mu.Unlock()
+}
+
+func (c *toolStepCollector) drain() []StepResult {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := c.steps
+	c.steps = nil
+	return out
 }
 
 type runEnvKeyT struct{}
@@ -154,10 +322,11 @@ func (e *WorkflowExecutor) Run(ctx context.Context, wf Workflow, stopAt string, 
 	// graph access) can find tool-edges + node lookup tables without us
 	// expanding every handler's signature.
 	env := &runEnv{
-		wf:       &wf,
-		byID:     byID,
-		adj:      adj,
-		tenantID: "default",
+		wf:        &wf,
+		byID:      byID,
+		adj:       adj,
+		tenantID:  "default",
+		toolSteps: &toolStepCollector{},
 	}
 	ctx = context.WithValue(ctx, runEnvKey, env)
 
@@ -216,6 +385,11 @@ func (e *WorkflowExecutor) Run(ctx context.Context, wf Workflow, stopAt string, 
 			}
 		}
 	}
+
+	// Append step results from tool-invoked nodes so the UI shows them
+	// as executed. Order matches tool-call sequence (agent loop adds
+	// per-call) — preserved by the mutex-guarded slice.
+	results = append(results, env.toolSteps.drain()...)
 
 	return results, nil
 }
@@ -380,10 +554,10 @@ func (e *WorkflowExecutor) runNode(ctx context.Context, node Node, input any, wf
 		return e.runSandboxScript(ctx, data, input, wfCtx, params)
 	case NodeTypeForEach:
 		return nil, fmt.Errorf("for_each dispatched via runNode — use runForEach instead")
-	case NodeTypeMongoUpsert:
-		return e.runMongoUpsert(ctx, data, input)
-	case NodeTypeRedisPublish:
-		return e.runRedisPublish(ctx, data, input)
+	case NodeTypeMongoRequest:
+		return e.runMongoRequest(ctx, data, input)
+	case NodeTypeRedisRequest:
+		return e.runRedisRequest(ctx, data, input)
 	case NodeTypeNotify:
 		return runNotify(data, input)
 	case NodeTypeAIAgent:
@@ -686,88 +860,1253 @@ func applyParamsToData(data map[string]any, params map[string]string) map[string
 	return resolved
 }
 
-// runMongoUpsert upserts a single document into the target collection.
-// Use for_each upstream to iterate arrays; this node handles one item at a time.
-// If data["connection_id"] is set and ConnResolver is available, uses that connection.
-func (e *WorkflowExecutor) runMongoUpsert(ctx context.Context, data map[string]any, input any) (any, error) {
+// runMongoRequest dispatches a single MongoDB operation against the resolved
+// database. The operation is selected by data["operation"]; the rest of data
+// (filter, update, projection, sort, …) carries op-specific options. Unset
+// op-specific bson fields fall through to the upstream `input` where it makes
+// sense (e.g. insert_one uses input as the document; aggregate uses input as
+// the pipeline). Output shape varies per op — see plan doc / README.
+func (e *WorkflowExecutor) runMongoRequest(ctx context.Context, data map[string]any, input any) (any, error) {
+	op, _ := data["operation"].(string)
+	if op == "" {
+		op = "find" // sensible default; agents must still pass collection
+	}
+	op = strings.ToLower(strings.TrimSpace(op))
+
+	// cursor_fetch is the only op that doesn't require a connection lookup —
+	// it reads from the in-memory cursor cache.
+	if op == "cursor_fetch" {
+		return e.mongoCursorFetch(ctx, data)
+	}
+
 	collection, _ := data["collection"].(string)
-	filterField, _ := data["filter_field"].(string)
-
 	if collection == "" {
-		return nil, fmt.Errorf("mongo_upsert: collection is required")
-	}
-	if filterField == "" {
-		return nil, fmt.Errorf("mongo_upsert: filter_field is required")
+		return nil, fmt.Errorf("mongo_request: collection is required")
 	}
 
-	// Resolve DB — connection_id → specific connection, empty → default
+	db, err := e.resolveMongoDB(ctx, data)
+	if err != nil {
+		return nil, err
+	}
+
+	switch op {
+	case "find":
+		return e.mongoFind(ctx, db, collection, data)
+	case "find_one_and_update":
+		return e.mongoFindOneAndUpdate(ctx, db, collection, data, input)
+	case "find_one_and_replace":
+		return e.mongoFindOneAndReplace(ctx, db, collection, data, input)
+	case "insert_one":
+		return e.mongoInsertOne(ctx, db, collection, data, input)
+	case "insert_many":
+		return e.mongoInsertMany(ctx, db, collection, data, input)
+	case "update_many":
+		return e.mongoUpdateMany(ctx, db, collection, data, input)
+	case "delete_one":
+		return e.mongoDeleteOne(ctx, db, collection, data, input)
+	case "delete_many":
+		return e.mongoDeleteMany(ctx, db, collection, data, input)
+	case "aggregate":
+		return e.mongoAggregate(ctx, db, collection, data, input)
+	case "count_documents":
+		return e.mongoCountDocuments(ctx, db, collection, data, input)
+	case "distinct":
+		return e.mongoDistinct(ctx, db, collection, data, input)
+	default:
+		return nil, fmt.Errorf("mongo_request: unknown operation %q", op)
+	}
+}
+
+// resolveMongoDB picks the default DB or, when data.connection_id is set, the
+// resolved per-connection client.
+func (e *WorkflowExecutor) resolveMongoDB(ctx context.Context, data map[string]any) (MongoClient, error) {
 	db := e.DB
 	if connID, _ := data["connection_id"].(string); connID != "" && e.ConnResolver != nil {
 		resolved, err := e.ConnResolver.ResolveDB(ctx, connID)
 		if err != nil {
-			return nil, fmt.Errorf("mongo_upsert: %w", err)
+			return nil, fmt.Errorf("mongo_request: %w", err)
 		}
 		db = resolved
 	}
 	if db == nil {
-		return nil, fmt.Errorf("mongo_upsert: no DB configured")
+		return nil, fmt.Errorf("mongo_request: no DB configured")
 	}
+	return db, nil
+}
 
-	item, ok := input.(map[string]any)
-	if !ok {
-		return nil, fmt.Errorf("mongo_upsert: input must be a map (got %T); use for_each for arrays", input)
-	}
+// --- bson coercion helpers ---
 
-	filterVal, ok := item[filterField]
-	if !ok {
-		return nil, fmt.Errorf("mongo_upsert: filter_field %q not found in input", filterField)
+// bsonM coerces a generic value (typically map[string]any from JSON) into bson.M.
+// Returns nil if v is nil — callers decide whether nil is acceptable.
+func bsonM(v any) (bson.M, error) {
+	if v == nil {
+		return nil, nil
 	}
+	switch m := v.(type) {
+	case bson.M:
+		return m, nil
+	case map[string]any:
+		return bson.M(m), nil
+	}
+	return nil, fmt.Errorf("expected object/map, got %T", v)
+}
 
-	filter := bson.M{filterField: filterVal}
-	update := bson.M{
-		"$set":         item,
-		"$setOnInsert": bson.M{"created_at": time.Now().UTC()},
+// bsonMOrEmpty returns an empty bson.M instead of nil when v is missing.
+func bsonMOrEmpty(v any) (bson.M, error) {
+	if v == nil {
+		return bson.M{}, nil
 	}
-	_, ins, err := db.UpsertRaw(ctx, collection, filter, update, true)
+	return bsonM(v)
+}
+
+// bsonPipeline coerces a generic value into []bson.M.
+func bsonPipeline(v any) ([]bson.M, error) {
+	if v == nil {
+		return nil, fmt.Errorf("pipeline is required")
+	}
+	switch p := v.(type) {
+	case []bson.M:
+		return p, nil
+	case []any:
+		out := make([]bson.M, len(p))
+		for i, stage := range p {
+			m, err := bsonM(stage)
+			if err != nil {
+				return nil, fmt.Errorf("pipeline[%d]: %w", i, err)
+			}
+			out[i] = m
+		}
+		return out, nil
+	}
+	return nil, fmt.Errorf("expected array of objects, got %T", v)
+}
+
+// bsonDocs coerces a generic value into []bson.M (for insert_many).
+func bsonDocs(v any) ([]bson.M, error) {
+	if v == nil {
+		return nil, fmt.Errorf("documents is required")
+	}
+	switch d := v.(type) {
+	case []bson.M:
+		return d, nil
+	case []any:
+		out := make([]bson.M, len(d))
+		for i, doc := range d {
+			m, err := bsonM(doc)
+			if err != nil {
+				return nil, fmt.Errorf("documents[%d]: %w", i, err)
+			}
+			out[i] = m
+		}
+		return out, nil
+	}
+	return nil, fmt.Errorf("expected array of objects, got %T", v)
+}
+
+// firstNonNil returns the first non-nil value among the inputs.
+func firstNonNil(vs ...any) any {
+	for _, v := range vs {
+		if v != nil {
+			return v
+		}
+	}
+	return nil
+}
+
+// --- per-op handlers ---
+
+func (e *WorkflowExecutor) mongoFind(ctx context.Context, db MongoClient, coll string, data map[string]any) (any, error) {
+	filter, err := bsonMOrEmpty(data["filter"])
 	if err != nil {
-		return nil, fmt.Errorf("mongo_upsert: %w", err)
+		return nil, fmt.Errorf("mongo_request find: filter: %w", err)
+	}
+
+	opts := options.Find()
+	if v, err := bsonM(data["projection"]); err != nil {
+		return nil, fmt.Errorf("mongo_request find: projection: %w", err)
+	} else if v != nil {
+		opts.SetProjection(v)
+	}
+	if v, err := bsonM(data["sort"]); err != nil {
+		return nil, fmt.Errorf("mongo_request find: sort: %w", err)
+	} else if v != nil {
+		opts.SetSort(v)
+	}
+	if v, ok := numberData(data, "skip"); ok {
+		opts.SetSkip(int64(v))
+	}
+	if v, ok := numberData(data, "limit"); ok {
+		opts.SetLimit(int64(v))
+	}
+
+	cur, err := db.Find(ctx, coll, filter, opts)
+	if err != nil {
+		return nil, fmt.Errorf("mongo_request find: %w", err)
+	}
+	return e.serializeCursor(ctx, cur, data)
+}
+
+func (e *WorkflowExecutor) mongoFindOneAndUpdate(ctx context.Context, db MongoClient, coll string, data map[string]any, input any) (any, error) {
+	filter, err := bsonMOrEmpty(data["filter"])
+	if err != nil {
+		return nil, fmt.Errorf("mongo_request find_one_and_update: filter: %w", err)
+	}
+	update, err := bsonM(firstNonNil(data["update"], input))
+	if err != nil {
+		return nil, fmt.Errorf("mongo_request find_one_and_update: update: %w", err)
+	}
+	if update == nil {
+		return nil, fmt.Errorf("mongo_request find_one_and_update: update is required")
+	}
+
+	opts := options.FindOneAndUpdate()
+	if upsert, _ := data["upsert"].(bool); upsert {
+		opts.SetUpsert(true)
+	}
+	if v, err := bsonM(data["projection"]); err != nil {
+		return nil, fmt.Errorf("mongo_request find_one_and_update: projection: %w", err)
+	} else if v != nil {
+		opts.SetProjection(v)
+	}
+	if v, err := bsonM(data["sort"]); err != nil {
+		return nil, fmt.Errorf("mongo_request find_one_and_update: sort: %w", err)
+	} else if v != nil {
+		opts.SetSort(v)
+	}
+	if rd, _ := data["return_document"].(string); rd != "" {
+		switch strings.ToLower(rd) {
+		case "after":
+			opts.SetReturnDocument(options.After)
+		case "before":
+			opts.SetReturnDocument(options.Before)
+		}
+	}
+	if af, ok := data["array_filters"].([]any); ok {
+		filters := make([]any, 0, len(af))
+		for _, f := range af {
+			m, err := bsonM(f)
+			if err != nil {
+				return nil, fmt.Errorf("mongo_request find_one_and_update: array_filters: %w", err)
+			}
+			filters = append(filters, m)
+		}
+		opts.SetArrayFilters(filters)
+	}
+
+	doc, err := db.FindOneAndUpdate(ctx, coll, filter, update, opts)
+	if err != nil {
+		return nil, fmt.Errorf("mongo_request find_one_and_update: %w", err)
+	}
+	return map[string]any{"doc": doc}, nil
+}
+
+func (e *WorkflowExecutor) mongoFindOneAndReplace(ctx context.Context, db MongoClient, coll string, data map[string]any, input any) (any, error) {
+	filter, err := bsonMOrEmpty(data["filter"])
+	if err != nil {
+		return nil, fmt.Errorf("mongo_request find_one_and_replace: filter: %w", err)
+	}
+	repl, err := bsonM(firstNonNil(data["replacement"], input))
+	if err != nil {
+		return nil, fmt.Errorf("mongo_request find_one_and_replace: replacement: %w", err)
+	}
+	if repl == nil {
+		return nil, fmt.Errorf("mongo_request find_one_and_replace: replacement is required")
+	}
+
+	opts := options.FindOneAndReplace()
+	if upsert, _ := data["upsert"].(bool); upsert {
+		opts.SetUpsert(true)
+	}
+	if v, err := bsonM(data["projection"]); err != nil {
+		return nil, fmt.Errorf("mongo_request find_one_and_replace: projection: %w", err)
+	} else if v != nil {
+		opts.SetProjection(v)
+	}
+	if v, err := bsonM(data["sort"]); err != nil {
+		return nil, fmt.Errorf("mongo_request find_one_and_replace: sort: %w", err)
+	} else if v != nil {
+		opts.SetSort(v)
+	}
+	if rd, _ := data["return_document"].(string); rd != "" {
+		switch strings.ToLower(rd) {
+		case "after":
+			opts.SetReturnDocument(options.After)
+		case "before":
+			opts.SetReturnDocument(options.Before)
+		}
+	}
+
+	doc, err := db.FindOneAndReplace(ctx, coll, filter, repl, opts)
+	if err != nil {
+		return nil, fmt.Errorf("mongo_request find_one_and_replace: %w", err)
+	}
+	return map[string]any{"doc": doc}, nil
+}
+
+func (e *WorkflowExecutor) mongoInsertOne(ctx context.Context, db MongoClient, coll string, data map[string]any, input any) (any, error) {
+	doc, err := bsonM(firstNonNil(data["document"], input))
+	if err != nil {
+		return nil, fmt.Errorf("mongo_request insert_one: document: %w", err)
+	}
+	if doc == nil {
+		return nil, fmt.Errorf("mongo_request insert_one: document is required")
+	}
+	id, err := db.InsertOne(ctx, coll, doc)
+	if err != nil {
+		return nil, fmt.Errorf("mongo_request insert_one: %w", err)
+	}
+	return map[string]any{"inserted_id": id}, nil
+}
+
+func (e *WorkflowExecutor) mongoInsertMany(ctx context.Context, db MongoClient, coll string, data map[string]any, input any) (any, error) {
+	docs, err := bsonDocs(firstNonNil(data["documents"], input))
+	if err != nil {
+		return nil, fmt.Errorf("mongo_request insert_many: documents: %w", err)
+	}
+
+	opts := options.InsertMany()
+	if ordered, ok := data["ordered"].(bool); ok {
+		opts.SetOrdered(ordered)
+	}
+
+	ids, err := db.InsertMany(ctx, coll, docs, opts)
+	if err != nil {
+		return nil, fmt.Errorf("mongo_request insert_many: %w", err)
+	}
+	return map[string]any{"inserted_ids": ids, "inserted_count": len(ids)}, nil
+}
+
+func (e *WorkflowExecutor) mongoUpdateMany(ctx context.Context, db MongoClient, coll string, data map[string]any, input any) (any, error) {
+	filter, err := bsonMOrEmpty(data["filter"])
+	if err != nil {
+		return nil, fmt.Errorf("mongo_request update_many: filter: %w", err)
+	}
+	update, err := bsonM(firstNonNil(data["update"], input))
+	if err != nil {
+		return nil, fmt.Errorf("mongo_request update_many: update: %w", err)
+	}
+	if update == nil {
+		return nil, fmt.Errorf("mongo_request update_many: update is required")
+	}
+
+	opts := options.UpdateMany()
+	if upsert, _ := data["upsert"].(bool); upsert {
+		opts.SetUpsert(true)
+	}
+	if af, ok := data["array_filters"].([]any); ok {
+		filters := make([]any, 0, len(af))
+		for _, f := range af {
+			m, err := bsonM(f)
+			if err != nil {
+				return nil, fmt.Errorf("mongo_request update_many: array_filters: %w", err)
+			}
+			filters = append(filters, m)
+		}
+		opts.SetArrayFilters(filters)
+	}
+
+	matched, modified, upserted, err := db.UpdateMany(ctx, coll, filter, update, opts)
+	if err != nil {
+		return nil, fmt.Errorf("mongo_request update_many: %w", err)
+	}
+	return map[string]any{"matched": matched, "modified": modified, "upserted": upserted}, nil
+}
+
+func (e *WorkflowExecutor) mongoDeleteOne(ctx context.Context, db MongoClient, coll string, data map[string]any, input any) (any, error) {
+	filter, err := bsonM(firstNonNil(data["filter"], input))
+	if err != nil {
+		return nil, fmt.Errorf("mongo_request delete_one: filter: %w", err)
+	}
+	if filter == nil {
+		return nil, fmt.Errorf("mongo_request delete_one: filter is required")
+	}
+	n, err := db.DeleteOne(ctx, coll, filter)
+	if err != nil {
+		return nil, fmt.Errorf("mongo_request delete_one: %w", err)
+	}
+	return map[string]any{"deleted_count": n}, nil
+}
+
+func (e *WorkflowExecutor) mongoDeleteMany(ctx context.Context, db MongoClient, coll string, data map[string]any, input any) (any, error) {
+	filter, err := bsonM(firstNonNil(data["filter"], input))
+	if err != nil {
+		return nil, fmt.Errorf("mongo_request delete_many: filter: %w", err)
+	}
+	if filter == nil {
+		return nil, fmt.Errorf("mongo_request delete_many: filter is required")
+	}
+	n, err := db.DeleteMany(ctx, coll, filter)
+	if err != nil {
+		return nil, fmt.Errorf("mongo_request delete_many: %w", err)
+	}
+	return map[string]any{"deleted_count": n}, nil
+}
+
+func (e *WorkflowExecutor) mongoAggregate(ctx context.Context, db MongoClient, coll string, data map[string]any, input any) (any, error) {
+	pipeline, err := bsonPipeline(firstNonNil(data["pipeline"], input))
+	if err != nil {
+		return nil, fmt.Errorf("mongo_request aggregate: pipeline: %w", err)
+	}
+
+	opts := options.Aggregate()
+	if v, ok := data["allow_disk_use"].(bool); ok {
+		opts.SetAllowDiskUse(v)
+	}
+	if v, ok := numberData(data, "batch_size"); ok {
+		opts.SetBatchSize(int32(v))
+	}
+
+	cur, err := db.Aggregate(ctx, coll, pipeline, opts)
+	if err != nil {
+		return nil, fmt.Errorf("mongo_request aggregate: %w", err)
+	}
+	return e.serializeCursor(ctx, cur, data)
+}
+
+func (e *WorkflowExecutor) mongoCountDocuments(ctx context.Context, db MongoClient, coll string, data map[string]any, input any) (any, error) {
+	filter, err := bsonMOrEmpty(firstNonNil(data["filter"], input))
+	if err != nil {
+		return nil, fmt.Errorf("mongo_request count_documents: filter: %w", err)
+	}
+
+	opts := options.Count()
+	if v, ok := numberData(data, "limit"); ok {
+		opts.SetLimit(int64(v))
+	}
+	if v, ok := numberData(data, "skip"); ok {
+		opts.SetSkip(int64(v))
+	}
+
+	n, err := db.CountDocuments(ctx, coll, filter, opts)
+	if err != nil {
+		return nil, fmt.Errorf("mongo_request count_documents: %w", err)
+	}
+	return map[string]any{"count": n}, nil
+}
+
+func (e *WorkflowExecutor) mongoDistinct(ctx context.Context, db MongoClient, coll string, data map[string]any, input any) (any, error) {
+	field, _ := data["field"].(string)
+	if field == "" {
+		return nil, fmt.Errorf("mongo_request distinct: field is required")
+	}
+	filter, err := bsonMOrEmpty(firstNonNil(data["filter"], input))
+	if err != nil {
+		return nil, fmt.Errorf("mongo_request distinct: filter: %w", err)
+	}
+	values, err := db.Distinct(ctx, coll, field, filter)
+	if err != nil {
+		return nil, fmt.Errorf("mongo_request distinct: %w", err)
+	}
+	return map[string]any{"values": values}, nil
+}
+
+func (e *WorkflowExecutor) mongoCursorFetch(ctx context.Context, data map[string]any) (any, error) {
+	id, _ := data["cursor_id"].(string)
+	if id == "" {
+		return nil, fmt.Errorf("mongo_request cursor_fetch: cursor_id is required")
+	}
+	cur := e.cursorCache().take(id)
+	if cur == nil {
+		return nil, fmt.Errorf("mongo_request cursor_fetch: cursor %q not found or expired", id)
+	}
+	return e.readCursorBatch(ctx, cur, id, data)
+}
+
+// serializeCursor reads the first batch from a freshly opened cursor. If more
+// docs remain, the cursor is stashed in the cache and its id returned for
+// follow-up cursor_fetch calls. Otherwise the cursor is closed immediately.
+func (e *WorkflowExecutor) serializeCursor(ctx context.Context, cur *mongo.Cursor, data map[string]any) (any, error) {
+	id := e.cursorCache().put(cur)
+	out, err := e.readCursorBatch(ctx, cur, id, data)
+	if err != nil {
+		// drop ensures the cursor is closed even on read errors.
+		e.cursorCache().drop(id)
+	}
+	return out, err
+}
+
+// readCursorBatch reads up to batch_size docs from cur. When the cursor is
+// exhausted, it is closed and removed from the cache; the returned cursor.id
+// is empty and has_more=false.
+func (e *WorkflowExecutor) readCursorBatch(ctx context.Context, cur *mongo.Cursor, id string, data map[string]any) (any, error) {
+	batchSize := 100
+	if v, ok := numberData(data, "batch_size"); ok && v > 0 {
+		batchSize = int(v)
+	}
+
+	docs := make([]bson.M, 0, batchSize)
+	for len(docs) < batchSize && cur.Next(ctx) {
+		var doc bson.M
+		if err := cur.Decode(&doc); err != nil {
+			return nil, fmt.Errorf("decode cursor doc: %w", err)
+		}
+		docs = append(docs, doc)
+	}
+	if err := cur.Err(); err != nil {
+		return nil, fmt.Errorf("cursor error: %w", err)
+	}
+
+	hasMore := cur.RemainingBatchLength() > 0 || cur.ID() != 0
+	cursorOut := map[string]any{
+		"has_more":   hasMore,
+		"batch_size": batchSize,
+		"returned":   len(docs),
+	}
+	if hasMore {
+		cursorOut["id"] = id
+	} else {
+		// drain — cursor exhausted, close and remove from cache.
+		e.cursorCache().drop(id)
+		cursorOut["id"] = ""
 	}
 
 	return map[string]any{
-		"upserted": ins > 0,
-		"input":    input,
+		"docs":   docs,
+		"cursor": cursorOut,
 	}, nil
 }
 
-// runRedisPublish publishes the JSON-serialised input to a Redis channel.
-// If data["connection_id"] is set and ConnResolver is available, uses that connection.
-func (e *WorkflowExecutor) runRedisPublish(ctx context.Context, data map[string]any, input any) (any, error) {
-	channel, _ := data["channel"].(string)
-	if channel == "" {
-		return nil, fmt.Errorf("redis_publish: channel is required")
+// runRedisRequest dispatches a Redis op against the resolved client.
+// Operation is selected by data["operation"]; the rest of data carries
+// op-specific fields. Output shape varies per op.
+func (e *WorkflowExecutor) runRedisRequest(ctx context.Context, data map[string]any, input any) (any, error) {
+	op := strings.ToLower(strings.TrimSpace(getStringData(data, "operation")))
+	if op == "" {
+		op = "publish" // backward-friendly default — original node was publish-only
 	}
 
-	// Resolve publisher — connection_id → specific connection, empty → default
-	pub := e.Pub
-	if connID, _ := data["connection_id"].(string); connID != "" && e.ConnResolver != nil {
-		resolved, err := e.ConnResolver.ResolvePub(ctx, connID)
-		if err != nil {
-			return nil, fmt.Errorf("redis_publish: %w", err)
-		}
-		pub = resolved
-	}
-	if pub == nil {
-		return nil, fmt.Errorf("redis_publish: no publisher configured")
-	}
-
-	payload, err := json.Marshal(input)
+	rc, err := e.resolveRedis(ctx, data)
 	if err != nil {
-		return nil, fmt.Errorf("redis_publish: marshal: %w", err)
+		return nil, err
 	}
-	if err := pub.Publish(ctx, channel, payload); err != nil {
-		return nil, fmt.Errorf("redis_publish: %w", err)
+
+	switch op {
+	case "publish":
+		return e.redisPublish(ctx, rc, data, input)
+	case "get":
+		return e.redisGet(ctx, rc, data)
+	case "set":
+		return e.redisSet(ctx, rc, data, input)
+	case "del":
+		return e.redisDel(ctx, rc, data)
+	case "incr":
+		return e.redisIncr(ctx, rc, data)
+	case "decr":
+		return e.redisDecr(ctx, rc, data)
+	case "expire":
+		return e.redisExpire(ctx, rc, data)
+	case "ttl":
+		return e.redisTTL(ctx, rc, data)
+	case "exists":
+		return e.redisExists(ctx, rc, data)
+	case "keys":
+		return e.redisKeys(ctx, rc, data)
+	case "mget":
+		return e.redisMGet(ctx, rc, data)
+	case "mset":
+		return e.redisMSet(ctx, rc, data, input)
+	case "hget":
+		return e.redisHGet(ctx, rc, data)
+	case "hset":
+		return e.redisHSet(ctx, rc, data, input)
+	case "hgetall":
+		return e.redisHGetAll(ctx, rc, data)
+	case "hdel":
+		return e.redisHDel(ctx, rc, data)
+	case "lpush":
+		return e.redisLPush(ctx, rc, data, input)
+	case "rpush":
+		return e.redisRPush(ctx, rc, data, input)
+	case "lpop":
+		return e.redisLPop(ctx, rc, data)
+	case "rpop":
+		return e.redisRPop(ctx, rc, data)
+	case "lrange":
+		return e.redisLRange(ctx, rc, data)
+	case "llen":
+		return e.redisLLen(ctx, rc, data)
+	case "sadd":
+		return e.redisSAdd(ctx, rc, data, input)
+	case "srem":
+		return e.redisSRem(ctx, rc, data, input)
+	case "smembers":
+		return e.redisSMembers(ctx, rc, data)
+	case "sismember":
+		return e.redisSIsMember(ctx, rc, data)
+	case "zadd":
+		return e.redisZAdd(ctx, rc, data, input)
+	case "zrem":
+		return e.redisZRem(ctx, rc, data, input)
+	case "zrange":
+		return e.redisZRange(ctx, rc, data)
+	case "zscore":
+		return e.redisZScore(ctx, rc, data)
+	case "zincrby":
+		return e.redisZIncrBy(ctx, rc, data)
+	case "xadd":
+		return e.redisXAdd(ctx, rc, data, input)
+	case "xrange":
+		return e.redisXRange(ctx, rc, data)
+	case "xlen":
+		return e.redisXLen(ctx, rc, data)
+	default:
+		return nil, fmt.Errorf("redis_request: unknown operation %q", op)
+	}
+}
+
+func (e *WorkflowExecutor) resolveRedis(ctx context.Context, data map[string]any) (RedisClient, error) {
+	rc := e.Redis
+	if connID, _ := data["connection_id"].(string); connID != "" && e.ConnResolver != nil {
+		resolved, err := e.ConnResolver.ResolveRedis(ctx, connID)
+		if err != nil {
+			return nil, fmt.Errorf("redis_request: %w", err)
+		}
+		rc = resolved
+	}
+	if rc == nil {
+		return nil, fmt.Errorf("redis_request: no redis client configured")
+	}
+	return rc, nil
+}
+
+// --- shared helpers ---
+
+func requireString(data map[string]any, key, op string) (string, error) {
+	v, _ := data[key].(string)
+	if v == "" {
+		return "", fmt.Errorf("redis_request %s: %s is required", op, key)
+	}
+	return v, nil
+}
+
+// stringSlice coerces a value to []string (accepts []string or []any of strings).
+func stringSlice(v any) []string {
+	switch s := v.(type) {
+	case []string:
+		return s
+	case []any:
+		out := make([]string, 0, len(s))
+		for _, x := range s {
+			out = append(out, fmt.Sprint(x))
+		}
+		return out
+	case string:
+		return []string{s}
+	}
+	return nil
+}
+
+// anySlice coerces a value to []any.
+func anySlice(v any) []any {
+	switch s := v.(type) {
+	case []any:
+		return s
+	case []string:
+		out := make([]any, len(s))
+		for i, x := range s {
+			out[i] = x
+		}
+		return out
+	case nil:
+		return nil
+	default:
+		return []any{v}
+	}
+}
+
+// durationFromSeconds reads a numeric data field as time.Duration in seconds.
+// Zero / missing returns 0 (Redis semantic: no expiry).
+func durationFromSeconds(data map[string]any, key string) time.Duration {
+	if v, ok := numberData(data, key); ok && v > 0 {
+		return time.Duration(v) * time.Second
+	}
+	return 0
+}
+
+// --- op handlers ---
+
+func (e *WorkflowExecutor) redisPublish(ctx context.Context, rc RedisClient, data map[string]any, input any) (any, error) {
+	channel, err := requireString(data, "channel", "publish")
+	if err != nil {
+		return nil, err
+	}
+	var payload []byte
+	if raw, ok := data["payload"].(string); ok && raw != "" {
+		payload = []byte(raw)
+	} else {
+		b, err := json.Marshal(input)
+		if err != nil {
+			return nil, fmt.Errorf("redis_request publish: marshal input: %w", err)
+		}
+		payload = b
+	}
+	if err := rc.Publish(ctx, channel, payload); err != nil {
+		return nil, fmt.Errorf("redis_request publish: %w", err)
 	}
 	return map[string]any{"channel": channel, "published": true}, nil
+}
+
+func (e *WorkflowExecutor) redisGet(ctx context.Context, rc RedisClient, data map[string]any) (any, error) {
+	key, err := requireString(data, "key", "get")
+	if err != nil {
+		return nil, err
+	}
+	v, err := rc.Get(ctx, key)
+	if err != nil {
+		return nil, fmt.Errorf("redis_request get: %w", err)
+	}
+	return map[string]any{"value": v}, nil
+}
+
+func (e *WorkflowExecutor) redisSet(ctx context.Context, rc RedisClient, data map[string]any, input any) (any, error) {
+	key, err := requireString(data, "key", "set")
+	if err != nil {
+		return nil, err
+	}
+	value, _ := data["value"].(string)
+	if value == "" {
+		// fall back to input — JSON-stringify if needed
+		switch v := input.(type) {
+		case string:
+			value = v
+		case nil:
+			return nil, fmt.Errorf("redis_request set: value is required")
+		default:
+			b, err := json.Marshal(v)
+			if err != nil {
+				return nil, fmt.Errorf("redis_request set: marshal input: %w", err)
+			}
+			value = string(b)
+		}
+	}
+	ttl := durationFromSeconds(data, "ttl_seconds")
+	if err := rc.Set(ctx, key, value, ttl); err != nil {
+		return nil, fmt.Errorf("redis_request set: %w", err)
+	}
+	return map[string]any{"ok": true}, nil
+}
+
+func (e *WorkflowExecutor) redisDel(ctx context.Context, rc RedisClient, data map[string]any) (any, error) {
+	keys := stringSlice(firstNonNil(data["keys"], data["key"]))
+	if len(keys) == 0 {
+		return nil, fmt.Errorf("redis_request del: key/keys is required")
+	}
+	n, err := rc.Del(ctx, keys...)
+	if err != nil {
+		return nil, fmt.Errorf("redis_request del: %w", err)
+	}
+	return map[string]any{"deleted": n}, nil
+}
+
+func (e *WorkflowExecutor) redisIncr(ctx context.Context, rc RedisClient, data map[string]any) (any, error) {
+	key, err := requireString(data, "key", "incr")
+	if err != nil {
+		return nil, err
+	}
+	v, err := rc.Incr(ctx, key)
+	if err != nil {
+		return nil, fmt.Errorf("redis_request incr: %w", err)
+	}
+	return map[string]any{"value": v}, nil
+}
+
+func (e *WorkflowExecutor) redisDecr(ctx context.Context, rc RedisClient, data map[string]any) (any, error) {
+	key, err := requireString(data, "key", "decr")
+	if err != nil {
+		return nil, err
+	}
+	v, err := rc.Decr(ctx, key)
+	if err != nil {
+		return nil, fmt.Errorf("redis_request decr: %w", err)
+	}
+	return map[string]any{"value": v}, nil
+}
+
+func (e *WorkflowExecutor) redisExpire(ctx context.Context, rc RedisClient, data map[string]any) (any, error) {
+	key, err := requireString(data, "key", "expire")
+	if err != nil {
+		return nil, err
+	}
+	ttl := durationFromSeconds(data, "ttl_seconds")
+	if ttl <= 0 {
+		return nil, fmt.Errorf("redis_request expire: ttl_seconds is required")
+	}
+	ok, err := rc.Expire(ctx, key, ttl)
+	if err != nil {
+		return nil, fmt.Errorf("redis_request expire: %w", err)
+	}
+	return map[string]any{"ok": ok}, nil
+}
+
+func (e *WorkflowExecutor) redisTTL(ctx context.Context, rc RedisClient, data map[string]any) (any, error) {
+	key, err := requireString(data, "key", "ttl")
+	if err != nil {
+		return nil, err
+	}
+	d, err := rc.TTL(ctx, key)
+	if err != nil {
+		return nil, fmt.Errorf("redis_request ttl: %w", err)
+	}
+	return map[string]any{"ttl_seconds": int64(d.Seconds())}, nil
+}
+
+func (e *WorkflowExecutor) redisExists(ctx context.Context, rc RedisClient, data map[string]any) (any, error) {
+	keys := stringSlice(firstNonNil(data["keys"], data["key"]))
+	if len(keys) == 0 {
+		return nil, fmt.Errorf("redis_request exists: key/keys is required")
+	}
+	n, err := rc.Exists(ctx, keys...)
+	if err != nil {
+		return nil, fmt.Errorf("redis_request exists: %w", err)
+	}
+	return map[string]any{"count": n}, nil
+}
+
+func (e *WorkflowExecutor) redisKeys(ctx context.Context, rc RedisClient, data map[string]any) (any, error) {
+	pattern, _ := data["pattern"].(string)
+	if pattern == "" {
+		pattern = "*"
+	}
+	keys, err := rc.Keys(ctx, pattern)
+	if err != nil {
+		return nil, fmt.Errorf("redis_request keys: %w", err)
+	}
+	return map[string]any{"keys": keys}, nil
+}
+
+func (e *WorkflowExecutor) redisMGet(ctx context.Context, rc RedisClient, data map[string]any) (any, error) {
+	keys := stringSlice(data["keys"])
+	if len(keys) == 0 {
+		return nil, fmt.Errorf("redis_request mget: keys is required")
+	}
+	vals, err := rc.MGet(ctx, keys...)
+	if err != nil {
+		return nil, fmt.Errorf("redis_request mget: %w", err)
+	}
+	return map[string]any{"values": vals}, nil
+}
+
+func (e *WorkflowExecutor) redisMSet(ctx context.Context, rc RedisClient, data map[string]any, input any) (any, error) {
+	pairs := stringMap(firstNonNil(data["pairs"], input))
+	if len(pairs) == 0 {
+		return nil, fmt.Errorf("redis_request mset: pairs is required")
+	}
+	if err := rc.MSet(ctx, pairs); err != nil {
+		return nil, fmt.Errorf("redis_request mset: %w", err)
+	}
+	return map[string]any{"ok": true}, nil
+}
+
+func (e *WorkflowExecutor) redisHGet(ctx context.Context, rc RedisClient, data map[string]any) (any, error) {
+	key, err := requireString(data, "key", "hget")
+	if err != nil {
+		return nil, err
+	}
+	field, err := requireString(data, "field", "hget")
+	if err != nil {
+		return nil, err
+	}
+	v, err := rc.HGet(ctx, key, field)
+	if err != nil {
+		return nil, fmt.Errorf("redis_request hget: %w", err)
+	}
+	return map[string]any{"value": v}, nil
+}
+
+func (e *WorkflowExecutor) redisHSet(ctx context.Context, rc RedisClient, data map[string]any, input any) (any, error) {
+	key, err := requireString(data, "key", "hset")
+	if err != nil {
+		return nil, err
+	}
+	fields := stringMap(firstNonNil(data["fields"], input))
+	if len(fields) == 0 {
+		return nil, fmt.Errorf("redis_request hset: fields is required")
+	}
+	n, err := rc.HSet(ctx, key, fields)
+	if err != nil {
+		return nil, fmt.Errorf("redis_request hset: %w", err)
+	}
+	return map[string]any{"added": n}, nil
+}
+
+func (e *WorkflowExecutor) redisHGetAll(ctx context.Context, rc RedisClient, data map[string]any) (any, error) {
+	key, err := requireString(data, "key", "hgetall")
+	if err != nil {
+		return nil, err
+	}
+	m, err := rc.HGetAll(ctx, key)
+	if err != nil {
+		return nil, fmt.Errorf("redis_request hgetall: %w", err)
+	}
+	return map[string]any{"fields": m}, nil
+}
+
+func (e *WorkflowExecutor) redisHDel(ctx context.Context, rc RedisClient, data map[string]any) (any, error) {
+	key, err := requireString(data, "key", "hdel")
+	if err != nil {
+		return nil, err
+	}
+	fields := stringSlice(firstNonNil(data["fields"], data["field"]))
+	if len(fields) == 0 {
+		return nil, fmt.Errorf("redis_request hdel: field/fields is required")
+	}
+	n, err := rc.HDel(ctx, key, fields...)
+	if err != nil {
+		return nil, fmt.Errorf("redis_request hdel: %w", err)
+	}
+	return map[string]any{"deleted": n}, nil
+}
+
+func (e *WorkflowExecutor) redisLPush(ctx context.Context, rc RedisClient, data map[string]any, input any) (any, error) {
+	key, err := requireString(data, "key", "lpush")
+	if err != nil {
+		return nil, err
+	}
+	values := anySlice(firstNonNil(data["values"], data["value"], input))
+	if len(values) == 0 {
+		return nil, fmt.Errorf("redis_request lpush: value/values is required")
+	}
+	n, err := rc.LPush(ctx, key, values...)
+	if err != nil {
+		return nil, fmt.Errorf("redis_request lpush: %w", err)
+	}
+	return map[string]any{"length": n}, nil
+}
+
+func (e *WorkflowExecutor) redisRPush(ctx context.Context, rc RedisClient, data map[string]any, input any) (any, error) {
+	key, err := requireString(data, "key", "rpush")
+	if err != nil {
+		return nil, err
+	}
+	values := anySlice(firstNonNil(data["values"], data["value"], input))
+	if len(values) == 0 {
+		return nil, fmt.Errorf("redis_request rpush: value/values is required")
+	}
+	n, err := rc.RPush(ctx, key, values...)
+	if err != nil {
+		return nil, fmt.Errorf("redis_request rpush: %w", err)
+	}
+	return map[string]any{"length": n}, nil
+}
+
+func (e *WorkflowExecutor) redisLPop(ctx context.Context, rc RedisClient, data map[string]any) (any, error) {
+	key, err := requireString(data, "key", "lpop")
+	if err != nil {
+		return nil, err
+	}
+	v, err := rc.LPop(ctx, key)
+	if err != nil {
+		return nil, fmt.Errorf("redis_request lpop: %w", err)
+	}
+	return map[string]any{"value": v}, nil
+}
+
+func (e *WorkflowExecutor) redisRPop(ctx context.Context, rc RedisClient, data map[string]any) (any, error) {
+	key, err := requireString(data, "key", "rpop")
+	if err != nil {
+		return nil, err
+	}
+	v, err := rc.RPop(ctx, key)
+	if err != nil {
+		return nil, fmt.Errorf("redis_request rpop: %w", err)
+	}
+	return map[string]any{"value": v}, nil
+}
+
+func (e *WorkflowExecutor) redisLRange(ctx context.Context, rc RedisClient, data map[string]any) (any, error) {
+	key, err := requireString(data, "key", "lrange")
+	if err != nil {
+		return nil, err
+	}
+	start := int64(0)
+	stop := int64(-1)
+	if v, ok := numberData(data, "start"); ok {
+		start = int64(v)
+	}
+	if v, ok := numberData(data, "stop"); ok {
+		stop = int64(v)
+	}
+	out, err := rc.LRange(ctx, key, start, stop)
+	if err != nil {
+		return nil, fmt.Errorf("redis_request lrange: %w", err)
+	}
+	return map[string]any{"values": out}, nil
+}
+
+func (e *WorkflowExecutor) redisLLen(ctx context.Context, rc RedisClient, data map[string]any) (any, error) {
+	key, err := requireString(data, "key", "llen")
+	if err != nil {
+		return nil, err
+	}
+	n, err := rc.LLen(ctx, key)
+	if err != nil {
+		return nil, fmt.Errorf("redis_request llen: %w", err)
+	}
+	return map[string]any{"length": n}, nil
+}
+
+func (e *WorkflowExecutor) redisSAdd(ctx context.Context, rc RedisClient, data map[string]any, input any) (any, error) {
+	key, err := requireString(data, "key", "sadd")
+	if err != nil {
+		return nil, err
+	}
+	members := anySlice(firstNonNil(data["members"], data["member"], input))
+	if len(members) == 0 {
+		return nil, fmt.Errorf("redis_request sadd: member/members is required")
+	}
+	n, err := rc.SAdd(ctx, key, members...)
+	if err != nil {
+		return nil, fmt.Errorf("redis_request sadd: %w", err)
+	}
+	return map[string]any{"added": n}, nil
+}
+
+func (e *WorkflowExecutor) redisSRem(ctx context.Context, rc RedisClient, data map[string]any, input any) (any, error) {
+	key, err := requireString(data, "key", "srem")
+	if err != nil {
+		return nil, err
+	}
+	members := anySlice(firstNonNil(data["members"], data["member"], input))
+	if len(members) == 0 {
+		return nil, fmt.Errorf("redis_request srem: member/members is required")
+	}
+	n, err := rc.SRem(ctx, key, members...)
+	if err != nil {
+		return nil, fmt.Errorf("redis_request srem: %w", err)
+	}
+	return map[string]any{"removed": n}, nil
+}
+
+func (e *WorkflowExecutor) redisSMembers(ctx context.Context, rc RedisClient, data map[string]any) (any, error) {
+	key, err := requireString(data, "key", "smembers")
+	if err != nil {
+		return nil, err
+	}
+	members, err := rc.SMembers(ctx, key)
+	if err != nil {
+		return nil, fmt.Errorf("redis_request smembers: %w", err)
+	}
+	return map[string]any{"members": members}, nil
+}
+
+func (e *WorkflowExecutor) redisSIsMember(ctx context.Context, rc RedisClient, data map[string]any) (any, error) {
+	key, err := requireString(data, "key", "sismember")
+	if err != nil {
+		return nil, err
+	}
+	member, ok := data["member"]
+	if !ok {
+		return nil, fmt.Errorf("redis_request sismember: member is required")
+	}
+	is, err := rc.SIsMember(ctx, key, member)
+	if err != nil {
+		return nil, fmt.Errorf("redis_request sismember: %w", err)
+	}
+	return map[string]any{"is_member": is}, nil
+}
+
+func (e *WorkflowExecutor) redisZAdd(ctx context.Context, rc RedisClient, data map[string]any, input any) (any, error) {
+	key, err := requireString(data, "key", "zadd")
+	if err != nil {
+		return nil, err
+	}
+	src := firstNonNil(data["members"], input)
+	members, err := scoreMap(src)
+	if err != nil {
+		return nil, fmt.Errorf("redis_request zadd: members: %w", err)
+	}
+	if len(members) == 0 {
+		return nil, fmt.Errorf("redis_request zadd: members is required (map[member]score)")
+	}
+	n, err := rc.ZAdd(ctx, key, members)
+	if err != nil {
+		return nil, fmt.Errorf("redis_request zadd: %w", err)
+	}
+	return map[string]any{"added": n}, nil
+}
+
+func (e *WorkflowExecutor) redisZRem(ctx context.Context, rc RedisClient, data map[string]any, input any) (any, error) {
+	key, err := requireString(data, "key", "zrem")
+	if err != nil {
+		return nil, err
+	}
+	members := anySlice(firstNonNil(data["members"], data["member"], input))
+	if len(members) == 0 {
+		return nil, fmt.Errorf("redis_request zrem: member/members is required")
+	}
+	n, err := rc.ZRem(ctx, key, members...)
+	if err != nil {
+		return nil, fmt.Errorf("redis_request zrem: %w", err)
+	}
+	return map[string]any{"removed": n}, nil
+}
+
+func (e *WorkflowExecutor) redisZRange(ctx context.Context, rc RedisClient, data map[string]any) (any, error) {
+	key, err := requireString(data, "key", "zrange")
+	if err != nil {
+		return nil, err
+	}
+	start := int64(0)
+	stop := int64(-1)
+	if v, ok := numberData(data, "start"); ok {
+		start = int64(v)
+	}
+	if v, ok := numberData(data, "stop"); ok {
+		stop = int64(v)
+	}
+	out, err := rc.ZRange(ctx, key, start, stop)
+	if err != nil {
+		return nil, fmt.Errorf("redis_request zrange: %w", err)
+	}
+	return map[string]any{"members": out}, nil
+}
+
+func (e *WorkflowExecutor) redisZScore(ctx context.Context, rc RedisClient, data map[string]any) (any, error) {
+	key, err := requireString(data, "key", "zscore")
+	if err != nil {
+		return nil, err
+	}
+	member, err := requireString(data, "member", "zscore")
+	if err != nil {
+		return nil, err
+	}
+	v, err := rc.ZScore(ctx, key, member)
+	if err != nil {
+		return nil, fmt.Errorf("redis_request zscore: %w", err)
+	}
+	return map[string]any{"score": v}, nil
+}
+
+func (e *WorkflowExecutor) redisZIncrBy(ctx context.Context, rc RedisClient, data map[string]any) (any, error) {
+	key, err := requireString(data, "key", "zincrby")
+	if err != nil {
+		return nil, err
+	}
+	member, err := requireString(data, "member", "zincrby")
+	if err != nil {
+		return nil, err
+	}
+	inc, ok := numberData(data, "increment")
+	if !ok {
+		return nil, fmt.Errorf("redis_request zincrby: increment is required")
+	}
+	v, err := rc.ZIncrBy(ctx, key, inc, member)
+	if err != nil {
+		return nil, fmt.Errorf("redis_request zincrby: %w", err)
+	}
+	return map[string]any{"score": v}, nil
+}
+
+func (e *WorkflowExecutor) redisXAdd(ctx context.Context, rc RedisClient, data map[string]any, input any) (any, error) {
+	stream, err := requireString(data, "stream", "xadd")
+	if err != nil {
+		return nil, err
+	}
+	src := firstNonNil(data["values"], input)
+	values, err := anyMap(src)
+	if err != nil {
+		return nil, fmt.Errorf("redis_request xadd: values: %w", err)
+	}
+	if len(values) == 0 {
+		return nil, fmt.Errorf("redis_request xadd: values is required (map[field]value)")
+	}
+	id, err := rc.XAdd(ctx, stream, values)
+	if err != nil {
+		return nil, fmt.Errorf("redis_request xadd: %w", err)
+	}
+	return map[string]any{"id": id}, nil
+}
+
+func (e *WorkflowExecutor) redisXRange(ctx context.Context, rc RedisClient, data map[string]any) (any, error) {
+	stream, err := requireString(data, "stream", "xrange")
+	if err != nil {
+		return nil, err
+	}
+	start, _ := data["start"].(string)
+	if start == "" {
+		start = "-"
+	}
+	stop, _ := data["stop"].(string)
+	if stop == "" {
+		stop = "+"
+	}
+	msgs, err := rc.XRange(ctx, stream, start, stop)
+	if err != nil {
+		return nil, fmt.Errorf("redis_request xrange: %w", err)
+	}
+	out := make([]map[string]any, 0, len(msgs))
+	for _, m := range msgs {
+		out = append(out, map[string]any{"id": m.ID, "values": m.Values})
+	}
+	return map[string]any{"messages": out}, nil
+}
+
+func (e *WorkflowExecutor) redisXLen(ctx context.Context, rc RedisClient, data map[string]any) (any, error) {
+	stream, err := requireString(data, "stream", "xlen")
+	if err != nil {
+		return nil, err
+	}
+	n, err := rc.XLen(ctx, stream)
+	if err != nil {
+		return nil, fmt.Errorf("redis_request xlen: %w", err)
+	}
+	return map[string]any{"length": n}, nil
+}
+
+// scoreMap coerces a value to map[member]score for ZAdd.
+func scoreMap(v any) (map[string]float64, error) {
+	if v == nil {
+		return nil, nil
+	}
+	switch m := v.(type) {
+	case map[string]float64:
+		return m, nil
+	case map[string]any:
+		out := make(map[string]float64, len(m))
+		for k, val := range m {
+			f, ok := toFloat64(val)
+			if !ok {
+				return nil, fmt.Errorf("score for %q is not numeric (%T)", k, val)
+			}
+			out[k] = f
+		}
+		return out, nil
+	}
+	return nil, fmt.Errorf("expected map[member]score, got %T", v)
+}
+
+// anyMap coerces a value to map[string]any for XAdd values.
+func anyMap(v any) (map[string]any, error) {
+	if v == nil {
+		return nil, nil
+	}
+	switch m := v.(type) {
+	case map[string]any:
+		return m, nil
+	case map[string]string:
+		out := make(map[string]any, len(m))
+		for k, val := range m {
+			out[k] = val
+		}
+		return out, nil
+	}
+	return nil, fmt.Errorf("expected object/map, got %T", v)
+}
+
+func toFloat64(v any) (float64, bool) {
+	switch x := v.(type) {
+	case float64:
+		return x, true
+	case float32:
+		return float64(x), true
+	case int:
+		return float64(x), true
+	case int32:
+		return float64(x), true
+	case int64:
+		return float64(x), true
+	}
+	return 0, false
 }
 
 // runNotify logs input and returns a message.

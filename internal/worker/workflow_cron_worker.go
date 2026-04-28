@@ -100,7 +100,7 @@ func (w *workflowCronWorker) Run(ctx context.Context) error {
 		return fmt.Errorf("workflow-cron: create connection repo: %w", err)
 	}
 
-	defaultDB := mongodb.NewRawDB(mc.DB())
+	defaultDB := mongodb.NewMongoClient(mc.DB())
 	connResolver := workflow.NewConnectionResolver(connRepo, defaultDB, rc)
 	defer func() {
 		if err := connResolver.Close(); err != nil {
@@ -111,7 +111,7 @@ func (w *workflowCronWorker) Run(ctx context.Context) error {
 	exec := &workflow.WorkflowExecutor{
 		HTTPClient:   &http.Client{Timeout: 30 * time.Second},
 		DB:           defaultDB,
-		Pub:          rc,
+		Redis:        rc,
 		ConnResolver: connResolver,
 	}
 

@@ -107,7 +107,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	defaultDB := mongodb.NewRawDB(mc.DB())
+	defaultDB := mongodb.NewMongoClient(mc.DB())
 	connResolver := workflow.NewConnectionResolver(connRepo, defaultDB, rc)
 	defer func() {
 		if err := connResolver.Close(); err != nil {
@@ -189,14 +189,14 @@ func main() {
 	wfExec := &workflow.WorkflowExecutor{
 		HTTPClient:   &http.Client{Timeout: 30 * time.Second},
 		DB:           defaultDB,
-		Pub:          rc,
+		Redis:        rc,
 		ConnResolver: connResolver,
 		SandboxRT:    sandboxRT,
 		Memory:       chatMem,
 		RunRepo:      runRepo,
 	}
 
-	srv := api.NewServer(cfg.API, rc, pm, wl, tr, nr, tokens, owl, fwl, sc, wfRepo, wfExec, connRepo, mc.DB(), sandboxRT)
+	srv := api.NewServer(cfg.API, rc, pm, wl, tr, nr, tokens, owl, fwl, sc, wfRepo, wfExec, connRepo, connResolver, mc.DB(), sandboxRT)
 
 	go func() {
 		slog.Info("api server listening", "addr", srv.Addr())

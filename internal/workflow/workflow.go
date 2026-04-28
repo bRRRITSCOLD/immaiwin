@@ -9,8 +9,8 @@ const (
 	NodeTypeTrigger       NodeType = "trigger"
 	NodeTypeHTTPRequest   NodeType = "http_request"
 	NodeTypeForEach       NodeType = "for_each"
-	NodeTypeMongoUpsert   NodeType = "mongo_upsert"
-	NodeTypeRedisPublish  NodeType = "redis_publish"
+	NodeTypeMongoRequest  NodeType = "mongo_request"
+	NodeTypeRedisRequest  NodeType = "redis_request"
 	NodeTypeNotify        NodeType = "notify"
 	NodeTypeSandboxScript NodeType = "sandbox_script"
 	NodeTypeAIAgent       NodeType = "ai_agent"
@@ -41,8 +41,8 @@ type Position struct {
 //
 // Node data fields by type:
 //   - http_request:  {"url": "https://...", "method": "GET", "headers": {...}, "query": {...}, "body": "...", "body_json": {...}, "body_form": {...}, "timeout_seconds": 30, "follow_redirects": true, "max_redirects": 10, "basic_auth_username": "...", "basic_auth_password": "...", "bearer_token": "...", "user_agent": "...", "tls_insecure_skip_verify": false, "parse_json": false, "max_response_bytes": 10485760, "accept_any_status": false, "name": "fetchArticle"}
-//   - mongo_upsert:  {"collection": "news_articles", "filter_field": "url"}
-//   - redis_publish: {"channel": "immaiwin:news:articles"}
+//   - mongo_request: {"collection": "<name>", "operation": "find|find_one_and_update|find_one_and_replace|insert_one|insert_many|update_many|delete_one|delete_many|aggregate|count_documents|distinct|cursor_fetch", ...op-specific fields (filter, update, projection, sort, limit, batch_size, pipeline, etc.)}
+//   - redis_request: {"operation": "publish|get|set|del|incr|decr|expire|ttl|exists|keys|mget|mset|hget|hset|hgetall|hdel|lpush|rpush|lpop|rpop|lrange|llen|sadd|srem|smembers|sismember|zadd|zrem|zrange|zscore|zincrby|xadd|xrange|xlen", ...op-specific fields (key, value, channel, payload, members, etc.)}
 //   - notify:        {"message": "optional template"}
 type Node struct {
 	ID       string         `bson:"id"       json:"id"`
