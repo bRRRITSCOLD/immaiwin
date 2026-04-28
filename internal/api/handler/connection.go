@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/bRRRITSCOLD/immaiwin-go/internal/llm"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/polymarket"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/workflow"
 	"github.com/gin-gonic/gin"
@@ -170,6 +171,11 @@ func TestConnection(db *mongo.Database) gin.HandlerFunc {
 				c.JSON(http.StatusOK, gin.H{"ok": false, "error": err.Error()})
 				return
 			}
+		case workflow.ConnectionTypeAnthropic:
+			if err := testAnthropic(ctx, req.Config); err != nil {
+				c.JSON(http.StatusOK, gin.H{"ok": false, "error": err.Error()})
+				return
+			}
 		default:
 			c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported connection type"})
 			return
@@ -222,6 +228,15 @@ func testSchwab(ctx context.Context, cfg map[string]string, db *mongo.Database) 
 	}
 	if !tm.IsAuthorized() {
 		return fmt.Errorf("not authorized — complete OAuth flow first")
+	}
+	return nil
+}
+
+func testAnthropic(_ context.Context, cfg map[string]string) error {
+	// llm.Build validates required fields (api_key, etc.) without calling the
+	// remote API. A live ping would consume tokens for every Test click.
+	if _, err := llm.Build(string(workflow.ConnectionTypeAnthropic), cfg); err != nil {
+		return err
 	}
 	return nil
 }

@@ -5,14 +5,16 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/bRRRITSCOLD/immaiwin-go/internal/llm"
 	"github.com/redis/go-redis/v9"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
-// ConnectionResolver resolves connection IDs to live DB/Pub clients.
-// Empty connection ID returns the default client. Resolved clients are cached.
+// ConnectionResolver resolves connection IDs to live DB/Pub/LLM clients.
+// Empty connection ID returns the default client (or an error for LLM,
+// which has no default). Resolved clients are cached per ID.
 type ConnectionResolver struct {
 	store      ConnectionStore
 	defaultDB  RawUpserter
@@ -20,6 +22,7 @@ type ConnectionResolver struct {
 	mu         sync.Mutex
 	dbCache    map[string]resolvedDB
 	pubCache   map[string]resolvedPub
+	llmCache   map[string]llm.Provider
 }
 
 type resolvedDB struct {
@@ -61,7 +64,39 @@ func NewConnectionResolver(store ConnectionStore, defaultDB RawUpserter, default
 		defaultPub: defaultPub,
 		dbCache:    make(map[string]resolvedDB),
 		pubCache:   make(map[string]resolvedPub),
+		llmCache:   make(map[string]llm.Provider),
 	}
+}
+
+// ResolveLLM returns an llm.Provider for the given connection ID.
+// Unlike DB/Pub, LLM has no default — connectionID is required.
+// Connection type must be registered with the llm package (e.g. anthropic).
+func (r *ConnectionResolver) ResolveLLM(ctx context.Context, connectionID string) (llm.Provider, error) {
+	if connectionID == "" {
+		return nil, fmt.Errorf("resolve llm: connection_id required (no default LLM)")
+	}
+
+	r.mu.Lock()
+	if cached, ok := r.llmCache[connectionID]; ok {
+		r.mu.Unlock()
+		return cached, nil
+	}
+	r.mu.Unlock()
+
+	conn, err := r.store.GetByID(ctx, connectionID)
+	if err != nil {
+		return nil, fmt.Errorf("resolve llm connection %q: %w", connectionID, err)
+	}
+
+	provider, err := llm.Build(string(conn.Type), conn.Config)
+	if err != nil {
+		return nil, fmt.Errorf("build llm provider %q (type=%s): %w", connectionID, conn.Type, err)
+	}
+
+	r.mu.Lock()
+	r.llmCache[connectionID] = provider
+	r.mu.Unlock()
+	return provider, nil
 }
 
 // ResolveDB returns a RawUpserter for the given connection ID.

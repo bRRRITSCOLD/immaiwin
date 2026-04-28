@@ -51,10 +51,22 @@ type SchwabConfig struct {
 }
 
 type SandboxConfig struct {
-	Enabled    bool   `env:"ENABLED"     envDefault:"false"`
-	Runtime    string `env:"RUNTIME"     envDefault:""`         // OCI runtime (e.g. "runsc" for gVisor)
-	PoolSize   int    `env:"POOL_SIZE"   envDefault:"2"`        // warm containers per language
-	DockerHost string `env:"DOCKER_HOST" envDefault:""`         // override DOCKER_HOST env
+	Enabled       bool   `env:"ENABLED"        envDefault:"false"`
+	Backend       string `env:"BACKEND"        envDefault:"docker"`           // "docker" | "k3s" | "auto" (= docker)
+	Runtime       string `env:"RUNTIME"        envDefault:""`                 // Docker OCI runtime (e.g. "runsc" for gVisor)
+	PoolSize      int    `env:"POOL_SIZE"      envDefault:"2"`                // Docker only — warm containers per language
+	DockerHost    string `env:"DOCKER_HOST"    envDefault:""`                 // override DOCKER_HOST env
+	Kubeconfig    string `env:"KUBECONFIG"     envDefault:"/etc/rancher/k3s/k3s.yaml"`
+	Namespace     string `env:"K3S_NAMESPACE"  envDefault:"immaiwin-sandbox"`
+	RuntimeClass  string `env:"K3S_RUNTIMECLASS" envDefault:"gvisor"`
+	ImageRegistry string `env:"IMAGE_REGISTRY" envDefault:""`                 // image registry prefix; required for k3s, optional for docker
+	// Cluster CIDRs blocked by NetworkPolicy egress IPBlock Except (defense
+	// against lateral movement). Defaults match k3s out-of-the-box. Stock
+	// kubeadm typically uses 10.244.0.0/16 + 10.96.0.0/12; managed clusters
+	// vary (EKS 192.168.0.0/16, GKE per-cluster, etc).
+	PodCIDR      string `env:"POD_CIDR"      envDefault:"10.42.0.0/16"`
+	ServiceCIDR  string `env:"SERVICE_CIDR"  envDefault:"10.43.0.0/16"`
+	LinkLocalCIDR string `env:"LINKLOCAL_CIDR" envDefault:"169.254.0.0/16"`
 }
 
 func Load(opts ...Option) (*Config, error) {

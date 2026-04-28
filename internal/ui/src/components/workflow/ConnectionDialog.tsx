@@ -175,6 +175,7 @@ export function ConnectionDialog({ open, onOpenChange, connection, onSaved }: Pr
                       <SelectItem value="rabbitmq">RabbitMQ</SelectItem>
                       <SelectItem value="polymarket">Polymarket</SelectItem>
                       <SelectItem value="schwab">Schwab</SelectItem>
+                      <SelectItem value="anthropic">Anthropic</SelectItem>
                     </SelectContent>
                   </Select>
                 </Field>
@@ -199,6 +200,7 @@ export function ConnectionDialog({ open, onOpenChange, connection, onSaved }: Pr
                     if (type === 'redis') return <RedisFields config={config} setField={setField} />
                     if (type === 'rabbitmq') return <RabbitMQFields config={config} setField={setField} />
                     if (type === 'schwab') return <SchwabFields config={config} setField={setField} connectionId={id} isSaved={saved} disabled={justCreated} />
+                    if (type === 'anthropic') return <AnthropicFields config={config} setField={setField} />
                     return <PolymarketFields config={config} setField={setField} />
                   }}
                 </form.Field>
@@ -363,6 +365,23 @@ function MongoFields({ config, setField }: { config: Record<string, string>; set
         <ConfigInput label="Local Threshold" configKey="local_threshold" config={config} setField={setField} placeholder="15ms" />
         <ConfigInput label="SRV Max Hosts" configKey="srv_max_hosts" config={config} setField={setField} placeholder="0 (all)" />
         <ConfigCheckbox label="Load Balanced" configKey="load_balanced" config={config} setField={setField} />
+      </Section>
+    </FieldGroup>
+  )
+}
+
+// ── Anthropic fields ─────────────────────────────────────────────────────────
+
+function AnthropicFields({ config, setField }: { config: Record<string, string>; setField: (k: string, v: string) => void }) {
+  return (
+    <FieldGroup>
+      <ConfigInput label="API Key" configKey="api_key" config={config} setField={setField} placeholder="sk-ant-…" type="password" />
+      <ConfigInput label="Default Model" configKey="default_model" config={config} setField={setField} placeholder="claude-opus-4-7" description="e.g. claude-opus-4-7, claude-sonnet-4-6, claude-haiku-4-5-20251001" />
+
+      <Section title="Advanced">
+        <ConfigInput label="Endpoint" configKey="endpoint" config={config} setField={setField} placeholder="https://api.anthropic.com" description="Override base URL (gateways/proxies)" />
+        <ConfigInput label="API Version" configKey="version" config={config} setField={setField} placeholder="2023-06-01" />
+        <ConfigInput label="Timeout" configKey="timeout" config={config} setField={setField} placeholder="60s" description="Go duration: 30s, 5m, 1h" />
       </Section>
     </FieldGroup>
   )

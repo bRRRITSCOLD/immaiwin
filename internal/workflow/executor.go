@@ -1,18 +1,27 @@
 package workflow
 
 import (
+	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/sandbox"
 	"go.mongodb.org/mongo-driver/v2/bson"
 )
+
+// defaultMaxResponseBytes caps http_request response body size when the node
+// doesn't override it. 10 MiB matches typical document/API responses while
+// preventing runaway memory.
+const defaultMaxResponseBytes int64 = 10 * 1024 * 1024
 
 // Publisher broadcasts serialised payloads to a named channel.
 type Publisher interface {
@@ -53,7 +62,30 @@ type WorkflowExecutor struct {
 	DB           RawUpserter
 	Pub          Publisher
 	ConnResolver *ConnectionResolver
-	SandboxMgr   *sandbox.Manager
+	SandboxRT    sandbox.Runtime
+	// AI agent dependencies (optional — agent nodes error if unset).
+	Memory  AgentMemory      // chat memory backend
+	RunRepo WorkflowRunStore // for run persistence + agent traces
+}
+
+// runEnv carries per-run graph context that the agent loop needs but
+// other node handlers don't. Stored in ctx via runEnvKey rather than
+// expanding every handler's signature.
+type runEnv struct {
+	wf       *Workflow
+	byID     map[string]Node
+	adj      map[string][]adjEntry
+	runID    string // WorkflowRun.ID for trace persistence; empty if no RunRepo
+	tenantID string // "default" until multi-tenant
+}
+
+type runEnvKeyT struct{}
+
+var runEnvKey runEnvKeyT
+
+func envFromCtx(ctx context.Context) (*runEnv, bool) {
+	v, ok := ctx.Value(runEnvKey).(*runEnv)
+	return v, ok
 }
 
 // adjEntry is one outgoing edge from a node.
@@ -117,6 +149,17 @@ func (e *WorkflowExecutor) Run(ctx context.Context, wf Workflow, stopAt string, 
 	if params == nil {
 		params = map[string]string{}
 	}
+
+	// Stash run env so agent loop (and any future node type that needs
+	// graph access) can find tool-edges + node lookup tables without us
+	// expanding every handler's signature.
+	env := &runEnv{
+		wf:       &wf,
+		byID:     byID,
+		adj:      adj,
+		tenantID: "default",
+	}
+	ctx = context.WithValue(ctx, runEnvKey, env)
 
 	for len(queue) > 0 {
 		item := queue[0]
@@ -331,8 +374,8 @@ func (e *WorkflowExecutor) runNode(ctx context.Context, node Node, input any, wf
 	switch node.Type {
 	case NodeTypeTrigger:
 		return input, nil // pass-through; initialInput flows via the queue item
-	case NodeTypeHTTPFetch:
-		return e.runHTTPFetch(ctx, data, input, wfCtx)
+	case NodeTypeHTTPRequest:
+		return e.runHTTPRequest(ctx, data, input, wfCtx)
 	case NodeTypeSandboxScript:
 		return e.runSandboxScript(ctx, data, input, wfCtx, params)
 	case NodeTypeForEach:
@@ -343,47 +386,263 @@ func (e *WorkflowExecutor) runNode(ctx context.Context, node Node, input any, wf
 		return e.runRedisPublish(ctx, data, input)
 	case NodeTypeNotify:
 		return runNotify(data, input)
+	case NodeTypeAIAgent:
+		return e.runAIAgent(ctx, node, data, input, wfCtx, params)
 	default:
 		return nil, fmt.Errorf("unknown node type: %s", node.Type)
 	}
 }
 
-// runHTTPFetch performs an HTTP GET.
-// URL supports {{input.FIELD}} and {{context.stepName.input.FIELD}} / {{context.stepName.output.FIELD}} templates.
-func (e *WorkflowExecutor) runHTTPFetch(_ context.Context, data map[string]any, input any, wfCtx runCtx) (any, error) {
+// runHTTPRequest performs an arbitrary HTTP request with full Go http.Client
+// parity. Strings (url, header values, query values, body, bearer_token,
+// basic_auth_*) support {{input.FIELD}} / {{context.stepName.*.FIELD}} templates.
+//
+// Data fields:
+//
+//	url                       string  required
+//	method                    string  default "GET"
+//	headers                   map[string]string
+//	query                     map[string]string  appended to URL query string
+//	body                      string             raw request body
+//	body_json                 any                marshalled to JSON; sets Content-Type
+//	body_form                 map[string]string  form-urlencoded; sets Content-Type
+//	timeout_seconds           number  default 30
+//	follow_redirects          bool    default true
+//	max_redirects             number  default 10
+//	basic_auth_username       string
+//	basic_auth_password       string
+//	bearer_token              string  sent as "Authorization: Bearer ..."
+//	user_agent                string  overrides default User-Agent
+//	tls_insecure_skip_verify  bool    default false
+//	parse_json                bool    parse response body as JSON into output.json
+//	max_response_bytes        number  default 10 MiB; 0 = unlimited
+//	accept_any_status         bool    default false; when true, non-2xx is success
+//
+// Output:
+//
+//	ok           bool
+//	status       int
+//	status_text  string
+//	headers      map[string][]string
+//	body         string
+//	json         any (only when parse_json=true and decode succeeds)
+func (e *WorkflowExecutor) runHTTPRequest(ctx context.Context, data map[string]any, input any, wfCtx runCtx) (any, error) {
 	rawURL, _ := data["url"].(string)
 	if rawURL == "" {
-		return nil, fmt.Errorf("http_fetch: url is required")
+		return nil, fmt.Errorf("http_request: url is required")
 	}
 	rawURL = applyTemplate(rawURL, input, wfCtx)
 
-	client := e.HTTPClient
-	if client == nil {
-		client = &http.Client{Timeout: 30 * time.Second}
+	method := strings.ToUpper(strings.TrimSpace(getStringData(data, "method")))
+	if method == "" {
+		method = http.MethodGet
 	}
 
-	req, err := http.NewRequest(http.MethodGet, rawURL, nil)
+	// Build URL with query merge
+	parsedURL, err := url.Parse(rawURL)
 	if err != nil {
-		return nil, fmt.Errorf("http_fetch: build request: %w", err)
+		return nil, fmt.Errorf("http_request: parse url: %w", err)
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; immaiwin-scraper/1.0)")
+	if qm := stringMap(data["query"]); len(qm) > 0 {
+		q := parsedURL.Query()
+		for k, v := range qm {
+			q.Set(k, applyTemplate(v, input, wfCtx))
+		}
+		parsedURL.RawQuery = q.Encode()
+	}
+
+	// Build body
+	var (
+		bodyReader  io.Reader
+		contentType string
+	)
+	if bj, ok := data["body_json"]; ok && bj != nil {
+		b, err := json.Marshal(bj)
+		if err != nil {
+			return nil, fmt.Errorf("http_request: marshal body_json: %w", err)
+		}
+		// Apply templates only to string-valued bodies (body_json is structured)
+		bodyReader = bytes.NewReader(b)
+		contentType = "application/json"
+	} else if bf := stringMap(data["body_form"]); len(bf) > 0 {
+		form := url.Values{}
+		for k, v := range bf {
+			form.Set(k, applyTemplate(v, input, wfCtx))
+		}
+		bodyReader = strings.NewReader(form.Encode())
+		contentType = "application/x-www-form-urlencoded"
+	} else if raw, _ := data["body"].(string); raw != "" {
+		bodyReader = strings.NewReader(applyTemplate(raw, input, wfCtx))
+	}
+
+	req, err := http.NewRequestWithContext(ctx, method, parsedURL.String(), bodyReader)
+	if err != nil {
+		return nil, fmt.Errorf("http_request: build request: %w", err)
+	}
+
+	// Headers
+	if hm := stringMap(data["headers"]); len(hm) > 0 {
+		for k, v := range hm {
+			req.Header.Set(k, applyTemplate(v, input, wfCtx))
+		}
+	}
+	if contentType != "" && req.Header.Get("Content-Type") == "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+	if ua := getStringData(data, "user_agent"); ua != "" {
+		req.Header.Set("User-Agent", applyTemplate(ua, input, wfCtx))
+	} else if req.Header.Get("User-Agent") == "" {
+		req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; immaiwin/1.0)")
+	}
+
+	// Auth
+	if bt := getStringData(data, "bearer_token"); bt != "" {
+		req.Header.Set("Authorization", "Bearer "+applyTemplate(bt, input, wfCtx))
+	}
+	if u := getStringData(data, "basic_auth_username"); u != "" {
+		p := getStringData(data, "basic_auth_password")
+		req.SetBasicAuth(applyTemplate(u, input, wfCtx), applyTemplate(p, input, wfCtx))
+	}
+
+	// Client (per-request to honour timeout/redirects/TLS overrides)
+	client := buildHTTPClient(e.HTTPClient, data)
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("http_fetch: %w", err)
+		return nil, fmt.Errorf("http_request: %w", err)
 	}
-	body, _ := io.ReadAll(resp.Body)
-	_ = resp.Body.Close()
+	defer resp.Body.Close()
 
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("http_fetch: status %d from %s", resp.StatusCode, rawURL)
+	maxBytes := defaultMaxResponseBytes
+	if v, ok := numberData(data, "max_response_bytes"); ok {
+		maxBytes = int64(v)
+	}
+	var bodyBytes []byte
+	if maxBytes > 0 {
+		bodyBytes, err = io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
+		if err != nil {
+			return nil, fmt.Errorf("http_request: read body: %w", err)
+		}
+		if int64(len(bodyBytes)) > maxBytes {
+			return nil, fmt.Errorf("http_request: response body exceeds max_response_bytes (%d)", maxBytes)
+		}
+	} else {
+		bodyBytes, err = io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("http_request: read body: %w", err)
+		}
 	}
 
-	return map[string]any{
-		"ok":     true,
-		"status": resp.StatusCode,
-		"body":   string(body),
-	}, nil
+	ok2xx := resp.StatusCode >= 200 && resp.StatusCode < 300
+	acceptAny, _ := data["accept_any_status"].(bool)
+	if !ok2xx && !acceptAny {
+		return nil, fmt.Errorf("http_request: status %d from %s", resp.StatusCode, parsedURL.String())
+	}
+
+	out := map[string]any{
+		"ok":          ok2xx,
+		"status":      resp.StatusCode,
+		"status_text": resp.Status,
+		"headers":     map[string][]string(resp.Header),
+		"body":        string(bodyBytes),
+	}
+	if parse, _ := data["parse_json"].(bool); parse && len(bodyBytes) > 0 {
+		var parsed any
+		if jerr := json.Unmarshal(bodyBytes, &parsed); jerr == nil {
+			out["json"] = parsed
+		} else {
+			out["json_error"] = jerr.Error()
+		}
+	}
+	return out, nil
+}
+
+// buildHTTPClient produces an http.Client honouring per-request overrides:
+// timeout, redirect policy, TLS skip-verify. Falls back to base when no
+// overrides apply (preserving any shared transport).
+func buildHTTPClient(base *http.Client, data map[string]any) *http.Client {
+	timeout := 30 * time.Second
+	if v, ok := numberData(data, "timeout_seconds"); ok && v > 0 {
+		timeout = time.Duration(v) * time.Second
+	}
+
+	follow := true
+	if v, ok := data["follow_redirects"].(bool); ok {
+		follow = v
+	}
+	maxRedirects := 10
+	if v, ok := numberData(data, "max_redirects"); ok && v > 0 {
+		maxRedirects = int(v)
+	}
+
+	insecure, _ := data["tls_insecure_skip_verify"].(bool)
+
+	// If no TLS override and base client present, reuse its transport with our
+	// timeout + redirect policy. Otherwise build a fresh transport.
+	var transport http.RoundTripper
+	if insecure {
+		transport = &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // user-opt-in
+		}
+	} else if base != nil && base.Transport != nil {
+		transport = base.Transport
+	}
+
+	c := &http.Client{
+		Timeout:   timeout,
+		Transport: transport,
+	}
+	if !follow {
+		c.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		}
+	} else {
+		c.CheckRedirect = func(_ *http.Request, via []*http.Request) error {
+			if len(via) >= maxRedirects {
+				return errors.New("max redirects exceeded")
+			}
+			return nil
+		}
+	}
+	return c
+}
+
+// stringMap coerces an arbitrary value into map[string]string. Accepts
+// map[string]string and map[string]any (values stringified). Returns nil on
+// type mismatch.
+func stringMap(v any) map[string]string {
+	switch m := v.(type) {
+	case map[string]string:
+		return m
+	case map[string]any:
+		out := make(map[string]string, len(m))
+		for k, val := range m {
+			out[k] = fmt.Sprint(val)
+		}
+		return out
+	}
+	return nil
+}
+
+// numberData reads a numeric data field (accepts float64/int variants).
+func numberData(data map[string]any, key string) (float64, bool) {
+	v, ok := data[key]
+	if !ok {
+		return 0, false
+	}
+	switch x := v.(type) {
+	case float64:
+		return x, true
+	case float32:
+		return float64(x), true
+	case int:
+		return float64(x), true
+	case int32:
+		return float64(x), true
+	case int64:
+		return float64(x), true
+	}
+	return 0, false
 }
 
 // wfCtxToJS converts runCtx to map[string]any with lowercase keys so sandbox scripts
@@ -566,7 +825,7 @@ func applyTemplate(s string, input any, wfCtx runCtx) string {
 //	data.cpu_limit  float64 cores (default 0.5)
 //	data.network    bool    allow outbound network (default false)
 func (e *WorkflowExecutor) runSandboxScript(ctx context.Context, data map[string]any, input any, wfCtx runCtx, params map[string]string) (any, error) {
-	if e.SandboxMgr == nil {
+	if e.SandboxRT == nil {
 		return nil, fmt.Errorf("sandbox_script: sandbox manager not configured")
 	}
 
@@ -604,7 +863,7 @@ func (e *WorkflowExecutor) runSandboxScript(ctx context.Context, data map[string
 		}
 	}
 
-	result, err := e.SandboxMgr.Run(ctx, sandbox.RunRequest{
+	result, err := e.SandboxRT.Run(ctx, sandbox.RunRequest{
 		Language: sandbox.Language(lang),
 		Code:     script,
 		Input:    input,

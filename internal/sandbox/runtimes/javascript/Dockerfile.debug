@@ -1,6 +1,6 @@
 FROM node:20-alpine
 
-RUN adduser -D sandbox
+RUN adduser -D -u 10001 sandbox
 WORKDIR /sandbox
 COPY entrypoint.js .
 RUN chown -R sandbox:sandbox /sandbox

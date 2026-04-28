@@ -5,6 +5,7 @@
 
 ## UI
 * Component library of choice shadcnui
+* We always use @tanstack/react-form for forms with zod schema validation
 
 ## Environment Variables
 * In code always use github.com/bRRRITSCOLD/enviro-go to load environment variables

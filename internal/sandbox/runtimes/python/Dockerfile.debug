@@ -2,7 +2,7 @@ FROM python:3.12-alpine
 
 RUN pip install --no-cache-dir debugpy
 
-RUN adduser -D sandbox
+RUN adduser -D -u 10001 sandbox
 WORKDIR /sandbox
 COPY entrypoint.py .
 RUN chown -R sandbox:sandbox /sandbox

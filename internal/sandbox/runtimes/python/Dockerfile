@@ -1,7 +1,7 @@
 FROM python:3.12-alpine
 
 # Non-root user for security
-RUN adduser -D sandbox
+RUN adduser -D -u 10001 sandbox
 
 WORKDIR /sandbox
 

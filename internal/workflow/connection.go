@@ -14,6 +14,9 @@ const (
 	ConnectionTypeRabbitMQ   ConnectionType = "rabbitmq"
 	ConnectionTypePolymarket ConnectionType = "polymarket"
 	ConnectionTypeSchwab     ConnectionType = "schwab"
+	ConnectionTypeAnthropic  ConnectionType = "anthropic"
+	ConnectionTypeOpenAI     ConnectionType = "openai" // reserved for v2.0
+	ConnectionTypeOllama     ConnectionType = "ollama" // reserved for v2.0
 )
 
 // Connection is a named, reusable configuration for an external service.

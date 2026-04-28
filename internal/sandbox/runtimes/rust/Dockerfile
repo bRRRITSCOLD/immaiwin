@@ -14,7 +14,7 @@ RUN mkdir -p /sandbox/project/src && \
 COPY entrypoint.sh .
 RUN chmod +x entrypoint.sh
 
-RUN adduser -D sandbox
+RUN adduser -D -u 10001 sandbox
 RUN chown -R sandbox:sandbox /sandbox /tmp
 
 USER sandbox

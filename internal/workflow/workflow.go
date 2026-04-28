@@ -6,13 +6,22 @@ import "time"
 type NodeType string
 
 const (
-	NodeTypeTrigger      NodeType = "trigger"
-	NodeTypeHTTPFetch    NodeType = "http_fetch"
-	NodeTypeForEach      NodeType = "for_each"
-	NodeTypeMongoUpsert  NodeType = "mongo_upsert"
-	NodeTypeRedisPublish NodeType = "redis_publish"
+	NodeTypeTrigger       NodeType = "trigger"
+	NodeTypeHTTPRequest   NodeType = "http_request"
+	NodeTypeForEach       NodeType = "for_each"
+	NodeTypeMongoUpsert   NodeType = "mongo_upsert"
+	NodeTypeRedisPublish  NodeType = "redis_publish"
 	NodeTypeNotify        NodeType = "notify"
 	NodeTypeSandboxScript NodeType = "sandbox_script"
+	NodeTypeAIAgent       NodeType = "ai_agent"
+)
+
+// Edge source-handle values used by the executor.
+const (
+	EdgeHandleSuccess = "success" // default outgoing edge after a node succeeds
+	EdgeHandleError   = "error"   // alternative path on node failure
+	EdgeHandleItem    = "item"    // for_each body trigger
+	EdgeHandleTool    = "tool"    // AI Agent → tool node binding (NEW for ai_agent)
 )
 
 // Position holds the canvas (x, y) coordinates for a node.
@@ -31,7 +40,7 @@ type Position struct {
 //	  context.stepName.item.field   — current iteration element (for_each body only)
 //
 // Node data fields by type:
-//   - http_fetch:    {"url": "https://...", "name": "fetchArticle"}
+//   - http_request:  {"url": "https://...", "method": "GET", "headers": {...}, "query": {...}, "body": "...", "body_json": {...}, "body_form": {...}, "timeout_seconds": 30, "follow_redirects": true, "max_redirects": 10, "basic_auth_username": "...", "basic_auth_password": "...", "bearer_token": "...", "user_agent": "...", "tls_insecure_skip_verify": false, "parse_json": false, "max_response_bytes": 10485760, "accept_any_status": false, "name": "fetchArticle"}
 //   - mongo_upsert:  {"collection": "news_articles", "filter_field": "url"}
 //   - redis_publish: {"channel": "immaiwin:news:articles"}
 //   - notify:        {"message": "optional template"}

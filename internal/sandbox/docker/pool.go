@@ -1,4 +1,4 @@
-package sandbox
+package docker
 
 import (
 	"context"
@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bRRRITSCOLD/immaiwin-go/internal/sandbox"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
 )
@@ -15,12 +16,12 @@ import (
 // When a container is acquired, a new one is created in the background to
 // replenish the pool.
 type Pool struct {
-	mu       sync.Mutex
-	cli      client.APIClient
-	warm     map[Language][]string // language → []containerID
-	maxWarm  int                   // per language
-	runtime  string                // OCI runtime override
-	closed   bool
+	mu      sync.Mutex
+	cli     client.APIClient
+	warm    map[sandbox.Language][]string
+	maxWarm int
+	runtime string
+	closed  bool
 }
 
 // NewPool creates a container pool. maxPerLang controls how many warm
@@ -31,7 +32,7 @@ func NewPool(cli client.APIClient, maxPerLang int, runtime string) *Pool {
 	}
 	return &Pool{
 		cli:     cli,
-		warm:    make(map[Language][]string),
+		warm:    make(map[sandbox.Language][]string),
 		maxWarm: maxPerLang,
 		runtime: runtime,
 	}
@@ -39,12 +40,12 @@ func NewPool(cli client.APIClient, maxPerLang int, runtime string) *Pool {
 
 // Warm pre-creates idle containers for the given languages.
 // Call once at startup.
-func (p *Pool) Warm(ctx context.Context, langs ...Language) {
+func (p *Pool) Warm(ctx context.Context, langs ...sandbox.Language) {
 	for _, lang := range langs {
 		for i := 0; i < p.maxWarm; i++ {
 			id, err := p.createWarm(ctx, lang)
 			if err != nil {
-				slog.Warn("sandbox pool: warm failed", "lang", lang, "err", err)
+				slog.Warn("sandbox/docker pool: warm failed", "lang", lang, "err", err)
 				continue
 			}
 			p.mu.Lock()
@@ -55,7 +56,7 @@ func (p *Pool) Warm(ctx context.Context, langs ...Language) {
 }
 
 // Acquire returns a warm container ID for the language, or empty string if none available.
-func (p *Pool) Acquire(lang Language) string {
+func (p *Pool) Acquire(lang sandbox.Language) string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -67,13 +68,12 @@ func (p *Pool) Acquire(lang Language) string {
 	id := ids[0]
 	p.warm[lang] = ids[1:]
 
-	// Replenish in background
 	go p.replenish(lang)
 
 	return id
 }
 
-// Release removes a used container (don't return to pool — containers are single-use).
+// Release removes a used container (containers are single-use after exec).
 func (p *Pool) Release(ctx context.Context, containerID string) {
 	rmCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -88,7 +88,7 @@ func (p *Pool) Close(ctx context.Context) {
 	for _, ids := range p.warm {
 		all = append(all, ids...)
 	}
-	p.warm = make(map[Language][]string)
+	p.warm = make(map[sandbox.Language][]string)
 	p.mu.Unlock()
 
 	for _, id := range all {
@@ -98,7 +98,7 @@ func (p *Pool) Close(ctx context.Context) {
 	}
 }
 
-func (p *Pool) replenish(lang Language) {
+func (p *Pool) replenish(lang sandbox.Language) {
 	p.mu.Lock()
 	if p.closed || len(p.warm[lang]) >= p.maxWarm {
 		p.mu.Unlock()
@@ -111,7 +111,7 @@ func (p *Pool) replenish(lang Language) {
 
 	id, err := p.createWarm(ctx, lang)
 	if err != nil {
-		slog.Warn("sandbox pool: replenish failed", "lang", lang, "err", err)
+		slog.Warn("sandbox/docker pool: replenish failed", "lang", lang, "err", err)
 		return
 	}
 
@@ -120,7 +120,6 @@ func (p *Pool) replenish(lang Language) {
 	if !p.closed && len(p.warm[lang]) < p.maxWarm {
 		p.warm[lang] = append(p.warm[lang], id)
 	} else {
-		// Pool full or closed — remove
 		go func() {
 			rmCtx, rmCancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer rmCancel()
@@ -129,17 +128,15 @@ func (p *Pool) replenish(lang Language) {
 	}
 }
 
-// createWarm creates a container in "Created" state (not started).
-// The entrypoint will block on stdin, so the container stays idle.
-func (p *Pool) createWarm(ctx context.Context, lang Language) (string, error) {
-	img := ImageForLanguage(lang)
+func (p *Pool) createWarm(ctx context.Context, lang sandbox.Language) (string, error) {
+	img := sandbox.ImageForLanguage(lang)
 	if img == "" {
 		return "", fmt.Errorf("unsupported language: %s", lang)
 	}
 
 	cfg := &container.Config{
 		Image:       img,
-		Labels:      map[string]string{sandboxLabel: "true"},
+		Labels:      map[string]string{sandbox.SandboxLabel: "true"},
 		AttachStdin: true,
 		OpenStdin:   true,
 		StdinOnce:   true,
@@ -148,8 +145,8 @@ func (p *Pool) createWarm(ctx context.Context, lang Language) (string, error) {
 
 	hostCfg := &container.HostConfig{
 		Resources: container.Resources{
-			Memory:    DefaultMemLimit,
-			NanoCPUs:  int64(DefaultCPULimit * 1e9),
+			Memory:    sandbox.DefaultMemLimit,
+			NanoCPUs:  int64(sandbox.DefaultCPULimit * 1e9),
 			PidsLimit: intPtr(256),
 		},
 		NetworkMode: "none",

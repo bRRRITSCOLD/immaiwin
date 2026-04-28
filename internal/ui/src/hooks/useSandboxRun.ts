@@ -23,7 +23,7 @@ export interface SandboxRunSession {
   exitCode: number | null
   duration: string | null
   error: string | null
-  run(language: string, code: string, input: unknown, context: Record<string, unknown>, image?: string, packages?: string): void
+  run(language: string, code: string, input: unknown, context: Record<string, unknown>, image?: string, packages?: string, network?: boolean): void
   reset(): void
 }
 
@@ -64,7 +64,7 @@ export function useSandboxRun(): SandboxRunSession {
   }, [])
 
   const run = useCallback(
-    (language: string, code: string, input: unknown, context: Record<string, unknown>, image?: string, packages?: string) => {
+    (language: string, code: string, input: unknown, context: Record<string, unknown>, image?: string, packages?: string, network?: boolean) => {
       // Reset
       setStatus('connecting')
       setOutput([])
@@ -93,6 +93,7 @@ export function useSandboxRun(): SandboxRunSession {
             context,
             ...(image ? { image } : {}),
             ...(packages ? { packages } : {}),
+            ...(network ? { network: true } : {}),
           }),
         )
       }

@@ -17,7 +17,10 @@ import (
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/mongodb"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/polymarket"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/rediss"
+	_ "github.com/bRRRITSCOLD/immaiwin-go/internal/llm/anthropic" // register Anthropic provider in llm.Default
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/sandbox"
+	"github.com/bRRRITSCOLD/immaiwin-go/internal/sandbox/docker"
+	"github.com/bRRRITSCOLD/immaiwin-go/internal/sandbox/k3s"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/schwab"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/workflow"
 )
@@ -112,33 +115,75 @@ func main() {
 		}
 	}()
 
-	// Sandbox manager (optional — controlled by SANDBOX_ENABLED env)
-	var sandboxMgr *sandbox.Manager
+	// Sandbox runtime (optional — controlled by SANDBOX_ENABLED env)
+	// Backend selection: SANDBOX_BACKEND in {docker, k3s}; default = docker.
+	var sandboxRT sandbox.Runtime
 	if cfg.Sandbox.Enabled {
-		opts := []sandbox.ManagerOption{
-			sandbox.WithDebugPorts(19000, 19100),
+		backend := cfg.Sandbox.Backend
+		if backend == "" || backend == "auto" {
+			backend = "docker"
 		}
-		if cfg.Sandbox.Runtime != "" {
-			opts = append(opts, sandbox.WithRuntime(cfg.Sandbox.Runtime))
-		}
-		mgr, err := sandbox.NewManager(opts...)
-		if err != nil {
-			slog.Error("failed to create sandbox manager", "err", err)
+		switch backend {
+		case "docker":
+			rt, err := docker.New(docker.Options{
+				Runtime:        cfg.Sandbox.Runtime,
+				DebugPortStart: 19000,
+				DebugPortEnd:   19100,
+				Registry:       cfg.Sandbox.ImageRegistry,
+			})
+			if err != nil {
+				slog.Error("failed to create docker sandbox runtime", "err", err)
+				os.Exit(1)
+			}
+			rt.CleanupOrphans(ctx)
+
+			pool := docker.NewPool(rt.DockerClient(), cfg.Sandbox.PoolSize, cfg.Sandbox.Runtime)
+			pool.Warm(ctx, sandbox.LangJavaScript, sandbox.LangPython)
+			rt.SetPool(pool)
+
+			defer pool.Close(context.Background())
+			defer func() { _ = rt.Close() }()
+			sandboxRT = rt
+			slog.Info("sandbox enabled", "backend", "docker", "runtime", cfg.Sandbox.Runtime, "pool_size", cfg.Sandbox.PoolSize)
+		case "k3s":
+			rt, err := k3s.New(k3s.Options{
+				Kubeconfig:     cfg.Sandbox.Kubeconfig,
+				Namespace:      cfg.Sandbox.Namespace,
+				RuntimeClass:   cfg.Sandbox.RuntimeClass,
+				Registry:       cfg.Sandbox.ImageRegistry,
+				DebugPortStart: 19000,
+				DebugPortEnd:   19100,
+				CIDRs: k3s.CIDRs{
+					Pod:       cfg.Sandbox.PodCIDR,
+					Service:   cfg.Sandbox.ServiceCIDR,
+					LinkLocal: cfg.Sandbox.LinkLocalCIDR,
+				},
+			})
+			if err != nil {
+				slog.Error("failed to create k3s sandbox runtime", "err", err)
+				os.Exit(1)
+			}
+			rt.CleanupOrphans(ctx)
+			defer func() { _ = rt.Close() }()
+			sandboxRT = rt
+			slog.Info("sandbox enabled", "backend", "k3s", "namespace", cfg.Sandbox.Namespace, "registry", cfg.Sandbox.ImageRegistry)
+		default:
+			slog.Error("unknown sandbox backend", "backend", backend)
 			os.Exit(1)
 		}
+	}
 
-		// Remove orphan containers from previous crashed sessions
-		mgr.CleanupOrphans(ctx)
-
-		// Warm container pool for interpreted languages
-		pool := sandbox.NewPool(mgr.DockerClient(), cfg.Sandbox.PoolSize, cfg.Sandbox.Runtime)
-		pool.Warm(ctx, sandbox.LangJavaScript, sandbox.LangPython)
-		mgr.SetPool(pool)
-
-		defer pool.Close(context.Background())
-		defer func() { _ = mgr.Close() }()
-		sandboxMgr = mgr
-		slog.Info("sandbox manager enabled", "runtime", cfg.Sandbox.Runtime, "pool_size", cfg.Sandbox.PoolSize)
+	// Agent dependencies — chat memory + run persistence. Best-effort init;
+	// failures degrade the agent feature but don't break the rest of the API.
+	chatMem, err := mongodb.NewChatMemory(ctx, mc.DB())
+	if err != nil {
+		slog.Warn("agent chat memory init failed (agents will run without history)", "err", err)
+		chatMem = nil
+	}
+	runRepo, err := mongodb.NewWorkflowRunRepository(ctx, mc.DB())
+	if err != nil {
+		slog.Warn("workflow run repo init failed (agent traces will not persist)", "err", err)
+		runRepo = nil
 	}
 
 	wfExec := &workflow.WorkflowExecutor{
@@ -146,10 +191,12 @@ func main() {
 		DB:           defaultDB,
 		Pub:          rc,
 		ConnResolver: connResolver,
-		SandboxMgr:   sandboxMgr,
+		SandboxRT:    sandboxRT,
+		Memory:       chatMem,
+		RunRepo:      runRepo,
 	}
 
-	srv := api.NewServer(cfg.API, rc, pm, wl, tr, nr, tokens, owl, fwl, sc, wfRepo, wfExec, connRepo, mc.DB(), sandboxMgr)
+	srv := api.NewServer(cfg.API, rc, pm, wl, tr, nr, tokens, owl, fwl, sc, wfRepo, wfExec, connRepo, mc.DB(), sandboxRT)
 
 	go func() {
 		slog.Info("api server listening", "addr", srv.Addr())

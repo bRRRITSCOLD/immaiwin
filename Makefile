@@ -2,7 +2,7 @@ MODULE := github.com/bRRRITSCOLD/immaiwin-go
 CMDS    := api ui worker
 BINDIR  := bin
 
-.PHONY: setup build test lint clean api ui start-worker list-workers dev-ui docker-compose-up docker-compose-down certs
+.PHONY: setup build test lint clean api ui start-worker list-workers dev-ui docker-compose-up docker-compose-down certs sandbox-images sandbox-images-debug sandbox-images-push dev-teardown dev-teardown-sandbox dev-teardown-full
 
 build:
 	go build ./...
@@ -48,4 +48,72 @@ clean:
 $(BINDIR)/%: cmd/%/main.go
 	@mkdir -p $(BINDIR)
 	go build -o $@ ./cmd/$*/
+
+# --- Sandbox images ---
+# Tag pairs (dir:image:tag) must match internal/sandbox/types.go
+# {Image,DebugImage}ForLanguage so the api process and registry agree.
+# REGISTRY is the local registry that k3s pulls from. Override with REGISTRY=...
+SANDBOX_BASE_PAIRS := python:python:3.12 javascript:node:20 golang:go:1.22 rust:rust:1.86 php:php:8.3
+SANDBOX_DEBUG_PAIRS := python:python-debug:3.12 javascript:node-debug:20
+REGISTRY ?= localhost:5000
+
+sandbox-images:
+	@for pair in $(SANDBOX_BASE_PAIRS); do \
+	  dir=$${pair%%:*}; rest=$${pair#*:}; img=$${rest%%:*}; tag=$${rest#*:}; \
+	  echo "==> building immaiwin/sandbox-$$img:$$tag (from $$dir)"; \
+	  docker build -t $(REGISTRY)/immaiwin/sandbox-$$img:$$tag internal/sandbox/runtimes/$$dir || exit $$?; \
+	done
+
+sandbox-images-debug:
+	@for pair in $(SANDBOX_DEBUG_PAIRS); do \
+	  dir=$${pair%%:*}; rest=$${pair#*:}; img=$${rest%%:*}; tag=$${rest#*:}; \
+	  echo "==> building immaiwin/sandbox-$$img:$$tag (from $$dir Dockerfile.debug)"; \
+	  docker build -f internal/sandbox/runtimes/$$dir/Dockerfile.debug \
+	    -t $(REGISTRY)/immaiwin/sandbox-$$img:$$tag internal/sandbox/runtimes/$$dir || exit $$?; \
+	done
+
+sandbox-images-push: sandbox-images sandbox-images-debug
+	@for pair in $(SANDBOX_BASE_PAIRS) $(SANDBOX_DEBUG_PAIRS); do \
+	  rest=$${pair#*:}; img=$${rest%%:*}; tag=$${rest#*:}; \
+	  docker push $(REGISTRY)/immaiwin/sandbox-$$img:$$tag || exit $$?; \
+	done
+
+# --- Dev teardown ---
+# Soft stop for the end of a session: brings down docker compose, stops k3s,
+# stops the local registry container. State is preserved — restart with
+# `systemctl start k3s`, `docker start registry`, `make docker-compose-up`.
+SANDBOX_NS ?= immaiwin-sandbox
+KUBECONFIG_K3S ?= /etc/rancher/k3s/k3s.yaml
+
+dev-teardown: ## stop docker compose, k3s, and the local registry (state preserved)
+	@echo "==> stopping docker compose stack"
+	-@$(MAKE) --no-print-directory docker-compose-down
+	@echo "==> stopping local registry container (if running)"
+	-@docker stop registry >/dev/null 2>&1 || true
+	@echo "==> stopping k3s service"
+	-@if systemctl list-unit-files k3s.service >/dev/null 2>&1; then \
+	  sudo systemctl stop k3s; \
+	else \
+	  echo "k3s.service not installed; skipping"; \
+	fi
+	@echo "==> dev teardown complete"
+
+dev-teardown-sandbox: ## delete all pods in the sandbox namespace (cluster stays up)
+	@echo "==> deleting pods in $(SANDBOX_NS)"
+	-@sudo KUBECONFIG=$(KUBECONFIG_K3S) kubectl delete pods -n $(SANDBOX_NS) --all --ignore-not-found
+
+dev-teardown-full: dev-teardown ## DESTRUCTIVE: also uninstall k3s + remove registry container/data
+	@echo
+	@echo "WARNING: this removes /var/lib/rancher/k3s, the registry container, and gVisor."
+	@echo "Press Ctrl-C within 5s to abort."
+	@sleep 5
+	@echo "==> uninstalling k3s"
+	-@if [ -x /usr/local/bin/k3s-uninstall.sh ]; then sudo /usr/local/bin/k3s-uninstall.sh; \
+	else echo "/usr/local/bin/k3s-uninstall.sh not found; skipping"; fi
+	@echo "==> removing local registry container"
+	-@docker rm -f registry >/dev/null 2>&1 || true
+	@echo "==> removing gVisor (runsc)"
+	-@if dpkg -l runsc >/dev/null 2>&1; then sudo apt-get remove -y runsc; \
+	else echo "runsc not installed via apt; skipping"; fi
+	@echo "==> full teardown complete"
 

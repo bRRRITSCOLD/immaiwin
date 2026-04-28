@@ -7,14 +7,17 @@
  *   stdout → JSON output (result of user code)
  *   stderr → logs / errors
  *
- * The user's code is wrapped in an async IIFE. The last expression
- * Call `output(val)` to produce result. Globals available:
- *   input, context, params, output, console (→ stderr)
+ * User code runs as ESM (.mjs) via dynamic `await import()` in BOTH run and
+ * debug modes. Globals available in user code:
+ *   input, context, params, output, console
+ * Module loading: `const x = await import('pkg')`. CommonJS `require` is
+ * intentionally not provided — ESM scope makes it impractical to expose,
+ * and unifying on `await import` keeps run/debug behavior identical.
  */
 'use strict';
 
-const { runInNewContext } = require('vm');
-const { createRequire } = require('module');
+const fs = require('fs');
+const { spawn } = require('child_process');
 
 process.stdin.setEncoding('utf8');
 
@@ -32,65 +35,13 @@ process.stdin.on('end', async () => {
 
   const { code, input, context, params } = payload;
 
-  // Redirect console to stderr so stdout stays clean for output JSON
-  const sandboxConsole = {
-    log:   (...args) => process.stderr.write(args.map(String).join(' ') + '\n'),
-    error: (...args) => process.stderr.write(args.map(String).join(' ') + '\n'),
-    warn:  (...args) => process.stderr.write(args.map(String).join(' ') + '\n'),
-    info:  (...args) => process.stderr.write(args.map(String).join(' ') + '\n'),
-  };
-
-  // output() — sole output mechanism
-  let _outputValue = undefined;
-  let _outputSet = false;
-
-  // Build sandbox context
-  // createRequire from /sandbox/ so require('cheerio') finds /sandbox/node_modules
-  const sandboxRequire = createRequire('/sandbox/');
-
-  const sandbox = {
-    input:    input ?? null,
-    context:  context ?? {},
-    params:   params ?? {},
-    console:  sandboxConsole,
-    output:   (val) => { _outputValue = val; _outputSet = true; },
-    require:  sandboxRequire,
-    JSON,
-    Array,
-    Object,
-    String,
-    Number,
-    Boolean,
-    Date,
-    Math,
-    RegExp,
-    Map,
-    Set,
-    Promise,
-    parseInt,
-    parseFloat,
-    isNaN,
-    isFinite,
-    encodeURIComponent,
-    decodeURIComponent,
-    encodeURI,
-    decodeURI,
-    setTimeout,
-    clearTimeout,
-    setInterval,
-    clearInterval,
-  };
-
-  // Debug mode: write user code to its own file (line numbers match 1:1)
-  // Globals injected via -r preload so user_script.js has zero offset
-  if (process.env.SANDBOX_DEBUG) {
-    const fs = require('fs');
-    const { spawn } = require('child_process');
-
-    // Setup script: sets globals via globalThis, loaded via -r flag
-    // NOTE: do NOT override console — real console.log must fire so CDP
-    // Runtime.consoleAPICalled events reach the debug UI console panel.
-    const setupScript = `'use strict';
+  // Setup script: sets globals via globalThis, loaded via -r flag (CJS).
+  // Used by both run and debug modes.
+  // NOTE (debug): do NOT override console — real console.log must fire so CDP
+  // Runtime.consoleAPICalled events reach the debug UI console panel.
+  // NOTE (run): console.log is redirected to stderr inside the runner so
+  // stdout stays clean for the final JSON result.
+  const setupScript = `'use strict';
 globalThis.input = ${JSON.stringify(input ?? null)};
 globalThis.context = ${JSON.stringify(context ?? {})};
 globalThis.params = ${JSON.stringify(params ?? {})};
@@ -99,14 +50,12 @@ globalThis._outputSet = false;
 globalThis.output = (val) => { globalThis._outputValue = val; globalThis._outputSet = true; };
 `;
 
-    // User script: pure user code, line 1 = user line 1
-    const userScript = code;
+  // User script: pure user code, line 1 = user line 1 (preserves breakpoints).
+  const userScript = code;
 
-    // Wrapper that runs user code and handles output
-    // Uses require() so V8 treats user_script.js as its own script with correct line numbers.
-    // urlRegex breakpoints (set before Start) resolve when require() parses user_script.js.
+  if (process.env.SANDBOX_DEBUG) {
+    // Debug mode: spawn child with --inspect-brk, real console for CDP events.
     const runnerScript = `'use strict';
-// Catch async errors that escape the try/catch (unhandled rejections, uncaught exceptions)
 process.on('uncaughtException', (err) => {
   console.error('uncaught exception:', err.message);
   if (err.stack) console.error(err.stack);
@@ -122,12 +71,11 @@ process.on('unhandledRejection', (reason) => {
 
 (async () => {
   try {
-    require('/sandbox/user_script.js');
-    // Give async code a tick to finish
+    await import('file:///sandbox/user_script.mjs');
     await new Promise(r => setTimeout(r, 50));
     const _result = globalThis._outputSet ? globalThis._outputValue : null;
     process.stdout.write(JSON.stringify(_result));
-    // Emit tagged output so CDP/Go can distinguish final result from regular console messages
+    // Tagged emission so CDP/Go can separate final result from console output
     console.log('__SANDBOX_RESULT:' + JSON.stringify(_result, null, 2));
     process.exitCode = 0;
   } catch (err) {
@@ -139,10 +87,10 @@ process.on('unhandledRejection', (reason) => {
 `;
 
     fs.writeFileSync('/sandbox/setup.js', setupScript);
-    fs.writeFileSync('/sandbox/user_script.js', userScript);
+    fs.writeFileSync('/sandbox/user_script.mjs', userScript);
     fs.writeFileSync('/sandbox/runner.js', runnerScript);
 
-    process.stderr.write('node: starting with --inspect-brk on port 9229...\\n');
+    process.stderr.write('node: starting with --inspect-brk on port 9229...\n');
 
     const child = spawn('node', [
       '--inspect-brk=0.0.0.0:9229',
@@ -158,20 +106,44 @@ process.on('unhandledRejection', (reason) => {
     return;
   }
 
-  // Normal (non-debug) mode
-  // Wrap in async IIFE so `return` and `await` work
-  const wrapped = `(async function(input) { ${code} })(input)`;
+  // Run mode: redirect console to stderr (stdout reserved for JSON result),
+  // load globals, then dynamic-import user code as ESM.
+  const origLog = console.log;
+  console.log   = (...args) => process.stderr.write(args.map(String).join(' ') + '\n');
+  console.error = (...args) => process.stderr.write(args.map(String).join(' ') + '\n');
+  console.warn  = (...args) => process.stderr.write(args.map(String).join(' ') + '\n');
+  console.info  = (...args) => process.stderr.write(args.map(String).join(' ') + '\n');
+  void origLog;
+
+  globalThis.input    = input ?? null;
+  globalThis.context  = context ?? {};
+  globalThis.params   = params ?? {};
+  globalThis._outputValue = undefined;
+  globalThis._outputSet   = false;
+  globalThis.output = (val) => { globalThis._outputValue = val; globalThis._outputSet = true; };
+
+  fs.writeFileSync('/sandbox/user_script.mjs', userScript);
+
+  // 30s safety net (matches prior vm timeout)
+  const watchdog = setTimeout(() => {
+    process.stderr.write('runtime error: script exceeded 30s timeout\n');
+    process.exit(1);
+  }, 30000);
+  watchdog.unref();
 
   try {
-    await runInNewContext(wrapped, sandbox, {
-      filename: 'sandbox.js',
-      timeout: 30000, // 30s vm timeout as safety net
-    });
-
-    process.stdout.write(JSON.stringify(_outputSet ? _outputValue : null));
+    await import('file:///sandbox/user_script.mjs');
+    const result = globalThis._outputSet ? globalThis._outputValue : null;
+    process.stdout.write(JSON.stringify(result));
     process.exit(0);
   } catch (err) {
     process.stderr.write(`runtime error: ${err.message}\n`);
+    if (err.cause) {
+      const c = err.cause;
+      const causeMsg = c instanceof Error ? `${c.name}: ${c.message}${c.code ? ` (${c.code})` : ''}` : String(c);
+      process.stderr.write(`caused by: ${causeMsg}\n`);
+      if (c.stack) process.stderr.write(c.stack + '\n');
+    }
     if (err.stack) {
       process.stderr.write(err.stack + '\n');
     }

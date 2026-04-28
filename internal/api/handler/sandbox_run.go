@@ -19,6 +19,7 @@ type runWsMessage struct {
 	Context  map[string]any `json:"context,omitempty"`
 	Image    string         `json:"image,omitempty"`    // custom Docker image override
 	Packages string         `json:"packages,omitempty"` // comma-separated package names for auto-build
+	Network  bool           `json:"network,omitempty"`  // allow outbound egress
 	// Response fields
 	Stream   string `json:"stream,omitempty"`
 	Data     string `json:"data,omitempty"`
@@ -35,7 +36,7 @@ type runWsMessage struct {
 //	← {"type":"output","stream":"stderr","data":"warning\n"}
 //	← {"type":"done","exit_code":0,"duration":"1.2s"}
 //	← {"type":"error","error":"timeout"}
-func RunSandbox(mgr *sandbox.Manager) gin.HandlerFunc {
+func RunSandbox(mgr sandbox.Runtime) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if mgr == nil {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "sandbox not enabled"})
@@ -75,6 +76,7 @@ func RunSandbox(mgr *sandbox.Manager) gin.HandlerFunc {
 			Context:  msg.Context,
 			Image:    msg.Image,
 			Packages: parsePackages(msg.Packages),
+			Network:  msg.Network,
 		}
 
 		events, err := mgr.StreamRun(ctx, req)
