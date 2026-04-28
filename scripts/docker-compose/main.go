@@ -19,21 +19,21 @@ func main() {
 
 	switch command {
 	case "up":
-		args = []string{"up", "-d"}
+		args = []string{"compose", "up", "-d"}
 	case "down":
-		args = []string{"down"}
+		args = []string{"compose", "down"}
 	default:
 		slog.Error("unknown command", "command", command, "usage", "go run scripts/docker-compose/main.go [up|down]")
 		os.Exit(1)
 	}
 
-	cmd := exec.Command("docker-compose", args...)
+	cmd := exec.Command("docker", args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
-	slog.Info("running docker-compose", "args", args)
+	slog.Info("running docker compose", "args", args)
 	if err := cmd.Run(); err != nil {
-		slog.Error("docker-compose command failed", "err", err)
+		slog.Error("docker compose command failed", "err", err)
 		os.Exit(1)
 	}
 }

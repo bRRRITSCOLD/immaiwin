@@ -45,7 +45,7 @@ type wsMessage struct {
 
 // DebugSandbox returns a gin handler that upgrades to WebSocket and proxies
 // debug commands between the browser and a DAP/CDP debug adapter in a container.
-func DebugSandbox(mgr *sandbox.Manager) gin.HandlerFunc {
+func DebugSandbox(mgr sandbox.Runtime) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if mgr == nil {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "sandbox not enabled"})
@@ -359,6 +359,7 @@ type cdpProxy struct {
 	mu          sync.Mutex
 	callFrameId string
 	breakpoints []sandbox.Breakpoint // stored for re-set after script loads
+	bpIDs       map[int]string       // line → CDP breakpointId for removal
 }
 
 func (p *cdpProxy) Initialize() error {
@@ -366,12 +367,43 @@ func (p *cdpProxy) Initialize() error {
 }
 
 func (p *cdpProxy) SetBreakpoints(bps []sandbox.Breakpoint) error {
-	p.breakpoints = bps // store for potential re-set by scriptId
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.bpIDs == nil {
+		p.bpIDs = make(map[int]string)
+	}
+
+	// Build set of desired lines for quick lookup.
+	desired := make(map[int]sandbox.Breakpoint, len(bps))
 	for _, bp := range bps {
-		if err := p.client.SetBreakpoint("file:///sandbox/user_script.js", bp.Line, bp.Condition); err != nil {
+		desired[bp.Line] = bp
+	}
+
+	// Remove breakpoints that are no longer in the desired set.
+	for line, id := range p.bpIDs {
+		if _, keep := desired[line]; keep {
+			continue
+		}
+		if err := p.client.RemoveBreakpoint(id); err != nil {
+			slog.Warn("cdp-proxy: removeBreakpoint failed", "line", line, "id", id, "err", err)
+		}
+		delete(p.bpIDs, line)
+	}
+
+	// Add breakpoints not yet set. Skip lines we already have to avoid duplicates.
+	for line, bp := range desired {
+		if _, exists := p.bpIDs[line]; exists {
+			continue
+		}
+		id, err := p.client.SetBreakpoint("file:///sandbox/user_script.mjs", bp.Line, bp.Condition)
+		if err != nil {
 			return err
 		}
+		p.bpIDs[line] = id
 	}
+
+	p.breakpoints = bps // keep latest snapshot for any future re-set logic
 	return nil
 }
 
@@ -384,7 +416,7 @@ func (p *cdpProxy) Start() error {
 	}
 
 	// Wait for "Break on start" stopped event from --inspect-brk, then auto-resume.
-	// After resume, require() loads user_script.js → urlRegex breakpoints resolve → V8 pauses at user BPs.
+	// After resume, dynamic import() loads user_script.mjs → urlRegex breakpoints resolve → V8 pauses at user BPs.
 	timer := time.NewTimer(10 * time.Second)
 	defer timer.Stop()
 

@@ -36,6 +36,7 @@ interface SandboxDebugDialogProps {
   initialMode?: DialogMode
   customImage?: string
   packages?: string
+  network?: boolean
 }
 
 export function SandboxDebugDialog({
@@ -47,11 +48,16 @@ export function SandboxDebugDialog({
   initialMode = 'debug',
   customImage,
   packages,
+  network,
 }: SandboxDebugDialogProps) {
   const [mode, setMode] = useState<DialogMode>(initialMode)
   const modeRef = useRef<DialogMode>(mode)
   modeRef.current = mode
   const debug = useDebugSession()
+  // Stable ref so the editor.onMouseDown closure (registered once at mount)
+  // always sees the latest debug status + setBreakpoints fn.
+  const debugRef = useRef(debug)
+  debugRef.current = debug
   const runner = useSandboxRun()
   const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null)
   const monacoRef = useRef<typeof Monaco | null>(null)
@@ -138,8 +144,9 @@ export function SandboxDebugDialog({
         if (line) {
           setBreakpoints((prev) => {
             const next = prev.includes(line) ? prev.filter((l) => l !== line) : [...prev, line]
-            if (debug.status === 'paused' || debug.status === 'running') {
-              debug.setBreakpoints(next.map((l) => ({ line: l })))
+            const d = debugRef.current
+            if (d.status === 'paused' || d.status === 'running') {
+              d.setBreakpoints(next.map((l) => ({ line: l })))
             }
             return next
           })
@@ -190,7 +197,7 @@ export function SandboxDebugDialog({
 
   function handleRunStart() {
     const { parsedInput, parsedContext } = parseMockData()
-    runner.run(language, code, parsedInput, parsedContext, customImage, packages)
+    runner.run(language, code, parsedInput, parsedContext, customImage, packages, network)
   }
 
   function handleEval(e: React.FormEvent) {

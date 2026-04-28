@@ -1,4 +1,4 @@
-package sandbox
+package docker
 
 import (
 	"archive/tar"
@@ -13,7 +13,9 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/bRRRITSCOLD/immaiwin-go/internal/sandbox"
 	"github.com/docker/docker/api/types/build"
+	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/client"
 )
 
@@ -23,38 +25,44 @@ var validPkgName = regexp.MustCompile(`^[a-zA-Z0-9\-_\./@=><^~:]+$`)
 
 // ImageBuilder builds Docker images on-the-fly with user-specified packages.
 type ImageBuilder struct {
-	cli client.APIClient
+	cli      client.APIClient
+	registry string // optional prefix for tagged images
 }
 
 // NewImageBuilder creates a builder backed by the given Docker client.
-func NewImageBuilder(cli client.APIClient) *ImageBuilder {
-	return &ImageBuilder{cli: cli}
+// registry is an optional image-tag prefix (e.g. "localhost:5000"); empty = no prefix.
+func NewImageBuilder(cli client.APIClient, registry string) *ImageBuilder {
+	return &ImageBuilder{cli: cli, registry: registry}
 }
 
 // BuildOrReuse returns a tagged image that contains the requested packages.
 // If the image already exists locally, it skips the build.
-func (b *ImageBuilder) BuildOrReuse(ctx context.Context, lang Language, base string, packages []string, debug bool) (string, error) {
+func (b *ImageBuilder) BuildOrReuse(ctx context.Context, lang sandbox.Language, base string, packages []string, debug bool) (string, error) {
 	for _, pkg := range packages {
 		if !validatePackageName(pkg) {
-			return "", fmt.Errorf("sandbox: invalid package name: %q", pkg)
+			return "", fmt.Errorf("sandbox/docker: invalid package name: %q", pkg)
 		}
 	}
 
-	tag := buildTag(base, packages)
+	baseID, err := b.resolveBaseID(ctx, base)
+	if err != nil {
+		return "", fmt.Errorf("sandbox/docker: resolve base image %q: %w", base, err)
+	}
 
-	// Check if image exists
-	_, err := b.cli.ImageInspect(ctx, tag)
+	tag := buildTag(b.registry, base, baseID, packages)
+
+	_, err = b.cli.ImageInspect(ctx, tag)
 	if err == nil {
-		slog.Info("sandbox: reusing existing package image", "tag", tag)
+		slog.Info("sandbox/docker: reusing existing package image", "tag", tag)
 		return tag, nil
 	}
 
-	slog.Info("sandbox: building package image", "tag", tag, "base", base, "packages", packages)
+	slog.Info("sandbox/docker: building package image", "tag", tag, "base", base, "packages", packages)
 
 	dockerfile := generateDockerfile(lang, base, packages)
 	tarBuf, err := dockerfileTar(dockerfile)
 	if err != nil {
-		return "", fmt.Errorf("sandbox: tar context: %w", err)
+		return "", fmt.Errorf("sandbox/docker: tar context: %w", err)
 	}
 
 	resp, err := b.cli.ImageBuild(ctx, tarBuf, build.ImageBuildOptions{
@@ -64,22 +72,23 @@ func (b *ImageBuilder) BuildOrReuse(ctx context.Context, lang Language, base str
 		NoCache:    false,
 	})
 	if err != nil {
-		return "", fmt.Errorf("sandbox: image build: %w", err)
+		return "", fmt.Errorf("sandbox/docker: image build: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	// Parse build output for errors
 	if err := parseBuildOutput(resp.Body); err != nil {
-		return "", fmt.Errorf("sandbox: build failed: %w", err)
+		return "", fmt.Errorf("sandbox/docker: build failed: %w", err)
 	}
 
-	slog.Info("sandbox: package image built", "tag", tag)
+	slog.Info("sandbox/docker: package image built", "tag", tag)
 	return tag, nil
 }
 
-// buildTag generates a deterministic image tag from the base image + sorted packages.
-// Same packages → same tag → no rebuild.
-func buildTag(base string, packages []string) string {
+// buildTag generates a deterministic image tag from the base image content
+// digest + sorted packages. Hashing the digest (not just the name) means a
+// rebuilt base image — same tag, new content — produces a new pkg tag and
+// forces a rebuild instead of silently reusing a stale derived image.
+func buildTag(registry, base, baseID string, packages []string) string {
 	sorted := make([]string, len(packages))
 	copy(sorted, packages)
 	sort.Strings(sorted)
@@ -87,31 +96,62 @@ func buildTag(base string, packages []string) string {
 	h := sha256.New()
 	h.Write([]byte(base))
 	h.Write([]byte{0})
+	h.Write([]byte(baseID))
+	h.Write([]byte{0})
 	for _, pkg := range sorted {
 		h.Write([]byte(pkg))
 		h.Write([]byte{0})
 	}
 	hash := fmt.Sprintf("%x", h.Sum(nil))[:16]
-	return fmt.Sprintf("immaiwin/sandbox-pkg:%s", hash)
+
+	tag := fmt.Sprintf("immaiwin/sandbox-pkg:%s", hash)
+	if registry != "" {
+		tag = registry + "/" + tag
+	}
+	return tag
+}
+
+// resolveBaseID returns the content ID (sha256 of image config) for base.
+// Pulls the image first if not present locally.
+func (b *ImageBuilder) resolveBaseID(ctx context.Context, base string) (string, error) {
+	insp, err := b.cli.ImageInspect(ctx, base)
+	if err == nil {
+		return insp.ID, nil
+	}
+
+	slog.Info("sandbox/docker: pulling base image to resolve digest", "image", base)
+	rc, perr := b.cli.ImagePull(ctx, base, image.PullOptions{})
+	if perr != nil {
+		return "", fmt.Errorf("pull: %w", perr)
+	}
+	defer func() { _ = rc.Close() }()
+	if _, err := io.Copy(io.Discard, rc); err != nil {
+		return "", fmt.Errorf("drain pull stream: %w", err)
+	}
+
+	insp, err = b.cli.ImageInspect(ctx, base)
+	if err != nil {
+		return "", fmt.Errorf("inspect after pull: %w", err)
+	}
+	return insp.ID, nil
 }
 
 // generateDockerfile creates an in-memory Dockerfile that installs packages on top of the base.
 // Switches to root for install (base images use non-root "sandbox" user), then restores.
-func generateDockerfile(lang Language, base string, packages []string) string {
+func generateDockerfile(lang sandbox.Language, base string, packages []string) string {
 	cmd := installCommand(lang, packages)
 	return fmt.Sprintf("FROM %s\nUSER root\nRUN %s\nUSER sandbox\n", base, cmd)
 }
 
 // installCommand returns the shell command to install packages for the given language.
-func installCommand(lang Language, packages []string) string {
+func installCommand(lang sandbox.Language, packages []string) string {
 	joined := strings.Join(packages, " ")
 	switch lang {
-	case LangJavaScript:
+	case sandbox.LangJavaScript:
 		return fmt.Sprintf("cd /sandbox && npm install %s", joined)
-	case LangPython:
+	case sandbox.LangPython:
 		return fmt.Sprintf("pip install --no-cache-dir %s", joined)
-	case LangGolang:
-		// Go packages need a module context
+	case sandbox.LangGolang:
 		parts := []string{"cd /tmp", "go mod init tmp"}
 		for _, pkg := range packages {
 			p := pkg
@@ -122,14 +162,14 @@ func installCommand(lang Language, packages []string) string {
 		}
 		parts = append(parts, "rm -rf /tmp/go.mod /tmp/go.sum")
 		return strings.Join(parts, " && ")
-	case LangRust:
+	case sandbox.LangRust:
 		parts := []string{"cd /tmp", "cargo init --name tmp_build"}
 		for _, pkg := range packages {
 			parts = append(parts, fmt.Sprintf("cargo add %s", pkg))
 		}
 		parts = append(parts, "cargo build", "rm -rf /tmp/tmp_build")
 		return strings.Join(parts, " && ")
-	case LangPHP:
+	case sandbox.LangPHP:
 		return fmt.Sprintf("composer global require %s", joined)
 	default:
 		return fmt.Sprintf("echo 'unknown language: %s'", string(lang))
@@ -182,7 +222,7 @@ func parseBuildOutput(r io.Reader) error {
 			return fmt.Errorf("%s", msg.Error)
 		}
 		if msg.Stream != "" {
-			slog.Debug("sandbox: build", "output", strings.TrimSpace(msg.Stream))
+			slog.Debug("sandbox/docker: build", "output", strings.TrimSpace(msg.Stream))
 		}
 	}
 }

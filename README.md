@@ -84,8 +84,7 @@ Canvas-based editor powered by React Flow. Drag nodes, connect edges, run entire
 | Node | Purpose |
 |------|---------|
 | `trigger` | Start workflow from WebSocket events, cron, or RabbitMQ |
-| `http_fetch` | Make HTTP requests (GET/POST/PUT/DELETE) |
-| `js_script` | Quick JavaScript transforms (goja — no container overhead) |
+| `http_request` | Make HTTP requests with full Go http.Client parity (method, headers, query, body, auth, redirects, TLS, JSON parse) |
 | `sandbox_script` | Run code in isolated Docker container (any of 5 languages) |
 | `for_each` | Loop over arrays with isolated context per iteration |
 | `mongo_upsert` | Write/update MongoDB documents |
@@ -209,7 +208,7 @@ All data flows through Redis Pub/Sub and is exposed via Server-Sent Events:
 | **Containers** | Docker API (sandbox execution, debug sessions) |
 | **Sandbox Runtimes** | Node.js 20, Python 3.12, Go 1.22, Rust 1.86, PHP 8.3 |
 | **Debug Protocols** | DAP (Python/debugpy), CDP (JS/Node --inspect) |
-| **JS Engine** | goja (lightweight in-process JS for quick transforms) |
+| **JS Engine** | goja (scraper script runtime, jQuery-like selectors) |
 
 ---
 
@@ -274,6 +273,36 @@ make worker NAME=workflow-ws-client            # WebSocket-triggered workflows
 make worker NAME=news-scraper                  # News scraper
 make worker NAME=mongodb-writer                # Background MongoDB writes
 ```
+
+### 6. Tear down (end of session)
+
+Three tiers, pick what you need.
+
+```bash
+# Soft stop — bring down docker compose, k3s, and the local registry.
+# Cluster + volume state preserved on disk; restart later with
+# `sudo systemctl start k3s && docker start registry && make docker-compose-up`.
+make dev-teardown
+
+# Cluster stays up; just delete sandbox pods (override ns/kubeconfig if needed).
+make dev-teardown-sandbox
+make dev-teardown-sandbox SANDBOX_NS=foo KUBECONFIG_K3S=~/.kube/config
+
+# DESTRUCTIVE — uninstalls k3s (wipes /var/lib/rancher/k3s),
+# removes the registry container, removes gVisor (runsc) via apt.
+# 5-second Ctrl-C window before the destructive steps fire.
+make dev-teardown-full
+```
+
+What each touches:
+
+| Component | Source | Stopped by |
+|-----------|--------|------------|
+| `docker compose` stack (Mongo, Redis, RabbitMQ, …) | `make docker-compose-up` | `dev-teardown` (`docker-compose-down`) |
+| Local Docker registry (`registry:2` on `:5000`) | `examples/k3s/setup.sh` | `dev-teardown` (`docker stop registry`); removed by `dev-teardown-full` |
+| `k3s.service` (single-node cluster) | `examples/k3s/setup.sh` (calls upstream `get.k3s.io`) | `dev-teardown` (`systemctl stop k3s`); uninstalled by `dev-teardown-full` |
+| Sandbox pods inside `immaiwin-sandbox` namespace | API server creates them at runtime | `dev-teardown-sandbox`, or wiped with the cluster by `dev-teardown-full` |
+| gVisor (`runsc` shim) | `examples/k3s/setup.sh` (apt) | `dev-teardown-full` only |
 
 ---
 
@@ -356,7 +385,7 @@ make worker NAME=mongodb-writer                # Background MongoDB writes
 ## Roadmap
 
 - [x] Visual workflow canvas (React Flow)
-- [x] 8 node types (trigger, http_fetch, js_script, sandbox_script, for_each, mongo_upsert, redis_publish, notify)
+- [x] 7 node types (trigger, http_request, sandbox_script, for_each, mongo_upsert, redis_publish, notify)
 - [x] Multi-language sandbox execution (JS, Python, Go, Rust, PHP)
 - [x] Interactive debugging (DAP for Python, CDP for JavaScript)
 - [x] WebSocket workflow triggers with OAuth
@@ -375,9 +404,12 @@ make worker NAME=mongodb-writer                # Background MongoDB writes
 ## Development
 
 ```bash
-make lint       # Run golangci-lint
-make test       # Run all tests
-make clean      # Clean build artifacts
+make lint                  # Run golangci-lint
+make test                  # Run all tests
+make clean                 # Clean build artifacts
+make dev-teardown          # Stop docker compose + k3s + local registry (state preserved)
+make dev-teardown-sandbox  # Delete pods in the sandbox namespace (cluster stays up)
+make dev-teardown-full     # DESTRUCTIVE: uninstall k3s, remove registry + gVisor
 ```
 
 ---

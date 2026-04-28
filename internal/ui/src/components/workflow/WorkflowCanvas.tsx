@@ -18,13 +18,13 @@ import {
 } from '@xyflow/react'
 import { WaypointEdge } from './WaypointEdge'
 import { TriggerNode } from './nodes/TriggerNode'
-import { HTTPFetchNode } from './nodes/HTTPFetchNode'
-import { JSScriptNode } from './nodes/JSScriptNode'
+import { HTTPRequestNode } from './nodes/HTTPRequestNode'
 import { ForEachNode } from './nodes/ForEachNode'
 import { MongoUpsertNode } from './nodes/MongoUpsertNode'
 import { RedisPublishNode } from './nodes/RedisPublishNode'
 import { NotifyNode } from './nodes/NotifyNode'
 import { SandboxScriptNode } from './nodes/SandboxScriptNode'
+import { AIAgentNode } from './nodes/AIAgentNode'
 import { useWorkflowStore, type Workflow } from './useWorkflowStore'
 import { WorkflowParamsPanel } from './WorkflowParamsPanel'
 import { WorkflowHelpLegend } from './WorkflowHelpLegend'
@@ -32,13 +32,13 @@ import { RunResultsContext, DebugContext, type RunResults } from './RunResultsCo
 
 const nodeTypes: NodeTypes = {
   trigger: TriggerNode,
-  http_fetch: HTTPFetchNode,
-  js_script: JSScriptNode,
+  http_request: HTTPRequestNode,
   for_each: ForEachNode,
   mongo_upsert: MongoUpsertNode,
   redis_publish: RedisPublishNode,
   notify: NotifyNode,
   sandbox_script: SandboxScriptNode,
+  ai_agent: AIAgentNode,
 }
 
 const edgeTypes: EdgeTypes = {
@@ -50,13 +50,36 @@ const edgeTypes: EdgeTypes = {
 
 const defaultNodeData: Record<string, Record<string, unknown>> = {
   trigger: { trigger_type: 'manual', name: '' },
-  http_fetch: { url: '', name: '' },
-  js_script: { script: '', name: '' },
+  http_request: {
+    url: '',
+    method: 'GET',
+    name: '',
+    timeout_seconds: 30,
+    follow_redirects: true,
+    max_redirects: 10,
+    parse_json: false,
+    accept_any_status: false,
+    max_response_bytes: 10485760,
+  },
   for_each: { name: '' },
   mongo_upsert: { collection: '', filter_field: '', name: '' },
   redis_publish: { channel: '', name: '' },
   notify: { message: '', name: '' },
   sandbox_script: { script: '', language: 'javascript', timeout: 30, mem_limit: 128, cpu_limit: 0.5, network: false, name: '' },
+  ai_agent: {
+    name: '',
+    system_prompt: 'You are a helpful AI assistant. Use the available tools to accomplish the task.',
+    user_input: '',
+    llm_connection_id: '',
+    model_override: '',
+    memory_session_id: '',
+    max_iterations: 8,
+    max_tool_calls_per_iter: 5,
+    max_tokens: 4096,
+    temperature: 1,
+    timeout_seconds: 300,
+    skills: [],
+  },
 }
 
 /**

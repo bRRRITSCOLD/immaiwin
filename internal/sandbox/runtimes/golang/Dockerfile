@@ -15,7 +15,7 @@ RUN mkdir -p /tmp/warmup && \
 COPY entrypoint.go go.mod ./
 RUN go build -o entrypoint entrypoint.go
 
-RUN adduser -D sandbox
+RUN adduser -D -u 10001 sandbox
 RUN chown -R sandbox:sandbox /sandbox
 
 USER sandbox

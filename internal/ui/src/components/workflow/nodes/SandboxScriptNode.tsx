@@ -5,6 +5,7 @@ import { Link } from '@tanstack/react-router'
 import { Tooltip, TooltipTrigger, TooltipContent } from '~/components/ui/tooltip'
 import { StepNameInput } from './StepNameInput'
 import { DynamicHandles } from './DynamicHandles'
+import { AsToolPanel } from './AsToolPanel'
 import { NodeDebugPanel, BreakpointMarker } from '../RunResultsContext'
 import { SandboxDebugDialog, type DialogMode } from '../SandboxDebugDialog'
 
@@ -44,6 +45,8 @@ const accentColorMap: Record<SandboxLanguage, string> = {
 
 const helloWorldTemplates: Record<SandboxLanguage, string> = {
   javascript: `// input, context, params available
+// packages: const cheerio = await import('cheerio')
+// console.log → stderr | output() → result
 output({ hello: "world", input })`,
   python: `# input, context, params available
 output({"hello": "world", "input": input})`,
@@ -264,6 +267,12 @@ export function SandboxScriptNode({ id, data, selected }: NodeProps) {
           </div>
         )}
 
+        <AsToolPanel
+          nodeId={id}
+          data={data as Record<string, unknown>}
+          defaultName="sandbox_script"
+          defaultSchema={{ type: 'object', properties: { input: {} }, additionalProperties: true }}
+        />
         <NodeDebugPanel id={id} />
       </div>
 
@@ -276,6 +285,7 @@ export function SandboxScriptNode({ id, data, selected }: NodeProps) {
         initialMode={dialogMode}
         customImage={customImage || undefined}
         packages={packages || undefined}
+        network={network}
       />
       <DynamicHandles nodeId={id} nodeType="sandbox_script" data={data as Record<string, unknown>} />
     </div>

@@ -160,9 +160,10 @@ func (c *CDPClient) Enable() error {
 
 // SetBreakpoint sets a breakpoint by URL regex and line number (waits for response).
 // Uses urlRegex to match regardless of file:// prefix or require() path format.
-func (c *CDPClient) SetBreakpoint(url string, line int, condition string) error {
+// Returns the CDP breakpointId so callers can remove the breakpoint later.
+func (c *CDPClient) SetBreakpoint(url string, line int, condition string) (string, error) {
 	// Extract filename and use regex to match any path format
-	// e.g. "file:///sandbox/user_script.js" → regex "user_script\\.js$"
+	// e.g. "file:///sandbox/user_script.mjs" → regex "user_script\\.mjs$"
 	filename := url
 	if idx := len(url) - 1; idx >= 0 {
 		for i := len(url) - 1; i >= 0; i-- {
@@ -194,12 +195,28 @@ func (c *CDPClient) SetBreakpoint(url string, line int, condition string) error 
 	}
 	resp, err := c.sendAndWait("Debugger.setBreakpointByUrl", params, 5*time.Second)
 	if err != nil {
-		return err
+		return "", err
 	}
+	var bpID string
 	if result, ok := resp["result"].(map[string]any); ok {
 		slog.Info("cdp: breakpoint set", "result", result)
+		if id, ok := result["breakpointId"].(string); ok {
+			bpID = id
+		}
 	}
-	return nil
+	return bpID, nil
+}
+
+// RemoveBreakpoint removes a breakpoint previously set via SetBreakpoint by id.
+func (c *CDPClient) RemoveBreakpoint(breakpointId string) error {
+	if breakpointId == "" {
+		return nil
+	}
+	slog.Info("cdp: removeBreakpoint", "id", breakpointId)
+	_, err := c.sendAndWait("Debugger.removeBreakpoint", map[string]any{
+		"breakpointId": breakpointId,
+	}, 5*time.Second)
+	return err
 }
 
 // RemoveAllBreakpoints disables then re-enables debugger.
@@ -273,66 +290,200 @@ func (c *CDPClient) GetProperties(objectId string) error {
 
 // ExpandObject fetches child properties of an object by its CDP objectId.
 // Returns Variable slice with nested objectIds for further expansion.
+//
+// Behavior:
+//  - Includes inherited accessor properties (status/headers/ok on Response,
+//    etc.) by walking the prototype chain.
+//  - Materializes accessor getters via Runtime.callFunctionOn so values appear
+//    instead of "[Function]".
+//  - Filters Symbol(...) and __proto__ noise.
 func (c *CDPClient) ExpandObject(objectId string) ([]Variable, error) {
-	resp, err := c.sendAndWait("Runtime.getProperties", map[string]any{
-		"objectId":      objectId,
-		"ownProperties": true,
+	// First pass: own data props (with previews) — quick wins for plain objects.
+	ownResp, err := c.sendAndWait("Runtime.getProperties", map[string]any{
+		"objectId":               objectId,
+		"ownProperties":          true,
+		"generatePreview":        true,
+		"accessorPropertiesOnly": false,
 	}, 3*time.Second)
 	if err != nil {
 		return nil, err
 	}
 
+	// Second pass: accessor properties from full prototype chain (Response.status etc.)
+	accResp, _ := c.sendAndWait("Runtime.getProperties", map[string]any{
+		"objectId":               objectId,
+		"ownProperties":          false,
+		"generatePreview":        true,
+		"accessorPropertiesOnly": true,
+	}, 3*time.Second)
+
+	seen := make(map[string]bool)
+	var vars []Variable
+
+	collect := func(resp map[string]any) {
+		if resp == nil {
+			return
+		}
+		result, _ := resp["result"].(map[string]any)
+		if result == nil {
+			return
+		}
+		props, _ := result["result"].([]any)
+		for _, p := range props {
+			prop, ok := p.(map[string]any)
+			if !ok {
+				continue
+			}
+			name, _ := prop["name"].(string)
+			if name == "" || seen[name] {
+				continue
+			}
+			// Filter noise: Symbol(...), __proto__, internal slots
+			if strings.HasPrefix(name, "__") || strings.HasPrefix(name, "Symbol(") {
+				continue
+			}
+			seen[name] = true
+
+			v := c.propToVariable(name, prop, objectId)
+			if v.Name != "" {
+				vars = append(vars, v)
+			}
+		}
+	}
+	collect(ownResp)
+	collect(accResp)
+	return vars, nil
+}
+
+// propToVariable converts one CDP property descriptor to a Variable, calling
+// the getter if the property is an accessor without a cached value.
+func (c *CDPClient) propToVariable(name string, prop map[string]any, parentId string) Variable {
+	if valObj, ok := prop["value"].(map[string]any); ok && valObj != nil {
+		return remoteObjectToVariable(name, valObj)
+	}
+	// Accessor — call the getter to materialize a value.
+	if _, hasGet := prop["get"].(map[string]any); hasGet {
+		valObj, err := c.callGetter(parentId, name)
+		if err == nil && valObj != nil {
+			return remoteObjectToVariable(name, valObj)
+		}
+		return Variable{Name: name, Value: "<getter>", Type: "accessor"}
+	}
+	return Variable{Name: name, Value: "undefined", Type: "undefined"}
+}
+
+// callGetter invokes obj[propName] in the debuggee and returns its RemoteObject.
+func (c *CDPClient) callGetter(objectId, propName string) (map[string]any, error) {
+	resp, err := c.sendAndWait("Runtime.callFunctionOn", map[string]any{
+		"objectId":            objectId,
+		"functionDeclaration": fmt.Sprintf("function(){return this[%q];}", propName),
+		"returnByValue":       false,
+		"generatePreview":     true,
+	}, 3*time.Second)
+	if err != nil {
+		return nil, err
+	}
 	result, _ := resp["result"].(map[string]any)
 	if result == nil {
-		return nil, nil
+		return nil, fmt.Errorf("callFunctionOn: empty result")
+	}
+	if exc, ok := result["exceptionDetails"].(map[string]any); ok && exc != nil {
+		return nil, fmt.Errorf("getter threw: %v", exc["text"])
+	}
+	if ro, ok := result["result"].(map[string]any); ok {
+		return ro, nil
+	}
+	return nil, fmt.Errorf("callFunctionOn: missing result.result")
+}
+
+// remoteObjectToVariable renders a CDP RemoteObject into a Variable, preferring
+// the inline preview for compound types (so "Response { status: 200, ... }"
+// appears in the panel rather than just "_Response").
+func remoteObjectToVariable(name string, valObj map[string]any) Variable {
+	typ, _ := valObj["type"].(string)
+	subtype, _ := valObj["subtype"].(string)
+
+	var value string
+	switch typ {
+	case "undefined":
+		value = "undefined"
+	case "string":
+		if v, ok := valObj["value"].(string); ok {
+			value = fmt.Sprintf("%q", v)
+		}
+	case "object", "function":
+		if preview, ok := valObj["preview"].(map[string]any); ok {
+			value = renderPreview(preview, typ)
+		}
+		if value == "" {
+			if desc, ok := valObj["description"].(string); ok {
+				value = desc
+			} else if subtype != "" {
+				value = subtype
+			} else {
+				value = "[" + typ + "]"
+			}
+		}
+	default:
+		if v, ok := valObj["value"]; ok {
+			value = fmt.Sprintf("%v", v)
+		}
 	}
 
-	var vars []Variable
-	props, _ := result["result"].([]any)
+	v := Variable{Name: name, Value: value, Type: typ}
+	if typ == "object" || typ == "function" {
+		if oid, ok := valObj["objectId"].(string); ok {
+			v.ObjectId = oid
+		}
+	}
+	return v
+}
+
+// renderPreview turns a CDP object preview into a one-line summary like
+// "Response { status: 200, statusText: 'OK', ok: true, ... }".
+func renderPreview(preview map[string]any, typ string) string {
+	desc, _ := preview["description"].(string)
+	subtype, _ := preview["subtype"].(string)
+	props, _ := preview["properties"].([]any)
+	if len(props) == 0 {
+		return desc
+	}
+	var parts []string
 	for _, p := range props {
-		prop, ok := p.(map[string]any)
+		pm, ok := p.(map[string]any)
 		if !ok {
 			continue
 		}
-		name, _ := prop["name"].(string)
-		if name == "" || strings.HasPrefix(name, "__") {
-			continue
+		pn, _ := pm["name"].(string)
+		pt, _ := pm["type"].(string)
+		pv, _ := pm["value"].(string)
+		if pt == "string" {
+			parts = append(parts, fmt.Sprintf("%s: %q", pn, pv))
+		} else {
+			parts = append(parts, fmt.Sprintf("%s: %s", pn, pv))
 		}
-
-		valObj, _ := prop["value"].(map[string]any)
-		if valObj == nil {
-			continue
-		}
-		typ, _ := valObj["type"].(string)
-		var value string
-		switch typ {
-		case "undefined":
-			value = "undefined"
-		case "object", "function":
-			if desc, ok := valObj["description"].(string); ok {
-				value = desc
-			} else {
-				value = fmt.Sprintf("[%s]", typ)
-			}
-		default:
-			if v, ok := valObj["value"]; ok {
-				value = fmt.Sprintf("%v", v)
-			}
-		}
-
-		v := Variable{
-			Name:  name,
-			Value: value,
-			Type:  typ,
-		}
-		if typ == "object" || typ == "function" {
-			if oid, ok := valObj["objectId"].(string); ok {
-				v.ObjectId = oid
-			}
-		}
-		vars = append(vars, v)
 	}
-	return vars, nil
+	overflow := ""
+	if of, ok := preview["overflow"].(bool); ok && of {
+		overflow = ", ..."
+	}
+	switch typ {
+	case "object":
+		if subtype == "array" {
+			return fmt.Sprintf("[ %s%s ]", strings.Join(parts, ", "), overflow)
+		}
+		head := desc
+		if head == "" {
+			head = "Object"
+		}
+		return fmt.Sprintf("%s { %s%s }", head, strings.Join(parts, ", "), overflow)
+	case "function":
+		if desc != "" {
+			return desc
+		}
+		return "[Function]"
+	}
+	return desc
 }
 
 // FindScriptId returns the CDP scriptId for a URL containing the given substring.

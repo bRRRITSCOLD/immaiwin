@@ -3,6 +3,7 @@ import { Database } from 'lucide-react'
 import { Textarea } from '~/components/ui/textarea'
 import { StepNameInput } from './StepNameInput'
 import { DynamicHandles } from './DynamicHandles'
+import { AsToolPanel } from './AsToolPanel'
 import { NodeDebugPanel, BreakpointMarker } from '../RunResultsContext'
 import { ConnectionPicker } from './ConnectionPicker'
 
@@ -43,6 +44,7 @@ export function MongoUpsertNode({ id, data, selected }: NodeProps) {
             />
           </div>
         </div>
+        <AsToolPanel nodeId={id} data={data as Record<string, unknown>} defaultName="mongo_upsert" />
         <NodeDebugPanel id={id} />
       </div>
       <DynamicHandles nodeId={id} nodeType="mongo_upsert" data={data as Record<string, unknown>} />

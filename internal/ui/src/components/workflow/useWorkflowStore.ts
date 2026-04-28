@@ -11,7 +11,7 @@ export interface Workflow {
   updated_at: string
 }
 
-export type ConnectionType = 'mongodb' | 'redis' | 'rabbitmq' | 'polymarket' | 'schwab'
+export type ConnectionType = 'mongodb' | 'redis' | 'rabbitmq' | 'polymarket' | 'schwab' | 'anthropic' | 'openai' | 'ollama'
 
 export interface Connection {
   id: string
@@ -22,7 +22,7 @@ export interface Connection {
   updated_at: string
 }
 
-export type EdgePaletteType = 'start' | 'success' | 'error' | 'item' | 'receive'
+export type EdgePaletteType = 'start' | 'success' | 'error' | 'item' | 'tool' | 'receive'
 
 export interface AttachingFrom {
   nodeId: string

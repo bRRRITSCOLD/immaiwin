@@ -46,7 +46,7 @@ func NewServer(
 	wfExec *workflow.WorkflowExecutor,
 	connStore handler.ConnectionStore,
 	db *mongo.Database,
-	sandboxMgr *sandbox.Manager,
+	sandboxRT sandbox.Runtime,
 ) *Server {
 	b := rediss.NewBroadcaster(rc, rediss.TradesChannel)
 	nb := rediss.NewBroadcaster(rc, rediss.NewsChannel)
@@ -117,8 +117,8 @@ func NewServer(
 	r.GET("/api/v1/futures/stream", handler.StreamFutures(fb))
 
 	// Sandbox (WebSocket)
-	r.GET("/api/v1/sandbox/debug", handler.DebugSandbox(sandboxMgr))
-	r.GET("/api/v1/sandbox/run", handler.RunSandbox(sandboxMgr))
+	r.GET("/api/v1/sandbox/debug", handler.DebugSandbox(sandboxRT))
+	r.GET("/api/v1/sandbox/run", handler.RunSandbox(sandboxRT))
 
 	return &Server{
 		cfg:                cfg,

@@ -1,4 +1,4 @@
-import { Globe, Play, Code2, Container, Database, Bell, RefreshCw, Radio, ChevronDown, ChevronUp, CheckCircle2, XCircle, Circle, Plus, Pencil, Trash2, Plug, Download } from 'lucide-react'
+import { Globe, Play, Container, Database, Bell, RefreshCw, Radio, ChevronDown, ChevronUp, CheckCircle2, XCircle, Circle, Plus, Pencil, Trash2, Plug, Download, Bot, Wrench } from 'lucide-react'
 import { useState } from 'react'
 import { toast } from 'sonner'
 import { Separator } from '~/components/ui/separator'
@@ -20,6 +20,7 @@ const edgePaletteItems: { type: EdgePaletteType; label: string; icon: React.Reac
   { type: 'success', label: 'Success', icon: <CheckCircle2 className="h-3.5 w-3.5" />, color: 'text-green-500', border: 'border-green-500' },
   { type: 'error', label: 'Error', icon: <XCircle className="h-3.5 w-3.5" />, color: 'text-red-500', border: 'border-red-500' },
   { type: 'item', label: 'Item', icon: <RefreshCw className="h-3.5 w-3.5" />, color: 'text-violet-400', border: 'border-violet-400' },
+  { type: 'tool', label: 'Tool', icon: <Wrench className="h-3.5 w-3.5" />, color: 'text-purple-400', border: 'border-purple-400' },
   { type: 'receive', label: 'Receive', icon: <Circle className="h-3.5 w-3.5" />, color: 'text-gray-400', border: 'border-gray-400' },
 ]
 
@@ -237,14 +238,8 @@ export function WorkflowSidebar({ onSelect, onReload }: Props) {
           />
           <PaletteItem
             icon={<Globe className="h-3.5 w-3.5 text-sky-400" />}
-            label="HTTP Fetch"
-            nodeType="http_fetch"
-            onDragStart={onDragStart}
-          />
-          <PaletteItem
-            icon={<Code2 className="h-3.5 w-3.5 text-yellow-400" />}
-            label="JS Script"
-            nodeType="js_script"
+            label="HTTP Request"
+            nodeType="http_request"
             onDragStart={onDragStart}
           />
           <PaletteItem
@@ -275,6 +270,12 @@ export function WorkflowSidebar({ onSelect, onReload }: Props) {
             icon={<Bell className="h-3.5 w-3.5 text-amber-400" />}
             label="Notify"
             nodeType="notify"
+            onDragStart={onDragStart}
+          />
+          <PaletteItem
+            icon={<Bot className="h-3.5 w-3.5 text-purple-400" />}
+            label="AI Agent"
+            nodeType="ai_agent"
             onDragStart={onDragStart}
           />
         </div>}
