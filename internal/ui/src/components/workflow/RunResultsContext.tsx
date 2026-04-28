@@ -5,11 +5,23 @@ export interface StepResult {
   node_type: string
   output?: unknown
   error?: string
+  // Live-run lifecycle status. Optional so post-run snapshots (which
+  // never set it) keep rendering as "success/error" via the error field.
+  // Streaming runs set this to 'running' while in flight and 'done'/'error'
+  // when the corresponding step_done event arrives.
+  status?: 'running' | 'done' | 'error'
 }
 
 export type RunResults = Record<string, StepResult[]>
 
 export const RunResultsContext = createContext<RunResults | null>(null)
+
+// RunStatusContext signals whether a workflow run is in flight. Read by
+// NodeDebugPanel to differentiate "not executed yet" from "haven't reached
+// this node yet during a live run". Keeping it separate from RunResults
+// lets per-node memoisation off the results map stay stable across status
+// changes (every node panel doesn't re-render on every status flip).
+export const RunStatusContext = createContext<{ running: boolean }>({ running: false })
 
 export interface DebugState {
   debugMode: boolean
@@ -62,6 +74,7 @@ function fullOutput(v: unknown): string {
 
 export function NodeDebugPanel({ id }: { id: string }) {
   const results = useContext(RunResultsContext)
+  const { running } = useContext(RunStatusContext)
   const [expanded, setExpanded] = useState(false)
   const [iterIdx, setIterIdx] = useState(0)
 
@@ -70,6 +83,19 @@ export function NodeDebugPanel({ id }: { id: string }) {
   const steps = results[id]
 
   if (!steps) {
+    // During a live run, nodes the BFS hasn't reached yet show "idle"
+    // (amber dot, no pulse) so the user sees the workflow waiting on
+    // them rather than thinking they're skipped. After the run ends
+    // and they still have no result, that's the "not executed" path
+    // (canvas-author dropped the edge, etc.).
+    if (running) {
+      return (
+        <div className="nodrag flex items-center gap-2 px-3 py-2 border-t border-border/40">
+          <span className="inline-block h-2.5 w-2.5 rounded-full bg-amber-500 shrink-0" />
+          <span className="text-xs text-muted-foreground flex-1">idle</span>
+        </div>
+      )
+    }
     return (
       <div className="nodrag px-3 py-1.5 border-t border-border/40 text-[10px] text-muted-foreground/50 italic">
         not executed
@@ -80,8 +106,19 @@ export function NodeDebugPanel({ id }: { id: string }) {
   const total = steps.length
   const idx = Math.min(iterIdx, total - 1)
   const step = steps[idx]!
-  const hasError = !!step.error
+  const hasError = !!step.error || step.status === 'error'
+  const isRunning = step.status === 'running'
   const isMulti = total > 1
+
+  // Live status indicator — running takes precedence over success so the
+  // canvas accurately reflects the WS stream while tool-invoked children
+  // are still in flight.
+  const dotClass = hasError
+    ? 'bg-red-500'
+    : isRunning
+    ? 'bg-blue-500 animate-pulse'
+    : 'bg-green-500'
+  const label = hasError ? 'error' : isRunning ? 'running' : 'success'
 
   return (
     <div className="nodrag border-t border-border/40">
@@ -90,10 +127,10 @@ export function NodeDebugPanel({ id }: { id: string }) {
         onClick={() => setExpanded((v) => !v)}
       >
         <span
-          className={`inline-block h-2.5 w-2.5 rounded-full shrink-0 ${hasError ? 'bg-red-500' : 'bg-green-500'}`}
+          className={`inline-block h-2.5 w-2.5 rounded-full shrink-0 ${dotClass}`}
         />
         <span className="text-xs text-muted-foreground flex-1">
-          {hasError ? 'error' : 'success'}
+          {label}
           {isMulti && ` · iter ${idx + 1}/${total}`}
         </span>
         {isMulti && (

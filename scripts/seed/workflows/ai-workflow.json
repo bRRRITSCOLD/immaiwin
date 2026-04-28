@@ -6,7 +6,8 @@
     "params": {
       "city": "San Francisco",
       "redis_channel": "weather.alerts",
-      "weather_format": "%l:+%C,+%t,+humidity+%h,+wind+%w"
+      "weather_format": "%l:+%C,+%t,+humidity+%h,+wind+%w",
+      "weather_style": "friendly"
     },
     "nodes": [
       {
@@ -100,14 +101,23 @@
             }
           ],
           "llm_connection_id": "97c9e71b-d635-4618-8c53-cbb3770e2b5a",
-          "max_iterations": 4,
+          "max_iterations": 6,
           "max_tokens": 1024,
           "max_tool_calls_per_iter": 2,
           "name": "weather_agent",
-          "system_prompt": "You are a weather assistant.\n\nWorkflow:\n1. Call the get_weather tool with the city name. It returns a short text line, e.g. 'San Francisco: Partly cloudy, +54°F, humidity 80%, wind →3km/h'.\n2. Call the publish_weather tool with a JSON object: { city, summary, temp_f } where summary is one short sentence in Fahrenheit.\n3. Return a brief confirmation as your final answer (the workflow consumes the published message via Redis pub/sub).",
+          "skills": [
+            { "slug_id": "weather-formatter", "range": "^0.1.0" }
+          ],
+          "skill_config": {
+            "weather-formatter": {
+              "default_style": "{{params.weather_style}}",
+              "temp_unit": "F"
+            }
+          },
+          "system_prompt": "You are a weather-reporting agent. You MUST follow this exact procedure for every request — never skip a step, never answer directly without calling the tools.\n\nRequired steps (in order):\n1. Call get_weather(city) to fetch the current weather. The tool returns a short text line, e.g. 'San Francisco: Partly cloudy, +54°F, humidity 80%, wind →3km/h'.\n2. Call weather_formatter__format_weather({ city, raw }) where `raw` is the exact text line returned by get_weather. (Tone is set by the workflow author via skill_config — do NOT pass `style` unless the user explicitly overrides it.) The tool returns `{ message, temp_value, temp_unit, ... }`.\n3. Call publish_weather({ city, summary, temp_f, formatted_by: 'weather-formatter' }) where `summary` is the `message` field from step 2 and `temp_f` is the `temp_value` number from step 2. The literal `formatted_by` field is mandatory and must equal 'weather-formatter' so downstream subscribers know the skill ran.\n4. Only AFTER publish_weather succeeds, reply with a short confirmation like 'Published weather for <city>.'\n\nIf you skip steps 2 or 3, or if you omit formatted_by, the task has FAILED. Do not return a final answer until publish_weather has been called.",
           "temperature": 0.2,
           "timeout_seconds": 120,
-          "user_input": "Get the current weather for {{params.city}}."
+          "user_input": "Fetch, format, and publish the current weather for {{params.city}}. Remember: get_weather → weather_formatter__format_weather → publish_weather → confirmation."
         },
         "width": 539,
         "height": 708,
@@ -219,21 +229,26 @@
                 },
                 "summary": {
                   "type": "string",
-                  "description": "One-sentence weather summary in Fahrenheit."
+                  "description": "One-sentence weather summary in Fahrenheit (use the `message` field from weather_formatter__format_weather)."
                 },
                 "temp_f": {
                   "description": "Current temperature in Fahrenheit.",
                   "type": "number"
+                },
+                "formatted_by": {
+                  "type": "string",
+                  "description": "Provenance marker — must be 'weather-formatter' when the formatter skill produced the summary."
                 }
               },
               "required": [
                 "city",
-                "summary"
+                "summary",
+                "formatted_by"
               ]
             },
             "enabled": true,
             "name": "publish_weather",
-            "description": "Publish a weather summary to the Redis channel so downstream subscribers receive it. Provide a JSON object with city, summary, and temp_f."
+            "description": "Publish a weather summary to the Redis channel so downstream subscribers receive it. Always pass formatted_by='weather-formatter' so subscribers can confirm the formatter skill ran."
           },
           "channel": "{{params.redis_channel}}",
           "handles": [

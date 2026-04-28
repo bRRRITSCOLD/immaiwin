@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/api"
+	"github.com/bRRRITSCOLD/immaiwin-go/internal/api/handler"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/config"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/mongodb"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/polymarket"
@@ -22,6 +23,7 @@ import (
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/sandbox/docker"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/sandbox/k3s"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/schwab"
+	"github.com/bRRRITSCOLD/immaiwin-go/internal/skills"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/workflow"
 )
 
@@ -186,6 +188,29 @@ func main() {
 		runRepo = nil
 	}
 
+	// Skill resolver. Off by default; opt-in via SKILLS_ENABLED. When enabled
+	// we wire the Mongo-backed registry as the index and a LocalFS source
+	// (default `/var/lib/immaiwin/skills`) as the bundle storage. Failures
+	// degrade the skill feature without taking down the rest of the API.
+	var (
+		skillRes     *skills.Resolver
+		skillBackend *handler.SkillBackend
+	)
+	if cfg.Skills.Enabled {
+		registry, regErr := mongodb.NewSkillRegistry(ctx, mc.DB())
+		if regErr != nil {
+			slog.Warn("skill registry init failed (skills disabled)", "err", regErr)
+		} else {
+			fsSrc := skills.NewLocalFSSource(cfg.Skills.Dir, "local-fs")
+			skillRes = skills.NewResolver(registry, fsSrc)
+			skillBackend = &handler.SkillBackend{
+				Registry: registry,
+				Sources:  []skills.Source{fsSrc},
+			}
+			slog.Info("skills system enabled", "dir", cfg.Skills.Dir)
+		}
+	}
+
 	wfExec := &workflow.WorkflowExecutor{
 		HTTPClient:   &http.Client{Timeout: 30 * time.Second},
 		DB:           defaultDB,
@@ -194,9 +219,10 @@ func main() {
 		SandboxRT:    sandboxRT,
 		Memory:       chatMem,
 		RunRepo:      runRepo,
+		SkillRes:     skillRes,
 	}
 
-	srv := api.NewServer(cfg.API, rc, pm, wl, tr, nr, tokens, owl, fwl, sc, wfRepo, wfExec, connRepo, connResolver, mc.DB(), sandboxRT)
+	srv := api.NewServer(cfg.API, rc, pm, wl, tr, nr, tokens, owl, fwl, sc, wfRepo, wfExec, connRepo, connResolver, skillBackend, mc.DB(), sandboxRT)
 
 	go func() {
 		slog.Info("api server listening", "addr", srv.Addr())

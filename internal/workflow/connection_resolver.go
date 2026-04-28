@@ -431,6 +431,21 @@ func (r *ConnectionResolver) ResolveRedis(ctx context.Context, connectionID stri
 	return rc, nil
 }
 
+// ResolveConnection returns the raw Connection record by ID. Used by the
+// skills system to extract a declared secret's value from an arbitrary
+// Connection's config map. Bypasses the per-type caches because secrets
+// don't need a live client — just the stored config.
+func (r *ConnectionResolver) ResolveConnection(ctx context.Context, connectionID string) (Connection, error) {
+	if connectionID == "" {
+		return Connection{}, fmt.Errorf("resolve connection: connection_id is required")
+	}
+	conn, err := r.store.GetByID(ctx, connectionID)
+	if err != nil {
+		return Connection{}, fmt.Errorf("resolve connection %q: %w", connectionID, err)
+	}
+	return conn, nil
+}
+
 // Invalidate drops every cached client for the given connection ID so the
 // next Resolve* rebuilds from the latest stored config. Safe to call from
 // the connection upsert/delete handlers. DB/Redis cache entries are also

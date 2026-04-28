@@ -131,3 +131,35 @@
     background: rgb(161, 161, 170); /* zinc-400 */
   }
 }
+
+/* React Flow NodeResizer ergonomics: vendor handles default to ~6px,
+   too small to grab without precise hovering. Inflate the hit area via
+   a transparent ::after pad that overlays the visible handle. Visible
+   square stays the same size; cursor grabs anywhere within ~16px square.
+   Same trick for the line handles between corners. */
+.react-flow__resize-control.handle::after {
+  content: '';
+  position: absolute;
+  inset: -13px;
+  background: transparent;
+}
+.react-flow__resize-control.line.top::after,
+.react-flow__resize-control.line.bottom::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -9px;
+  bottom: -9px;
+  background: transparent;
+}
+.react-flow__resize-control.line.left::after,
+.react-flow__resize-control.line.right::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -9px;
+  right: -9px;
+  background: transparent;
+}

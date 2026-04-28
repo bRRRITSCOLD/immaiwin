@@ -1,0 +1,62 @@
+id: weather-formatter
+version: 0.1.0
+name: "Weather Formatter"
+description: "Turn a raw weather text line (e.g. wttr.in's `%C %t %h %w` format) into a friendly one-paragraph message tailored to the conditions. Pure logic — no network, no secrets, safe on any agent."
+
+author:
+  name: "immaiwin"
+  url: "https://github.com/bRRRITSCOLD/immaiwin"
+
+license: MIT
+
+api_version: 1
+min_platform_version: 0.5.0
+
+tools:
+  - id: format_weather
+    file: tools/format_weather.py
+    language: python
+    description: "Convert a raw weather text line into a friendly message. Use after fetching the raw weather and before publishing to a channel — this is the step that turns a terse data line into something a human would want to read."
+    input_schema:
+      type: object
+      required: [city, raw]
+      properties:
+        city:
+          type: string
+          description: "City the weather is for (used to personalise the message)."
+        raw:
+          type: string
+          description: "Raw weather text line, e.g. 'San Francisco: Partly cloudy, +54°F, humidity 80%, wind →3km/h'."
+        style:
+          type: string
+          enum: [friendly, formal, terse]
+          description: "Tone of the message. Defaults to friendly."
+    timeout_secs: 10
+
+prompt:
+  fragment: prompts/system.md
+
+memory:
+  default_policy:
+    max_messages: 20
+    summarize_at: 18
+
+capabilities:
+  network: {}
+  storage:
+    read: false
+    write: false
+
+config:
+  - name: default_style
+    type: string
+    enum: [friendly, formal, terse]
+    default: friendly
+    required: false
+    description: "Tone used when the LLM does not pass a `style` arg explicitly. Workflow author binds via agent's data.skill_config['weather-formatter'].default_style."
+  - name: temp_unit
+    type: string
+    enum: [F, C]
+    default: F
+    required: false
+    description: "Temperature unit label appended to the formatted message. Pure cosmetic — the upstream weather feed must already report in this unit."
