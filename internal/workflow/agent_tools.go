@@ -1,14 +1,18 @@
 package workflow
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/llm"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/sandbox"
+	"github.com/santhosh-tekuri/jsonschema/v6"
 )
 
 // ToolCatalog holds the tools an agent has access to during one run.
@@ -17,8 +21,14 @@ import (
 //  2. Skill-supplied tools (P1.11) — prefixed with namespace__name__.
 //  3. Workflow-edge-bound nodes — opt-in via data.as_tool on target.
 type ToolCatalog struct {
-	defs     []llm.ToolDef
-	handlers map[string]ToolHandler
+	defs       []llm.ToolDef
+	handlers   map[string]ToolHandler
+	// validators holds a compiled JSON-Schema per tool name. Populated
+	// lazily in Add() from each tool's InputSchema. Tools with an
+	// uncompilable schema are simply omitted from this map — Execute()
+	// then falls through to permissive behaviour for that tool, matching
+	// pre-validation semantics.
+	validators map[string]*jsonschema.Schema
 }
 
 // ToolHandler executes a tool call and returns its observation. Returning
@@ -28,16 +38,35 @@ type ToolHandler func(ctx context.Context, args json.RawMessage) (string, error)
 
 // NewToolCatalog returns an empty catalog.
 func NewToolCatalog() *ToolCatalog {
-	return &ToolCatalog{handlers: make(map[string]ToolHandler)}
+	return &ToolCatalog{
+		handlers:   make(map[string]ToolHandler),
+		validators: make(map[string]*jsonschema.Schema),
+	}
 }
 
-// Add registers a tool. Returns an error on duplicate name.
+// Add registers a tool. Returns an error on duplicate name. Compiles the
+// tool's InputSchema if non-empty so Execute() can validate LLM-supplied
+// args before dispatch (catches hallucinated arg shapes early so the
+// model gets a structured schema-violation error back instead of the
+// underlying handler exploding on a bad type cast).
 func (c *ToolCatalog) Add(def llm.ToolDef, handler ToolHandler) error {
 	if _, dup := c.handlers[def.Name]; dup {
 		return fmt.Errorf("tool catalog: duplicate name %q", def.Name)
 	}
 	c.defs = append(c.defs, def)
 	c.handlers[def.Name] = handler
+	if len(def.InputSchema) > 0 {
+		if sch, err := compileToolSchema(def.InputSchema); err == nil {
+			c.validators[def.Name] = sch
+		} else {
+			// Don't reject the tool — schema authoring is best-effort and
+			// older as_tool defs may have a permissive shape that doesn't
+			// strictly validate. Log + skip so dispatch falls through to
+			// the unvalidated path for this tool only.
+			slog.Warn("tool catalog: schema compile failed; tool will dispatch without arg validation",
+				"name", def.Name, "err", err)
+		}
+	}
 	return nil
 }
 
@@ -47,7 +76,11 @@ func (c *ToolCatalog) Defs() []llm.ToolDef { return c.defs }
 
 // Execute looks up a handler by name and invokes it. Returns the
 // observation text. Unknown tool returns an error with a clear message
-// the LLM can correct from.
+// the LLM can correct from. When a compiled InputSchema exists for the
+// tool, args are validated before dispatch and a structured violation
+// message is returned to the LLM (no handler runs) so the model can
+// self-correct in the next iter without burning external API calls /
+// state-mutating side effects on bad args.
 func (c *ToolCatalog) Execute(ctx context.Context, name string, args json.RawMessage) (string, error) {
 	h, ok := c.handlers[name]
 	if !ok {
@@ -57,7 +90,82 @@ func (c *ToolCatalog) Execute(ctx context.Context, name string, args json.RawMes
 		}
 		return "", fmt.Errorf("unknown tool %q; available: %s", name, strings.Join(known, ", "))
 	}
+
+	if sch, ok := c.validators[name]; ok {
+		// Empty Anthropic / Ollama tool calls send no Input — treat as {}
+		// so a tool whose schema declares no `required` properties still
+		// passes. Schemas with `required` will fail validation here.
+		validateArgs := args
+		if len(validateArgs) == 0 {
+			validateArgs = json.RawMessage("{}")
+		}
+		var decoded any
+		dec := json.NewDecoder(bytes.NewReader(validateArgs))
+		dec.UseNumber()
+		if err := dec.Decode(&decoded); err != nil {
+			// Short Go error keeps the agent loop's `\nerror: <…>` suffix
+			// from duplicating the long observation message.
+			return fmt.Sprintf("tool %s: invalid JSON in args: %s", name, err.Error()), fmt.Errorf("invalid tool args")
+		}
+		if err := sch.Validate(decoded); err != nil {
+			msg := fmt.Sprintf("tool %s: input failed schema validation:\n%s\n\ninput received:\n%s",
+				name, sanitizeSchemaErr(err.Error(), name), string(validateArgs))
+			return msg, fmt.Errorf("schema validation failed")
+		}
+	}
+
 	return h(ctx, args)
+}
+
+// compileToolSchema turns a raw JSON Schema into a compiled validator
+// using the same library as the skills package. Pulled into its own
+// helper so the catalog doesn't depend on the skills package (would
+// create an import cycle: skills -> workflow for the registry).
+//
+// The resource URL is namespaced as `tool:<sanitized>` so the validator's
+// error messages reference the tool by name instead of leaking the
+// process's filesystem path (jsonschema/v6 resolves a bare resource ID
+// relative to cwd, producing `file:///<cwd>/<id>` in errors).
+func compileToolSchema(raw json.RawMessage) (*jsonschema.Schema, error) {
+	var v any
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	if err := dec.Decode(&v); err != nil {
+		return nil, fmt.Errorf("decode schema: %w", err)
+	}
+	c := jsonschema.NewCompiler()
+	resource := "tool:" + schemaResourceID()
+	if err := c.AddResource(resource, v); err != nil {
+		return nil, fmt.Errorf("add schema: %w", err)
+	}
+	return c.Compile(resource)
+}
+
+// schemaResourceID returns a stable identifier for the validator's
+// internal resource registry. Atomic counter so concurrent agent runs
+// can't collide on the jsonschema compiler's resource map.
+var schemaResourceCounter atomic.Uint64
+
+func schemaResourceID() string {
+	return fmt.Sprintf("schema_%d", schemaResourceCounter.Add(1))
+}
+
+// sanitizeSchemaErr strips the leaking `with 'tool:schema_N#'` prefix
+// the v6 jsonschema library emits at the start of every error so the
+// LLM-facing observation stays focused on the actual violation.
+func sanitizeSchemaErr(msg, toolName string) string {
+	const prefix = "jsonschema validation failed with '"
+	if idx := strings.Index(msg, prefix); idx >= 0 {
+		// Drop everything from the prefix up to the closing quote +
+		// trailing newline. Replace with a clean per-tool header.
+		end := strings.Index(msg[idx+len(prefix):], "'")
+		if end >= 0 {
+			tail := msg[idx+len(prefix)+end+1:]
+			tail = strings.TrimLeft(tail, "\n")
+			return fmt.Sprintf("schema for tool '%s' rejected the args:\n%s", toolName, tail)
+		}
+	}
+	return msg
 }
 
 // --- Built-in tools ---

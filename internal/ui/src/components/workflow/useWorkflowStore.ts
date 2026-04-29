@@ -6,6 +6,15 @@ export interface CostLimits {
   max_daily_usd: number
 }
 
+export interface ParamEntry {
+  name: string
+  type: 'string' | 'number' | 'boolean' | 'enum'
+  description?: string
+  default?: string
+  required?: boolean
+  enum?: string[]
+}
+
 export interface Workflow {
   id: string
   name: string
@@ -13,6 +22,7 @@ export interface Workflow {
   nodes: Node[]
   edges: Edge[]
   cost_limits?: CostLimits | null
+  params_schema?: ParamEntry[]
   created_at: string
   updated_at: string
 }
@@ -49,6 +59,7 @@ interface WorkflowStore {
   setAttachingFrom(af: AttachingFrom | null): void
   updateActiveGraph(nodes: Node[], edges: Edge[], params: Record<string, string>): void
   updateActiveCostLimits(cost_limits: CostLimits | null): void
+  updateActiveParamsSchema(params_schema: ParamEntry[]): void
   activeWorkflow(): Workflow | null
 }
 
@@ -96,6 +107,16 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
     set({
       workflows: workflows.map((w) =>
         w.id === activeId ? { ...w, cost_limits } : w,
+      ),
+    })
+  },
+
+  updateActiveParamsSchema(params_schema) {
+    const { activeId, workflows } = get()
+    if (!activeId) return
+    set({
+      workflows: workflows.map((w) =>
+        w.id === activeId ? { ...w, params_schema } : w,
       ),
     })
   },

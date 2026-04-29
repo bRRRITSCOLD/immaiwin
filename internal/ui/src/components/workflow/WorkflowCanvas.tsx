@@ -30,7 +30,7 @@ import { useWorkflowStore, type Workflow } from './useWorkflowStore'
 import { WorkflowParamsPanel } from './WorkflowParamsPanel'
 import { WorkflowCostLimitsPanel } from './WorkflowCostLimitsPanel'
 import { WorkflowHelpLegend } from './WorkflowHelpLegend'
-import { RunResultsContext, RunStatusContext, AgentRunContext, DebugContext, type RunResults, type AgentIterSummary } from './RunResultsContext'
+import { RunResultsContext, RunStatusContext, AgentRunContext, DebugContext, ToolApprovalContext, type RunResults, type AgentIterSummary } from './RunResultsContext'
 
 const nodeTypes: NodeTypes = {
   trigger: TriggerNode,
@@ -80,6 +80,8 @@ const defaultNodeData: Record<string, Record<string, unknown>> = {
     max_tokens: 4096,
     temperature: 1,
     timeout_seconds: 300,
+    require_approval: false,
+    output_schema: '',
     skills: [],
   },
 }
@@ -231,7 +233,7 @@ function applyEdgeStyle(
 interface Props {
   workflow: Workflow
   onSave(nodes: Node[], edges: Edge[], params: Record<string, string>): void
-  onRun(stopAt?: string, input?: unknown): void
+  onRun(stopAt?: string | string[], input?: unknown): void
   onCancel?: () => void
   onContinue?: () => void
   onClearRun(): void
@@ -248,6 +250,15 @@ interface Props {
   // AgentRunContext so AIAgentNode → AgentTimelinePanel renders without
   // a parallel WS subscription per node.
   agentRuns?: Record<string, AgentIterSummary[]>
+  // Hook function to send an approve_tool decision over the live WS for
+  // a paused tool call. Threaded into ToolApprovalContext so the agent
+  // timeline panel renders Approve/Reject buttons. Null/undefined when
+  // there's no live WS (post-run snapshot view).
+  onApproveTool?: (toolId: string, approved: boolean, reason?: string) => void
+  // Hook function to mirror breakpoint-set changes onto the live WS so
+  // the running executor honours mid-run breakpoint toggles. No-op when
+  // no live WS / not in a debug run.
+  onSetBreakpoints?: (nodeIds: string[]) => void
   // Set when the most-recent run paused (a stopAt-bound tool fired inside
   // an agent's ReAct loop). Truthy flips the Run button into "Continue"
   // mode; the parent passes the run_id back via onRun on the next click.
@@ -301,15 +312,15 @@ interface EdgeMenuState {
   flowY: number
 }
 
-function WorkflowCanvasInner({ workflow, onSave, onRun, onCancel, onContinue, onClearRun, lastRun, runRunning, agentRuns, pausedRunID, hasLivePause, runError }: Props) {
-  const { updateActiveGraph, updateActiveCostLimits, selectedEdgeType, setSelectedEdgeType, attachingFrom, setAttachingFrom } = useWorkflowStore()
+function WorkflowCanvasInner({ workflow, onSave, onRun, onCancel, onContinue, onClearRun, lastRun, runRunning, agentRuns, pausedRunID, hasLivePause, runError, onApproveTool, onSetBreakpoints }: Props) {
+  const { updateActiveGraph, updateActiveCostLimits, updateActiveParamsSchema, selectedEdgeType, setSelectedEdgeType, attachingFrom, setAttachingFrom } = useWorkflowStore()
   const { screenToFlowPosition } = useReactFlow()
   const [nodes, setNodes, onNodesChange] = useNodesState(workflow.nodes)
   const [edges, setEdges, onEdgesChange] = useEdgesState(workflow.edges)
   const [params, setParams] = useState<Record<string, string>>(workflow.params ?? {})
   const reactFlowWrapper = useRef<HTMLDivElement>(null)
   const [debugMode, setDebugMode] = useState(false)
-  const [breakpointId, setBreakpointId] = useState<string | null>(null)
+  const [breakpointIds, setBreakpointIds] = useState<Set<string>>(new Set())
   const [edgeMenu, setEdgeMenu] = useState<EdgeMenuState | null>(null)
   const [wsPreviewOpen, setWSPreviewOpen] = useState(false)
 
@@ -471,10 +482,25 @@ function WorkflowCanvasInner({ workflow, onSave, onRun, onCancel, onContinue, on
 
   const toggleBreakpoint = useCallback(
     (nodeId: string) => {
-      setBreakpointId((prev) => (prev === nodeId ? null : nodeId))
+      setBreakpointIds((prev) => {
+        const next = new Set(prev)
+        if (next.has(nodeId)) next.delete(nodeId)
+        else next.add(nodeId)
+        return next
+      })
     },
     [],
   )
+
+  // Mid-run breakpoint sync: whenever the breakpoint set changes during
+  // a live run, push the new IDs over the WS so the executor honours
+  // toggles without restarting. Skipped when no run is in flight (the
+  // run kickoff already sends the set as part of the initial frame).
+  useEffect(() => {
+    if (!onSetBreakpoints) return
+    if (!runRunning && !pausedRunID && !hasLivePause) return
+    onSetBreakpoints(Array.from(breakpointIds))
+  }, [breakpointIds, runRunning, pausedRunID, hasLivePause, onSetBreakpoints])
 
   function handleSave() {
     updateActiveGraph(nodes, edges, params)
@@ -483,7 +509,7 @@ function WorkflowCanvasInner({ workflow, onSave, onRun, onCancel, onContinue, on
 
   function toggleDebugMode() {
     if (debugMode) {
-      setBreakpointId(null)
+      setBreakpointIds(new Set())
     } else {
       onClearRun() // entering debug mode — stale full-run results would be misleading
     }
@@ -491,14 +517,21 @@ function WorkflowCanvasInner({ workflow, onSave, onRun, onCancel, onContinue, on
   }
 
   return (
-    <DebugContext.Provider value={{ debugMode, breakpointId, toggleBreakpoint }}>
+    <DebugContext.Provider value={{ debugMode, breakpointIds, toggleBreakpoint }}>
     <RunStatusContext.Provider value={{ running: !!runRunning }}>
     <AgentRunContext.Provider value={agentRuns ?? null}>
+    <ToolApprovalContext.Provider value={onApproveTool ?? null}>
     <RunResultsContext.Provider value={lastRun ?? null}>
       <div className="w-full h-full flex flex-col">
       <div ref={reactFlowWrapper} className={`flex-1 relative ${selectedEdgeType ? 'cursor-crosshair' : ''}`}>
         <div className="absolute top-3 left-3 z-10 flex flex-col gap-2">
-          <WorkflowParamsPanel params={params} onChange={setParams} onSave={handleSave} />
+          <WorkflowParamsPanel
+            params={params}
+            onChange={setParams}
+            onSave={handleSave}
+            schema={workflow.params_schema}
+            onSchemaChange={(s) => updateActiveParamsSchema(s)}
+          />
           {/* Cost limits only matter when an AI Agent node exists — caps
               gate LLM token spend, no agent = nothing to gate. Hide the
               panel reactively as the user adds/removes ai_agent nodes so
@@ -521,9 +554,9 @@ function WorkflowCanvasInner({ workflow, onSave, onRun, onCancel, onContinue, on
 
         {debugMode && (
           <div className="absolute top-3 left-1/2 -translate-x-1/2 z-10 text-xs bg-red-900/60 text-red-200 px-3 py-1.5 rounded-md border border-red-700 pointer-events-none">
-            {breakpointId
-              ? 'Breakpoint set — click Run ↓ to run to this node'
-              : 'Click a node to set breakpoint'}
+            {breakpointIds.size === 0
+              ? 'Click a node to set breakpoint'
+              : `${breakpointIds.size} breakpoint${breakpointIds.size === 1 ? '' : 's'} set — click Run ↓ to run; Continue advances to next`}
           </div>
         )}
 
@@ -657,12 +690,13 @@ function WorkflowCanvasInner({ workflow, onSave, onRun, onCancel, onContinue, on
             <button
               onClick={() => {
                 updateActiveGraph(nodes, edges, params)
-                onRun(breakpointId ?? undefined)
+                const ids = Array.from(breakpointIds)
+                onRun(ids.length > 0 ? ids : undefined)
               }}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-green-600 hover:bg-green-700 text-white text-xs font-medium transition-colors"
-              title={breakpointId ? 'Run to breakpoint' : 'Debug run'}
+              title={breakpointIds.size > 0 ? 'Run to first breakpoint' : 'Debug run'}
             >
-              <Play className="h-3.5 w-3.5" /> {breakpointId ? 'Debug ↓' : 'Debug'}
+              <Play className="h-3.5 w-3.5" /> {breakpointIds.size > 0 ? 'Debug ↓' : 'Debug'}
             </button>
           )}
           {!debugMode && !runRunning && !pausedRunID && (
@@ -735,15 +769,16 @@ function WorkflowCanvasInner({ workflow, onSave, onRun, onCancel, onContinue, on
       {wsPreviewOpen && (
         <WSPreviewPanel
           workflowId={workflow.id}
-          onRunWithInput={async (input) => onRun(
-            debugMode && breakpointId ? breakpointId : undefined,
-            input,
-          )}
+          onRunWithInput={async (input) => {
+            const ids = debugMode ? Array.from(breakpointIds) : []
+            onRun(ids.length > 0 ? ids : undefined, input)
+          }}
           onClose={() => setWSPreviewOpen(false)}
         />
       )}
       </div>
     </RunResultsContext.Provider>
+    </ToolApprovalContext.Provider>
     </AgentRunContext.Provider>
     </RunStatusContext.Provider>
     </DebugContext.Provider>

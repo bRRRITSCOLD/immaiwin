@@ -138,9 +138,134 @@ type WorkflowExecutor struct {
 	// fallback is mostly for unit tests + non-streaming code paths.
 	Events EventEmitter
 
+	// ApprovalBroker is the cross-process pub/sub backing for OOB
+	// approvals. Typically a *rediss.Client; both api + worker wire
+	// the same Redis instance so the agent (worker pid) and the
+	// approval HTTP endpoint (api pid) bridge via Redis.
+	ApprovalBroker ApprovalSubscriber
+
+	// Approvals is the registry, lazy-initialised from ApprovalBroker.
+	Approvals     *ApprovalRegistry
+	approvalsOnce sync.Once
+
 	// cursor cache for find/aggregate pagination. Lazy-initialised on first mongo_request use.
 	cursors     *cursorCache
 	cursorsOnce sync.Once
+}
+
+// approvalRegistryFor returns the executor's lazy-initialised approval
+// registry. Centralised so the agent loop and the HTTP handler share
+// the same state without each having to nil-check.
+func (e *WorkflowExecutor) approvalRegistryFor() *ApprovalRegistry {
+	e.approvalsOnce.Do(func() {
+		if e.Approvals == nil && e.ApprovalBroker != nil {
+			e.Approvals = NewApprovalRegistry(e.ApprovalBroker)
+		}
+	})
+	return e.Approvals
+}
+
+// requireNodeApproval reports whether the BFS should halt before
+// executing this node and demand a user verdict. Reads
+// `require_node_approval` so the flag is unambiguous: it's the pre-
+// exec gate for ANY node type. ai_agent has a separate per-tool gate
+// (`require_approval`) that fires inside the ReAct loop — both can be
+// set independently for layered approval (gate before entering the
+// agent + gate every individual tool call).
+func (e *WorkflowExecutor) requireNodeApproval(node Node) bool {
+	if v, ok := node.Data["require_node_approval"].(bool); ok && v {
+		return true
+	}
+	return false
+}
+
+// preExecApproval enforces the pre-exec node-approval gate. Returns
+// (approved, err). Two paths:
+//   - Live UI (continueCh wired): breakpoint-style pause; Continue =
+//     approve, no reject path here (user clicks Cancel to abort).
+//   - OOB (no continueCh): Redis-backed approval channel + persisted
+//     pending_approval state; Approve/Reject from /runs/:id.
+//
+// Returns (true, nil) when approved (or auto-approved because no
+// channel is wired). Returns (false, nil) for explicit rejection.
+// Returns an error only when the gate setup itself failed or ctx
+// cancelled — caller should bubble up.
+//
+// Reused by the BFS pre-exec block AND the agent's tool dispatch
+// (where as_tool target nodes bypass main BFS).
+func (e *WorkflowExecutor) preExecApproval(ctx context.Context, env *runEnv, node Node, input any) (bool, error) {
+	if !e.requireNodeApproval(node) {
+		return true, nil
+	}
+	if env.continueCh != nil {
+		// Live UI path — breakpoint-style pause.
+		env.waitAtBreakpoint(ctx, node)
+		return true, nil
+	}
+	if env.runID != "" && e.RunRepo != nil {
+		decision, err := e.waitNodeApproval(ctx, env, node, input)
+		if err != nil {
+			return false, err
+		}
+		return decision.Approved, nil
+	}
+	// No live UI + no broker → degrade to auto-approve so the run
+	// isn't deadlocked. Cron / event runs hit this on a misconfigured
+	// deploy; the warn surfaces it without breaking flow.
+	slog.Warn("workflow: node approval gate skipped (no continueCh or RunRepo)",
+		"node", node.ID, "type", node.Type)
+	return true, nil
+}
+
+// waitNodeApproval blocks until the OOB approval registry receives a
+// decision for this run, then returns it. Persists `pending_approval`
+// state on the run record so /runs/:id can render the gate.
+// Returns the user's decision or an error when the gate can't be set
+// up (e.g. no broker, no RunRepo). Context cancellation surfaces as a
+// non-nil error AND a zero-value decision.
+func (e *WorkflowExecutor) waitNodeApproval(ctx context.Context, env *runEnv, node Node, input any) (ApprovalDecision, error) {
+	reg := e.approvalRegistryFor()
+	if reg == nil {
+		return ApprovalDecision{}, fmt.Errorf("workflow: pre-node approval requested but ApprovalBroker not configured")
+	}
+	ch := reg.Register(ctx, env.runID)
+	defer reg.Unregister(env.runID)
+
+	name, _ := node.Data["name"].(string)
+	if name == "" {
+		name = string(node.Type) + "_" + node.ID
+	}
+
+	// Persist pending state so the run-detail UI surfaces the gate.
+	if rec, gerr := e.RunRepo.Get(ctx, env.runID); gerr == nil {
+		rec.Status = RunStatusPendingApproval
+		rec.PendingApproval = &PendingApprovalState{
+			Kind:        "node",
+			NodeID:      node.ID,
+			NodeType:    node.Type,
+			NodeName:    name,
+			NodeInput:   input,
+			RequestedAt: time.Now().UTC(),
+		}
+		if uerr := e.RunRepo.Update(ctx, rec); uerr != nil {
+			slog.Warn("workflow: persist pending_approval (node) failed", "run_id", env.runID, "node", node.ID, "err", uerr)
+		}
+	}
+
+	// Block until decision or ctx cancel.
+	select {
+	case <-ctx.Done():
+		return ApprovalDecision{}, fmt.Errorf("workflow: node approval wait cancelled (node %s) — node not executed", node.ID)
+	case decision := <-ch:
+		// Clear pending state regardless of approve/reject so the UI
+		// stops showing the buttons + the run flips back to running.
+		if rec, gerr := e.RunRepo.Get(ctx, env.runID); gerr == nil {
+			rec.Status = RunStatusRunning
+			rec.PendingApproval = nil
+			_ = e.RunRepo.Update(ctx, rec)
+		}
+		return decision, nil
+	}
 }
 
 // cursorCache stores open *mongo.Cursor instances for cursor_fetch ops.
@@ -244,13 +369,18 @@ type runEnv struct {
 	// to the executor's Events field, then to a no-op).
 	events EventEmitter
 
-	// stopAt is the node ID to halt at (debug breakpoint). Empty when no
-	// breakpoint is set. Tool-invoked node handlers (which bypass main
-	// BFS) read this so a breakpoint on an as_tool target stops the run
-	// after the tool finishes — without it, the BFS-side stopAt check
-	// never fires for tool-invoked nodes.
-	stopAt string
-	// stopAtHit is set by a tool handler when it executes the breakpoint
+	// stopAtSet is the set of node IDs that are breakpoints for this
+	// run. Empty/nil = no breakpoints. Tool-invoked node handlers (which
+	// bypass main BFS) read this so a breakpoint on an as_tool target
+	// stops the run after the tool finishes — without it, the BFS-side
+	// breakpoint check never fires for tool-invoked nodes. Use
+	// `env.isBreakpoint(nodeID)` for membership. Guarded by stopAtMu so
+	// the live UI can update the set mid-run via a `set_breakpoints` WS
+	// frame (deselecting a node should let the run skip past it; adding
+	// a node should let the run halt there on its next visit).
+	stopAtSet map[string]bool
+	stopAtMu  sync.RWMutex
+	// stopAtHit is set by a tool handler when it executes a breakpoint
 	// node. The BFS loop checks it after every iteration and short-
 	// circuits the run. Goroutine-safe via the toolSteps mutex (we reuse
 	// it because the handler already takes that lock).
@@ -275,6 +405,59 @@ type runEnv struct {
 	// sends `{type:"continue"}` over the run WS. Nil disables pre-exec
 	// pause (falls back to the post-exec stopAt path).
 	continueCh chan struct{}
+
+	// approveCh receives per-tool-call user decisions for the
+	// `require_approval` gate. Each frame from the live UI
+	// (`{type:"approve_tool", tool_call_id, approved, reason}`) lands here.
+	// Nil disables the gate (require_approval node config becomes a no-op).
+	approveCh chan ApprovalDecision
+
+	// toolNameToNodeID maps the LLM-facing tool name → target node ID for
+	// edge-bound `as_tool` targets. Built during buildAgentToolCatalog.
+	// Used on approval rejection so the canvas can flip the corresponding
+	// node to a red "rejected" badge instead of leaving it as
+	// "not executed". Skill tools / built-ins aren't in this map (no
+	// canvas node behind them) — those just stay invisible on rejection.
+	toolNameToNodeID map[string]string
+}
+
+// ApprovalDecision is the user's per-tool-call verdict for the
+// require_approval gate. Routed from the live WS handler into
+// runEnv.approveCh; the agent loop matches it by ToolCallID before
+// firing or short-circuiting the tool dispatch.
+type ApprovalDecision struct {
+	ToolCallID string `json:"tool_call_id"`
+	Approved   bool   `json:"approved"`
+	Reason     string `json:"reason,omitempty"`
+}
+
+// isBreakpoint reports whether the given node ID is one of this run's
+// configured breakpoints. Centralised so callers don't have to nil-
+// check the map themselves on every BFS step. Read-locks stopAtMu so
+// concurrent `SetBreakpoints` mutations from the WS reader goroutine
+// are race-free.
+func (env *runEnv) isBreakpoint(nodeID string) bool {
+	env.stopAtMu.RLock()
+	defer env.stopAtMu.RUnlock()
+	if len(env.stopAtSet) == 0 {
+		return false
+	}
+	return env.stopAtSet[nodeID]
+}
+
+// SetBreakpoints replaces the run's breakpoint set with the given IDs.
+// Safe to call from any goroutine (typically the WS handler's reader).
+// Empty list clears all breakpoints.
+func (env *runEnv) SetBreakpoints(ids []string) {
+	next := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		if id != "" {
+			next[id] = true
+		}
+	}
+	env.stopAtMu.Lock()
+	env.stopAtSet = next
+	env.stopAtMu.Unlock()
 }
 
 // waitAtBreakpoint blocks until the live UI sends a continue frame OR
@@ -346,21 +529,38 @@ type adjEntry struct {
 // for_each nodes iterate input arrays; their "item" edge targets are run
 // once per element (not by the main BFS).
 // If stopAt is non-empty, execution halts after the node with that ID executes,
-// returning partial results (useful for debug/breakpoint runs).
+// returning partial results (useful for debug/breakpoint runs). Multiple
+// breakpoints are supported via RunResumable + RunOpts.StopAtIDs.
 // Optional initialInput is injected as trigger node output (used by event-driven triggers like RabbitMQ).
 //
 // Events are emitted to e.Events (or a no-op when nil). Use RunWithEvents
 // when callers need to attach a per-invocation emitter (WS handler, tests).
 func (e *WorkflowExecutor) Run(ctx context.Context, wf Workflow, stopAt string, initialInput ...any) ([]StepResult, error) {
-	return e.RunWithEvents(ctx, wf, stopAt, e.Events, initialInput...)
+	var ids []string
+	if stopAt != "" {
+		ids = []string{stopAt}
+	}
+	return e.RunWithEvents(ctx, wf, ids, e.Events, initialInput...)
 }
 
 // RunOpts collects per-invocation knobs for RunResumable. Reserved for the
 // resumable + emitter combo so callers don't trigger Run signature growth.
 type RunOpts struct {
-	StopAt      string
+	// StopAt is the legacy single-breakpoint field. Prefer StopAtIDs;
+	// kept for callers that haven't migrated. When both are set the
+	// union is used.
+	StopAt string
+	// StopAtIDs is the multi-breakpoint set. Run halts at the first
+	// node whose ID matches AND, on continue, halts again at the next
+	// match. Empty = no breakpoints.
+	StopAtIDs   []string
 	Input       any
 	ResumeRunID string // when set, resumes a paused WorkflowRun
+	// PreallocRunID seeds the WorkflowRun record's ID instead of
+	// letting RunResumable mint a fresh ULID. Used by async dispatch
+	// callers (webhook handler) that need to return the run ID to the
+	// client BEFORE the run finishes. Ignored when ResumeRunID is set.
+	PreallocRunID string
 	Emitter     EventEmitter
 	// ContinueCh receives a tick when the live UI client sends a
 	// `{type:"continue"}` frame over the run WS. Used by the pre-exec
@@ -369,6 +569,16 @@ type RunOpts struct {
 	// re-launches the run from a saved snapshot. Nil disables pre-exec
 	// pause: the breakpoint then falls back to post-exec semantics.
 	ContinueCh chan struct{}
+	// ApproveCh routes per-tool-call user verdicts from the live UI
+	// (`{type:"approve_tool"}`) into the agent's require_approval gate.
+	// Nil disables the gate.
+	ApproveCh chan ApprovalDecision
+	// BreakpointsCh receives live updates to the run's breakpoint set
+	// from the UI (`{type:"set_breakpoints", node_ids: [...]}`). The run
+	// applies each update via runEnv.SetBreakpoints; deselecting a node
+	// then lets the run skip past it. Nil disables live updates — the
+	// breakpoint set stays whatever was passed at run start.
+	BreakpointsCh chan []string
 }
 
 // RunOutcome reports the final state of a Resumable run plus the WorkflowRun
@@ -390,7 +600,9 @@ type resumeBundle struct {
 	runID         string
 	agent         *AgentPauseState
 	completedIDs  map[string]bool
-	continueCh    chan struct{} // for pre-exec breakpoint pause; nil disables
+	continueCh    chan struct{}          // for pre-exec breakpoint pause; nil disables
+	approveCh     chan ApprovalDecision // for require_approval gate; nil disables
+	breakpointsCh chan []string          // for live breakpoint updates; nil disables
 }
 
 // RunResumable executes a workflow with optional mid-run resume. When
@@ -404,7 +616,7 @@ type resumeBundle struct {
 // also returns the freshly-minted run ID and final status — handy for
 // the UI to track "is this run paused or done?" without a follow-up GET.
 func (e *WorkflowExecutor) RunResumable(ctx context.Context, wf Workflow, opts RunOpts) (RunOutcome, error) {
-	bundle := &resumeBundle{continueCh: opts.ContinueCh}
+	bundle := &resumeBundle{continueCh: opts.ContinueCh, approveCh: opts.ApproveCh, breakpointsCh: opts.BreakpointsCh}
 
 	// Resume path: hydrate from existing run record.
 	if opts.ResumeRunID != "" {
@@ -478,8 +690,12 @@ func (e *WorkflowExecutor) RunResumable(ctx context.Context, wf Workflow, opts R
 	// document to update. RunRepo is optional — when not configured we
 	// run without persistence, same behaviour as the old Run().
 	if bundle.runID == "" && e.RunRepo != nil {
+		id := opts.PreallocRunID
+		if id == "" {
+			id = ulid.Make().String()
+		}
 		runRec := WorkflowRun{
-			ID:         ulid.Make().String(),
+			ID:         id,
 			WorkflowID: wf.ID,
 			TenantID:   "default",
 			StartedAt:  time.Now().UTC(),
@@ -501,12 +717,19 @@ func (e *WorkflowExecutor) RunResumable(ctx context.Context, wf Workflow, opts R
 		emitter = e.Events
 	}
 
+	// Merge legacy single StopAt with the multi StopAtIDs list. Either
+	// or both is fine — duplicates collapse via the env.stopAtSet map.
+	stopIDs := opts.StopAtIDs
+	if opts.StopAt != "" {
+		stopIDs = append(stopIDs, opts.StopAt)
+	}
+
 	var steps []StepResult
 	var err error
 	if opts.Input != nil {
-		steps, err = e.RunWithEvents(ctx, wf, opts.StopAt, emitter, opts.Input)
+		steps, err = e.RunWithEvents(ctx, wf, stopIDs, emitter, opts.Input)
 	} else {
-		steps, err = e.RunWithEvents(ctx, wf, opts.StopAt, emitter)
+		steps, err = e.RunWithEvents(ctx, wf, stopIDs, emitter)
 	}
 	// Persist final state. The agent loop already wrote PausedAgent + status
 	// when stopAtHit fired, so we don't clobber a paused record here.
@@ -553,7 +776,7 @@ func (e *WorkflowExecutor) RunResumable(ctx context.Context, wf Workflow, opts R
 
 // RunWithEvents is Run with an explicit per-invocation EventEmitter. Pass
 // nil to disable streaming (still records traces via RunRepo as before).
-func (e *WorkflowExecutor) RunWithEvents(ctx context.Context, wf Workflow, stopAt string, emitter EventEmitter, initialInput ...any) ([]StepResult, error) {
+func (e *WorkflowExecutor) RunWithEvents(ctx context.Context, wf Workflow, stopAtIDs []string, emitter EventEmitter, initialInput ...any) ([]StepResult, error) {
 	byID := make(map[string]Node, len(wf.Nodes))
 	for _, n := range wf.Nodes {
 		byID[n.ID] = n
@@ -610,6 +833,13 @@ func (e *WorkflowExecutor) RunWithEvents(ctx context.Context, wf Workflow, stopA
 		emitter = noopEmitter{}
 	}
 
+	stopAtSet := make(map[string]bool, len(stopAtIDs))
+	for _, id := range stopAtIDs {
+		if id != "" {
+			stopAtSet[id] = true
+		}
+	}
+
 	env := &runEnv{
 		wf:        &wf,
 		byID:      byID,
@@ -617,7 +847,7 @@ func (e *WorkflowExecutor) RunWithEvents(ctx context.Context, wf Workflow, stopA
 		tenantID:  "default",
 		toolSteps: &toolStepCollector{},
 		events:    emitter,
-		stopAt:    stopAt,
+		stopAtSet: stopAtSet,
 	}
 	// Resume hydration: when called via RunResumable a bundle is stashed in
 	// ctx with the previous run's ID, paused agent state, and the set of
@@ -628,9 +858,29 @@ func (e *WorkflowExecutor) RunWithEvents(ctx context.Context, wf Workflow, stopA
 		env.resumeRunID = rb.runID
 		env.runID = rb.runID
 		env.continueCh = rb.continueCh
+		env.approveCh = rb.approveCh
 		env.completedNodeIDs = rb.completedIDs
 		for id := range rb.completedIDs {
 			visited[id] = true
+		}
+		// Live-breakpoint forwarder: when the WS handler wired a
+		// breakpointsCh, spawn a goroutine that mirrors each new ID list
+		// onto the run's stopAtSet. Lets the user add or remove
+		// breakpoints mid-run; the next BFS step picks up the change.
+		if rb.breakpointsCh != nil {
+			go func(ch chan []string) {
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					case ids, ok := <-ch:
+						if !ok {
+							return
+						}
+						env.SetBreakpoints(ids)
+					}
+				}
+			}(rb.breakpointsCh)
 		}
 	}
 	ctx = context.WithValue(ctx, runEnvKey, env)
@@ -654,11 +904,49 @@ func (e *WorkflowExecutor) RunWithEvents(ctx context.Context, wf Workflow, stopA
 			extraResults []StepResult
 		)
 
-		// Pre-exec breakpoint: when a stopAt node is about to run, hold
-		// here until the live UI sends a continue frame. Skipped when no
-		// continueCh is wired (then post-exec stopAt path takes over).
-		if env.stopAt != "" && node.ID == env.stopAt && env.continueCh != nil {
+		// Pre-exec breakpoint: when a node is about to run AND it's in
+		// the breakpoint set, hold here until the live UI sends a
+		// continue frame. Skipped when no continueCh is wired (then the
+		// post-exec stopAt path takes over).
+		if env.isBreakpoint(node.ID) && env.continueCh != nil {
 			env.waitAtBreakpoint(ctx, node)
+		}
+
+		// Pre-exec approval gate. Routes through preExecApproval which
+		// picks live-UI (continueCh) vs OOB (Redis) automatically.
+		if e.requireNodeApproval(node) {
+			approved, gateErr := e.preExecApproval(ctx, env, node, item.input)
+			if gateErr != nil {
+				return results, gateErr
+			}
+			if !approved {
+				rejErr := "rejected by user"
+				emitter.Emit(stampNow(RunEvent{
+					Type:     EventStepStart,
+					NodeID:   node.ID,
+					NodeType: node.Type,
+				}))
+				emitter.Emit(stampNow(RunEvent{
+					Type:     EventStepDone,
+					NodeID:   node.ID,
+					NodeType: node.Type,
+					Error:    rejErr,
+					IsError:  true,
+				}))
+				results = append(results, StepResult{
+					NodeID:   node.ID,
+					NodeType: node.Type,
+					Error:    rejErr,
+				})
+				for _, et := range adj[item.nodeID] {
+					if et.sourceHandle == "error" {
+						if !visited[et.targetID] {
+							queue = append(queue, queueItem{nodeID: et.targetID, input: item.input})
+						}
+					}
+				}
+				continue
+			}
 		}
 
 		emitter.Emit(stampNow(RunEvent{
@@ -668,7 +956,7 @@ func (e *WorkflowExecutor) RunWithEvents(ctx context.Context, wf Workflow, stopA
 		}))
 
 		if node.Type == NodeTypeForEach {
-			output, extraResults, err = e.runForEach(ctx, node, item.input, adj, byID, wfCtx, params, stopAt)
+			output, extraResults, err = e.runForEach(ctx, node, item.input, adj, byID, wfCtx, params)
 			results = append(results, extraResults...)
 		} else {
 			output, err = e.runNode(ctx, node, item.input, wfCtx, params)
@@ -706,7 +994,15 @@ func (e *WorkflowExecutor) RunWithEvents(ctx context.Context, wf Workflow, stopA
 		}
 		emitter.Emit(stampNow(stepDone))
 
-		if stopAt != "" && node.ID == stopAt {
+		// Post-exec breakpoint fallback. Only fires when no continueCh
+		// is wired (i.e. the caller didn't enable pre-exec pausing).
+		// With continueCh, the pre-exec waitAtBreakpoint already held
+		// the BFS before this node ran; firing the post-exec halt
+		// AGAIN after continue would emit a spurious run_done(paused)
+		// after the run actually finished, which sticks the UI's
+		// `pausedRunID` and makes the Continue button persist with no
+		// real run to resume. ("workflow run X is not paused" error.)
+		if env.isBreakpoint(node.ID) && env.continueCh == nil {
 			results = append(results, env.toolSteps.drain()...)
 			emitter.Emit(stampNow(RunEvent{Type: EventRunDone, Status: "paused", RunID: env.runID}))
 			return results, nil
@@ -785,7 +1081,6 @@ func (e *WorkflowExecutor) runForEach(
 	byID map[string]Node,
 	wfCtx runCtx,
 	params map[string]string,
-	stopAt string,
 ) (any, []StepResult, error) {
 	items := toSlice(input)
 
@@ -814,7 +1109,7 @@ func (e *WorkflowExecutor) runForEach(
 		}
 
 		for _, startID := range itemTargetIDs {
-			chainResults, lastOut := e.runBodyChain(ctx, startID, item, adj, byID, iterCtx, params, stopAt)
+			chainResults, lastOut := e.runBodyChain(ctx, startID, item, adj, byID, iterCtx, params)
 			allResults = append(allResults, chainResults...)
 			if len(chainResults) > 0 && chainResults[len(chainResults)-1].Error == "" {
 				outputs = append(outputs, lastOut)
@@ -835,8 +1130,8 @@ func (e *WorkflowExecutor) runBodyChain(
 	byID map[string]Node,
 	wfCtx runCtx,
 	params map[string]string,
-	stopAt string,
 ) ([]StepResult, any) {
+	env, _ := envFromCtx(ctx)
 	var results []StepResult
 	currentID := startID
 	currentInput := input
@@ -868,7 +1163,7 @@ func (e *WorkflowExecutor) runBodyChain(
 			slog.Warn("for_each body: node error", "node", node.ID, "err", err)
 		}
 		results = append(results, sr)
-		if stopAt != "" && node.ID == stopAt {
+		if env != nil && env.isBreakpoint(node.ID) {
 			return results, output
 		}
 		currentInput = output

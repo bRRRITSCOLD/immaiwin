@@ -1,4 +1,4 @@
-import { NodeResizer, type NodeProps, useReactFlow } from '@xyflow/react'
+import { NodeResizer, type NodeProps, useReactFlow, useNodes } from '@xyflow/react'
 import { Bot, Wrench, HelpCircle } from 'lucide-react'
 import { useContext, useState } from 'react'
 import { Textarea } from '~/components/ui/textarea'
@@ -6,11 +6,12 @@ import { Input } from '~/components/ui/input'
 import { NumberField } from '~/components/ui/number-field'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '~/components/ui/select'
 import { Tooltip, TooltipTrigger, TooltipContent } from '~/components/ui/tooltip'
+import { Switch } from '~/components/ui/switch'
 import { StepNameInput } from './StepNameInput'
 import { DynamicHandles } from './DynamicHandles'
 import { SkillsPanel } from './SkillsPanel'
 import { AgentTimelinePanel } from './AgentTimelinePanel'
-import { NodeDebugPanel, BreakpointMarker, AgentRunContext } from '../RunResultsContext'
+import { NodeDebugPanel, BreakpointMarker, ApprovalMarker, AgentRunContext } from '../RunResultsContext'
 import { useWorkflowStore } from '../useWorkflowStore'
 
 const LLM_TYPES = ['anthropic', 'openai', 'ollama'] as const
@@ -31,10 +32,24 @@ export function AIAgentNode({ id, data, selected }: NodeProps) {
   const maxTokens = (data?.max_tokens as number) ?? 4096
   const temperature = (data?.temperature as number) ?? 1
   const timeoutSec = (data?.timeout_seconds as number) ?? 300
+  const requireApproval = (data?.require_approval as boolean) ?? false
+  const requireNodeApproval = (data?.require_node_approval as boolean) ?? false
+  const outputSchema = (data?.output_schema as string) ?? ''
+
+  // Trigger awareness — surfaced in tooltip copy. Both manual and
+  // non-manual triggers now route through the approval gate: manual
+  // uses the live WS approveCh, non-manual uses out-of-band approval
+  // (run lands in `pending_approval`, user clicks Approve/Reject from
+  // /runs/:id). So the toggle is always live.
+  const allNodes = useNodes()
+  const triggerNode = allNodes.find((n) => n.type === 'trigger')
+  const triggerType = ((triggerNode?.data as Record<string, unknown> | undefined)?.['trigger_type'] as string) ?? 'manual'
+  const isManualTrigger = triggerType === 'manual'
 
   return (
     <div className="relative min-w-[320px] h-full">
       <BreakpointMarker id={id} />
+      <ApprovalMarker id={id} enabled={requireNodeApproval} onToggle={(_, next) => updateNodeData(id, { require_node_approval: next })} />
       <div className="overflow-x-hidden rounded-lg border-2 border-purple-400 bg-card text-card-foreground shadow-sm h-full">
         <NodeResizer minWidth={320} minHeight={120} isVisible={selected} />
         <div className="flex items-center gap-2 px-4 py-2.5 border-b border-purple-400/40">
@@ -185,6 +200,81 @@ export function AIAgentNode({ id, data, selected }: NodeProps) {
                     onChange={(v) => updateNodeData(id, { timeout_seconds: v })}
                   />
                 </div>
+              </div>
+
+              {/* Output schema — when non-empty, agent must deliver via
+                  submit_final_answer tool whose input_schema = this. Pairs
+                  with eval json_path_eq for guaranteed-shape outputs. */}
+              <div>
+                <div className="flex items-center gap-1">
+                  <p className="text-[10px] text-muted-foreground">Output schema (JSON Schema)</p>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        type="button"
+                        className="nodrag text-muted-foreground hover:text-foreground"
+                        aria-label="Output schema help"
+                      >
+                        <HelpCircle className="h-3 w-3" />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent side="top" className="max-w-[300px] text-[11px] leading-snug">
+                      <p className="font-medium mb-1">Force structured output.</p>
+                      <p>When set, a synthetic <code>submit_final_answer</code> tool with this schema is appended to the agent's catalog. The model is instructed to call it instead of returning free text. Args are validated, then become this agent's <code>output</code>.</p>
+                      <p className="mt-1">Empty = free-text output (current default).</p>
+                      <p className="mt-1">Pairs naturally with eval <code>json_path_eq</code> assertions.</p>
+                    </TooltipContent>
+                  </Tooltip>
+                </div>
+                <Textarea
+                  className="nodrag text-xs min-h-[60px] resize-y font-mono"
+                  rows={4}
+                  placeholder='{"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"]}'
+                  value={outputSchema}
+                  onChange={(e) => updateNodeData(id, { output_schema: e.target.value })}
+                />
+              </div>
+
+              {/* Require approval toggle — gates each tool call on a
+                  human verdict. Manual trigger: live WS approve/reject
+                  buttons on the agent timeline. Non-manual trigger:
+                  run lands in `pending_approval`; resolver acts via
+                  /runs/:id (Stage 1) or, eventually, an emailed/Slack
+                  link (Stage 2 backlog). Either way: deadlock-free. */}
+              <div className="flex items-center justify-between gap-2 pt-1">
+                <div className="flex items-center gap-1">
+                  <p className="text-[10px] text-muted-foreground">
+                    Require approval per tool call
+                  </p>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        type="button"
+                        className="nodrag text-muted-foreground hover:text-foreground"
+                        aria-label="Require approval help"
+                      >
+                        <HelpCircle className="h-3 w-3" />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent side="top" className="max-w-[300px] text-[11px] leading-snug">
+                      <p className="font-medium mb-1">Human-in-the-loop tool gate.</p>
+                      <p>When on, the agent pauses before each tool call and waits for an Approve / Reject decision.</p>
+                      <p className="mt-1">Rejections feed the model an error observation so it can react in the next iter. Off = tools fire immediately.</p>
+                      {isManualTrigger ? (
+                        <p className="mt-1 text-muted-foreground/80">Manual trigger: decision via the live agent timeline buttons.</p>
+                      ) : (
+                        <p className="mt-1 text-muted-foreground/80">
+                          Non-manual trigger ("<code>{triggerType}</code>"): run lands in <code>pending_approval</code>; resolve via /runs/:id Approve/Reject.
+                        </p>
+                      )}
+                    </TooltipContent>
+                  </Tooltip>
+                </div>
+                <Switch
+                  className="nodrag"
+                  checked={requireApproval}
+                  onCheckedChange={(v) => updateNodeData(id, { require_approval: v })}
+                />
               </div>
             </div>
           )}

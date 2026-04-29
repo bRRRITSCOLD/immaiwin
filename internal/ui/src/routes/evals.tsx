@@ -334,6 +334,7 @@ function EvalsPage() {
           <Link to="/workflows" className="text-muted-foreground hover:text-foreground transition-colors">Workflows</Link>
           <Link to="/runs" className="text-muted-foreground hover:text-foreground transition-colors">Runs</Link>
           <Link to="/evals" className="text-foreground font-medium">Evals</Link>
+          <Link to="/skills" className="text-muted-foreground hover:text-foreground transition-colors">Skills</Link>
         </nav>
       </header>
 

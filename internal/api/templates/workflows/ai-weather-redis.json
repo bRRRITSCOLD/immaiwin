@@ -1,0 +1,115 @@
+{
+  "name": "AI Weather Agent → Redis",
+  "description": "Manual-trigger AI agent that fetches weather via HTTP, formats it via the weather-formatter skill, and publishes the summary to a Redis channel. Demonstrates: as_tool nodes, skills, multi-step ReAct loop.",
+  "category": "AI",
+  "workflow": {
+    "name": "AI Weather Agent → Redis",
+    "params": {
+      "city": "San Francisco",
+      "redis_channel": "weather.alerts",
+      "weather_format": "%l:+%C,+%t,+humidity+%h,+wind+%w",
+      "weather_style": "friendly"
+    },
+    "nodes": [
+      {
+        "id": "trigger-1",
+        "type": "trigger",
+        "position": { "x": -200, "y": 0 },
+        "data": {
+          "name": "manual_start",
+          "trigger_type": "manual",
+          "handles": [
+            { "id": "start-out", "side": "right", "offset": 50, "paletteType": "start" }
+          ]
+        }
+      },
+      {
+        "id": "agent-1",
+        "type": "ai_agent",
+        "position": { "x": 200, "y": 0 },
+        "data": {
+          "name": "weather_agent",
+          "llm_connection_id": "REPLACE_WITH_LLM_CONNECTION_ID",
+          "max_iterations": 6,
+          "max_tokens": 1024,
+          "max_tool_calls_per_iter": 2,
+          "temperature": 0.2,
+          "timeout_seconds": 120,
+          "system_prompt": "You are a weather-reporting agent. Procedure:\n1. Call get_weather(city) to fetch current text weather.\n2. Call weather_formatter__format_weather({city, raw}) where raw is the get_weather output.\n3. Call publish_weather({city, summary, temp_f, formatted_by:'weather-formatter'}) where summary is the message field from step 2.\n4. Reply with a short confirmation.",
+          "user_input": "Fetch, format, and publish the current weather for {{params.city}}.",
+          "skills": [{ "slug_id": "weather-formatter", "range": "^0.1.0" }],
+          "skill_config": { "weather-formatter": { "default_style": "{{params.weather_style}}", "temp_unit": "F" } },
+          "handles": [
+            { "id": "tool", "side": "right", "offset": 25, "paletteType": "tool" },
+            { "id": "in-left", "side": "left", "offset": 50, "paletteType": "receive" }
+          ]
+        }
+      },
+      {
+        "id": "http-1",
+        "type": "http_request",
+        "position": { "x": 700, "y": -100 },
+        "data": {
+          "name": "get_weather",
+          "method": "GET",
+          "url": "https://wttr.in/{{input.city}}?format={{params.weather_format}}&u",
+          "headers": { "Accept": "text/plain" },
+          "follow_redirects": true,
+          "max_redirects": 10,
+          "max_response_bytes": 1048576,
+          "timeout_seconds": 20,
+          "user_agent": "immaiwin-agent/1.0",
+          "parse_json": false,
+          "as_tool": {
+            "enabled": true,
+            "name": "get_weather",
+            "description": "Fetch current weather for a city.",
+            "input_schema": {
+              "type": "object",
+              "properties": { "city": { "type": "string" } },
+              "required": ["city"]
+            }
+          },
+          "handles": [
+            { "id": "success", "side": "right", "offset": 35, "paletteType": "success" },
+            { "id": "in-left", "side": "left", "offset": 50, "paletteType": "receive" }
+          ]
+        }
+      },
+      {
+        "id": "redis-1",
+        "type": "redis_request",
+        "position": { "x": 700, "y": 200 },
+        "data": {
+          "name": "publish_weather",
+          "operation": "publish",
+          "channel": "{{params.redis_channel}}",
+          "as_tool": {
+            "enabled": true,
+            "name": "publish_weather",
+            "description": "Publish a weather summary to the Redis channel.",
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "city": { "type": "string" },
+                "summary": { "type": "string" },
+                "temp_f": { "type": "number" },
+                "formatted_by": { "type": "string" }
+              },
+              "required": ["city", "summary", "formatted_by"]
+            }
+          },
+          "handles": [
+            { "id": "success", "side": "right", "offset": 35, "paletteType": "success" },
+            { "id": "in-left", "side": "left", "offset": 50, "paletteType": "receive" }
+          ]
+        }
+      }
+    ],
+    "edges": [
+      { "id": "e1", "source": "trigger-1", "target": "agent-1", "sourceHandle": "start-out", "data": { "paletteType": "start" } },
+      { "id": "e2", "source": "agent-1", "target": "http-1", "sourceHandle": "tool", "data": { "paletteType": "tool" } },
+      { "id": "e3", "source": "agent-1", "target": "redis-1", "sourceHandle": "tool", "data": { "paletteType": "tool" } }
+    ]
+  }
+}

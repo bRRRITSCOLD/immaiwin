@@ -83,8 +83,26 @@ type Workflow struct {
 	// llm_call inside the agent loop (per-run + daily). Breaches stop
 	// the run with status=error and error="cost_exceeded: <axis>".
 	CostLimits *CostLimits `bson:"cost_limits,omitempty" json:"cost_limits,omitempty"`
-	CreatedAt  time.Time   `bson:"created_at"    json:"created_at"`
-	UpdatedAt  time.Time   `bson:"updated_at"    json:"updated_at"`
+	// ParamsSchema is the optional typed declaration for Params. When
+	// set, the UI renders typed inputs (select for enum, NumberField,
+	// Switch, etc.) and the API validates Params on save. Empty falls
+	// back to the legacy untyped key/value editor — fully back-compat.
+	ParamsSchema []ParamEntry `bson:"params_schema,omitempty" json:"params_schema,omitempty"`
+	CreatedAt    time.Time    `bson:"created_at"    json:"created_at"`
+	UpdatedAt    time.Time    `bson:"updated_at"    json:"updated_at"`
+}
+
+// ParamEntry is the typed declaration for one workflow Params key.
+// Mirrors the skill manifest's `config[]` shape so author UX stays
+// consistent across skill-author and workflow-author surfaces; kept as
+// its own type to avoid cross-package import for a frozen subset.
+type ParamEntry struct {
+	Name        string   `bson:"name"                  json:"name"`
+	Type        string   `bson:"type"                  json:"type"` // "string" | "number" | "boolean" | "enum"
+	Description string   `bson:"description,omitempty" json:"description,omitempty"`
+	Default     string   `bson:"default,omitempty"     json:"default,omitempty"`
+	Required    bool     `bson:"required,omitempty"    json:"required,omitempty"`
+	Enum        []string `bson:"enum,omitempty"        json:"enum,omitempty"`
 }
 
 // CostLimits is the per-workflow cap config.

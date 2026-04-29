@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/workflow"
@@ -51,8 +52,73 @@ func UpsertWorkflow(store WorkflowStore) gin.HandlerFunc {
 		}
 		wf.ID = id
 
+		// Validate ParamsSchema (typed Params declaration) when set:
+		// every entry must have a name + a recognised type, enum types
+		// must declare at least one option, required entries must have
+		// a non-empty value in Params (default counts when explicit
+		// value missing). Empty schema = legacy free-form Params, no
+		// validation.
+		if len(wf.ParamsSchema) > 0 {
+			validTypes := map[string]bool{"string": true, "number": true, "boolean": true, "enum": true}
+			seen := map[string]bool{}
+			for i, p := range wf.ParamsSchema {
+				if p.Name == "" {
+					c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("params_schema[%d]: name required", i)})
+					return
+				}
+				if seen[p.Name] {
+					c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("params_schema: duplicate name %q", p.Name)})
+					return
+				}
+				seen[p.Name] = true
+				if !validTypes[p.Type] {
+					c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("params_schema[%s]: type must be one of string|number|boolean|enum", p.Name)})
+					return
+				}
+				if p.Type == "enum" && len(p.Enum) == 0 {
+					c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("params_schema[%s]: enum requires at least one option", p.Name)})
+					return
+				}
+				if p.Required {
+					val, has := wf.Params[p.Name]
+					if !has || val == "" {
+						if p.Default == "" {
+							c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("params[%s] is required by params_schema but missing", p.Name)})
+							return
+						}
+						// Backfill default so downstream nodes don't trip on
+						// the missing key.
+						if wf.Params == nil {
+							wf.Params = map[string]string{}
+						}
+						wf.Params[p.Name] = p.Default
+					}
+				}
+				// Enum value enforcement — if Params has the key, value must
+				// be one of the declared options.
+				if p.Type == "enum" {
+					if val, has := wf.Params[p.Name]; has && val != "" {
+						match := false
+						for _, opt := range p.Enum {
+							if val == opt {
+								match = true
+								break
+							}
+						}
+						if !match {
+							c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("params[%s]=%q not in enum %v", p.Name, val, p.Enum)})
+							return
+						}
+					}
+				}
+			}
+		}
+
 		// Validate cron expressions on trigger nodes w/ trigger_type=cron
-		cronParser := cronlib.NewParser(cronlib.Minute | cronlib.Hour | cronlib.Dom | cronlib.Month | cronlib.Dow)
+		// 6-field parser w/ optional seconds — must mirror the worker's
+		// scheduler bits or expressions valid here would still reject at
+		// schedule-time. `*/5 * * * * *` (every 5s) becomes valid.
+		cronParser := cronlib.NewParser(cronlib.SecondOptional | cronlib.Minute | cronlib.Hour | cronlib.Dom | cronlib.Month | cronlib.Dow)
 		for _, n := range wf.Nodes {
 			if n.Type != workflow.NodeTypeTrigger {
 				continue

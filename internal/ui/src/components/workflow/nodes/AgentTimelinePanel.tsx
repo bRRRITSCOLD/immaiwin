@@ -1,6 +1,7 @@
 import { useContext, useState } from 'react'
-import { ChevronDown, ChevronRight } from 'lucide-react'
-import { AgentRunContext } from '../RunResultsContext'
+import { ChevronDown, ChevronRight, Check, X } from 'lucide-react'
+import { Button } from '~/components/ui/button'
+import { AgentRunContext, ToolApprovalContext } from '../RunResultsContext'
 
 /**
  * AgentTimelinePanel renders the per-iteration ReAct breakdown for a single
@@ -21,6 +22,7 @@ import { AgentRunContext } from '../RunResultsContext'
  */
 export function AgentTimelinePanel({ id }: { id: string }) {
   const ctx = useContext(AgentRunContext)
+  const approveTool = useContext(ToolApprovalContext)
   const iters = ctx?.[id] ?? []
   const [expanded, setExpanded] = useState<Record<number, boolean>>({})
 
@@ -52,6 +54,11 @@ export function AgentTimelinePanel({ id }: { id: string }) {
                   <ChevronRight className="h-3 w-3 shrink-0" />
                 )}
                 <span className="font-medium text-foreground">iter {iter.iter}</span>
+                {iter.llm?.model && (
+                  <span className="text-muted-foreground" title={iter.llm.provider ? `${iter.llm.provider} provider` : undefined}>
+                    · {iter.llm.provider ? `${iter.llm.provider}/` : ''}{iter.llm.model}
+                  </span>
+                )}
                 {(inTok > 0 || outTok > 0) && (
                   <span className="text-muted-foreground">
                     · {inTok} in / {outTok} out
@@ -68,17 +75,24 @@ export function AgentTimelinePanel({ id }: { id: string }) {
               </button>
               {open && (
                 <div className="px-2 pb-1.5 space-y-1 text-[10px]">
-                  {iter.llm?.text && (
+                  {iter.llm?.text ? (
                     <div>
                       <p className="text-muted-foreground/70 italic">llm</p>
                       <p className="text-foreground whitespace-pre-wrap break-words">{iter.llm.text}</p>
                     </div>
-                  )}
+                  ) : iter.llm && iter.toolCalls.length > 0 ? (
+                    <div>
+                      <p className="text-muted-foreground/70 italic">llm</p>
+                      <p className="text-muted-foreground/60 italic">(no narration — model went straight to tool call)</p>
+                    </div>
+                  ) : null}
                   {iter.toolCalls.map((tc) => (
                     <div
                       key={tc.toolId}
                       className={`rounded border px-1.5 py-1 ${
-                        tc.isError
+                        tc.pendingApproval
+                          ? 'border-amber-500/40 bg-amber-500/5'
+                          : tc.isError
                           ? 'border-red-500/30 bg-red-500/5'
                           : tc.result === undefined
                           ? 'border-blue-500/30 bg-blue-500/5'
@@ -93,7 +107,35 @@ export function AgentTimelinePanel({ id }: { id: string }) {
                           args: {JSON.stringify(tc.args)}
                         </p>
                       )}
-                      {tc.result === undefined ? (
+                      {tc.pendingApproval ? (
+                        <div className="mt-1 flex items-center gap-1">
+                          <p className="text-[9px] italic text-amber-500 mr-1">awaiting approval…</p>
+                          {approveTool && (
+                            <>
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="default"
+                                className="nodrag h-5 px-2 text-[10px] bg-green-700 hover:bg-green-600"
+                                onClick={() => approveTool(tc.toolId, true)}
+                              >
+                                <Check className="h-3 w-3 mr-0.5" />
+                                Approve
+                              </Button>
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="destructive"
+                                className="nodrag h-5 px-2 text-[10px]"
+                                onClick={() => approveTool(tc.toolId, false)}
+                              >
+                                <X className="h-3 w-3 mr-0.5" />
+                                Reject
+                              </Button>
+                            </>
+                          )}
+                        </div>
+                      ) : tc.result === undefined ? (
                         <p className="text-[9px] italic text-blue-400">running…</p>
                       ) : (
                         <p className="font-mono text-[9px] text-muted-foreground break-all whitespace-pre-wrap">

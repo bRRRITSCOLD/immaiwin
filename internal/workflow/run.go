@@ -29,6 +29,34 @@ type WorkflowRun struct {
 	// state here lets the next Run resume mid-conversation instead of
 	// restarting from scratch. nil when the run is not paused.
 	PausedAgent *AgentPauseState `bson:"paused_agent,omitempty" json:"paused_agent,omitempty"`
+
+	// PendingApproval is set when the AI agent's `require_approval` gate
+	// fires on a server-side run (no live WS connection). The run blocks
+	// in-process waiting for a `POST /api/v1/runs/:id/approval` decision.
+	// The /runs/:id UI page reads this to render Approve/Reject buttons.
+	// Cleared once the decision arrives.
+	PendingApproval *PendingApprovalState `bson:"pending_approval,omitempty" json:"pending_approval,omitempty"`
+}
+
+// PendingApprovalState mirrors the active require_approval gate so the
+// UI (or any other approval surface — email link, Slack message) has
+// everything needed to present the decision to the human. Two flavours:
+//   - Kind="tool_call": agent's per-tool gate. AgentNodeID + ToolCallID
+//     + ToolName + ToolArgs populated.
+//   - Kind="node":      pre-exec gate on a non-agent node. NodeID +
+//     NodeType + NodeName + NodeInput populated.
+type PendingApprovalState struct {
+	Kind        string    `bson:"kind,omitempty"        json:"kind,omitempty"` // "tool_call" | "node"
+	AgentNodeID string    `bson:"agent_node_id,omitempty" json:"agent_node_id,omitempty"`
+	Iter        int       `bson:"iter,omitempty"        json:"iter,omitempty"`
+	ToolCallID  string    `bson:"tool_call_id,omitempty" json:"tool_call_id,omitempty"`
+	ToolName    string    `bson:"tool_name,omitempty"   json:"tool_name,omitempty"`
+	ToolArgs    any       `bson:"tool_args,omitempty"   json:"tool_args,omitempty"`
+	NodeID      string    `bson:"node_id,omitempty"     json:"node_id,omitempty"`
+	NodeType    NodeType  `bson:"node_type,omitempty"   json:"node_type,omitempty"`
+	NodeName    string    `bson:"node_name,omitempty"   json:"node_name,omitempty"`
+	NodeInput   any       `bson:"node_input,omitempty"  json:"node_input,omitempty"`
+	RequestedAt time.Time `bson:"requested_at"          json:"requested_at"`
 }
 
 // AgentPauseState is the snapshot persisted on a paused workflow run so
@@ -64,6 +92,11 @@ const (
 	// of a stopAt-bound tool call. WorkflowRun.PausedAgent carries enough
 	// state for the next Run (with `resume_run_id`) to pick up mid-conversation.
 	RunStatusPaused RunStatus = "paused"
+	// RunStatusPendingApproval indicates the agent's require_approval gate
+	// fired on a server-side run with no live WS connection. The run is
+	// blocked in-process; a POST to /api/v1/runs/:id/approval pushes the
+	// decision into the agent's approveCh and the run resumes.
+	RunStatusPendingApproval RunStatus = "pending_approval"
 )
 
 // TraceEvent is one entry in an agent's reasoning trace, captured per
@@ -79,6 +112,11 @@ type TraceEvent struct {
 	Text      string         `bson:"text,omitempty"      json:"text,omitempty"`
 	Usage     *UsageTotal    `bson:"usage,omitempty"     json:"usage,omitempty"`
 	IsError   bool           `bson:"is_error,omitempty"  json:"is_error,omitempty"`
+	// Provider + Model populated on `llm_call` events so the run detail
+	// page can show "anthropic / claude-sonnet-4-6" etc per iter without
+	// the UI having to chase the agent node's connection_id config.
+	Provider string `bson:"provider,omitempty" json:"provider,omitempty"`
+	Model    string `bson:"model,omitempty"    json:"model,omitempty"`
 }
 
 // UsageTotal aggregates token usage and cost across all LLM calls in a run.

@@ -19,6 +19,8 @@ import (
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/polymarket"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/rediss"
 	_ "github.com/bRRRITSCOLD/immaiwin-go/internal/llm/anthropic" // register Anthropic provider in llm.Default
+	_ "github.com/bRRRITSCOLD/immaiwin-go/internal/llm/ollama"    // register Ollama provider
+	_ "github.com/bRRRITSCOLD/immaiwin-go/internal/llm/openai"    // register OpenAI provider
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/sandbox"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/sandbox/docker"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/sandbox/k3s"
@@ -219,12 +221,13 @@ func main() {
 	}
 
 	wfExec := &workflow.WorkflowExecutor{
-		HTTPClient:   &http.Client{Timeout: 30 * time.Second},
-		DB:           defaultDB,
-		Redis:        rc,
-		ConnResolver: connResolver,
-		SandboxRT:    sandboxRT,
-		Memory:       chatMem,
+		HTTPClient:     &http.Client{Timeout: 30 * time.Second},
+		DB:             defaultDB,
+		Redis:          rc,
+		ConnResolver:   connResolver,
+		SandboxRT:      sandboxRT,
+		ApprovalBroker: rc,
+		Memory:         chatMem,
 		RunRepo:      runStore,
 		SkillRes:     skillRes,
 	}
@@ -245,7 +248,18 @@ func main() {
 		}
 	}
 
-	srv := api.NewServer(cfg.API, rc, pm, wl, tr, nr, tokens, owl, fwl, sc, wfRepo, runStore, wfExec, connRepo, connResolver, skillBackend, evalDeps, mc.DB(), sandboxRT)
+	// User repo for auth. Best-effort init — failures degrade auth
+	// (login/register return 503) without taking down the rest of the API.
+	userRepo, uerr := mongodb.NewUserRepository(ctx, mc.DB())
+	if uerr != nil {
+		slog.Warn("user repo init failed (auth disabled)", "err", uerr)
+		userRepo = nil
+	}
+	if cfg.Auth.JWTSecret == "" {
+		slog.Warn("AUTH_JWT_SECRET not configured — auth endpoints will refuse requests; set a 32+ byte hex value in .env to enable")
+	}
+
+	srv := api.NewServer(cfg.API, cfg.Auth, rc, pm, wl, tr, nr, tokens, owl, fwl, sc, wfRepo, runStore, wfExec, connRepo, connResolver, skillBackend, evalDeps, userRepo, mc.DB(), sandboxRT)
 
 	go func() {
 		slog.Info("api server listening", "addr", srv.Addr())

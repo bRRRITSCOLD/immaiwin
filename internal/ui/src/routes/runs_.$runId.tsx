@@ -33,7 +33,7 @@ export const Route = createFileRoute('/runs_/$runId')({
 
 const API_BASE = import.meta.env['VITE_API_URL'] ?? 'http://localhost:8080'
 
-type RunStatus = 'running' | 'success' | 'error' | 'cancelled' | 'paused'
+type RunStatus = 'running' | 'success' | 'error' | 'cancelled' | 'paused' | 'pending_approval'
 
 interface UsageTotal {
   input_tokens?: number
@@ -60,11 +60,29 @@ interface TraceEvent {
   text?: string
   usage?: UsageTotal
   is_error?: boolean
+  provider?: string
+  model?: string
 }
 
 interface PausedAgent {
   agent_node_id?: string
   iter?: number
+}
+
+interface PendingApproval {
+  kind?: 'tool_call' | 'node'
+  // tool_call kind
+  agent_node_id?: string
+  iter?: number
+  tool_call_id?: string
+  tool_name?: string
+  tool_args?: unknown
+  // node kind
+  node_id?: string
+  node_type?: string
+  node_name?: string
+  node_input?: unknown
+  requested_at: string
 }
 
 interface WorkflowRun {
@@ -81,6 +99,7 @@ interface WorkflowRun {
   usage?: UsageTotal
   error?: string
   paused_agent?: PausedAgent | null
+  pending_approval?: PendingApproval | null
 }
 
 interface WorkflowNode {
@@ -100,18 +119,23 @@ interface RunDetailResponse {
   workflow: WorkflowDoc | null
 }
 
-function statusVariant(s: RunStatus): 'default' | 'destructive' | 'secondary' | 'outline' {
+// statusBadgeClass mirrors /runs table colors + NodeDebugPanel dots so
+// the user sees the same colour for the same state regardless of view.
+function statusBadgeClass(s: RunStatus): string {
   switch (s) {
     case 'success':
-      return 'default'
+      return 'bg-green-600 hover:bg-green-600 text-white border-transparent'
     case 'error':
-      return 'destructive'
-    case 'paused':
+      return 'bg-red-600 hover:bg-red-600 text-white border-transparent'
     case 'cancelled':
-      return 'secondary'
+      return 'bg-zinc-500 hover:bg-zinc-500 text-white border-transparent'
+    case 'paused':
+      return 'bg-yellow-500 hover:bg-yellow-500 text-black border-transparent'
+    case 'pending_approval':
+      return 'bg-amber-500 hover:bg-amber-500 text-black border-transparent'
     case 'running':
     default:
-      return 'outline'
+      return 'bg-blue-500 hover:bg-blue-500 text-white border-transparent animate-pulse'
   }
 }
 
@@ -185,9 +209,16 @@ function RunDetailPage() {
   const [data, setData] = useState<RunDetailResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [replaying, setReplaying] = useState(false)
+  const [submittingApproval, setSubmittingApproval] = useState(false)
+  const [cancelling, setCancelling] = useState(false)
 
   const load = useCallback(async () => {
-    setLoading(true)
+    // Only show the loading spinner on the first fetch — polls during
+    // pending_approval would otherwise flash the spinner every 2s.
+    setData((prev) => {
+      if (prev === null) setLoading(true)
+      return prev
+    })
     try {
       const res = await fetch(`${API_BASE}/api/v1/workflow_runs/${runId}`)
       if (!res.ok) {
@@ -195,7 +226,18 @@ function RunDetailPage() {
         toast.error(`Failed to load run: ${err.error}`)
         return
       }
-      setData(await res.json())
+      const next = (await res.json()) as RunDetailResponse
+      // Skip the setState when the new payload is byte-equivalent to
+      // the current one. Polling otherwise rebuilds the entire run-
+      // detail subtree every 2s and the user sees a noticeable
+      // flicker on the canvas. JSON.stringify compare is cheap for
+      // these payloads (~1-10kb).
+      setData((prev) => {
+        if (prev && JSON.stringify(prev) === JSON.stringify(next)) {
+          return prev
+        }
+        return next
+      })
     } catch {
       toast.error('Network error loading run')
     } finally {
@@ -206,6 +248,89 @@ function RunDetailPage() {
   useEffect(() => {
     load()
   }, [load])
+
+  // Poll while the run is non-terminal so the user sees status flips
+  // (pending_approval → running → next pending_approval → … →
+  // success/error). 2s is gentle enough not to flood the API. Stops
+  // polling on terminal states.
+  useEffect(() => {
+    const status = data?.run.status
+    if (!status) return
+    const terminal = status === 'success' || status === 'error' || status === 'cancelled'
+    if (terminal) return
+    const id = setInterval(() => {
+      load()
+    }, 2000)
+    return () => clearInterval(id)
+  }, [data?.run.status, load])
+
+  const submitApproval = useCallback(
+    async (approved: boolean, reason?: string) => {
+      if (!data?.run.pending_approval) return
+      setSubmittingApproval(true)
+      try {
+        // Backend's ApprovalDecision carries an opaque tool_call_id
+        // field used as the correlation key. For node-kind gates we
+        // pass node_id under the same field so the agent / executor
+        // sees a non-empty match. The receiver treats both kinds the
+        // same — only the wait-side cares about the value.
+        const correlationID =
+          data.run.pending_approval.kind === 'node'
+            ? data.run.pending_approval.node_id
+            : data.run.pending_approval.tool_call_id
+        const res = await fetch(
+          `${API_BASE}/api/v1/workflow_runs/${data.run.id}/approval`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              tool_call_id: correlationID,
+              approved,
+              reason,
+            }),
+          },
+        )
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}))
+          toast.error(`Approval submit failed: ${body.error ?? res.statusText}`)
+          return
+        }
+        toast.success(approved ? 'Approved — run resuming' : 'Rejected — run resuming')
+        // Refresh once immediately; the polling effect picks up from
+        // there. Server still has to flush state writes, so initial
+        // refresh may show pending — the poll covers that.
+        load()
+      } catch {
+        toast.error('Network error submitting approval')
+      } finally {
+        setSubmittingApproval(false)
+      }
+    },
+    [data, load],
+  )
+
+  const handleCancel = useCallback(async () => {
+    if (!data?.run) return
+    if (!confirm('Force-cancel this run? The run record will be marked as cancelled. If a worker is still alive somewhere, it will receive a reject signal and unblock.')) return
+    setCancelling(true)
+    try {
+      const res = await fetch(
+        `${API_BASE}/api/v1/workflow_runs/${data.run.id}/cancel`,
+        { method: 'POST' },
+      )
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        toast.error(`Cancel failed: ${body.error ?? res.statusText}`)
+        return
+      }
+      toast.success('Run cancelled')
+      load()
+    } catch {
+      toast.error('Network error cancelling run')
+    } finally {
+      setCancelling(false)
+    }
+  }, [data, load])
 
   const handleReplay = useCallback(async () => {
     if (!data?.run) return
@@ -249,6 +374,7 @@ function RunDetailPage() {
           <Link to="/workflows" className="text-muted-foreground hover:text-foreground transition-colors">Workflows</Link>
           <Link to="/runs" className="text-foreground font-medium">Runs</Link>
           <Link to="/evals" className="text-muted-foreground hover:text-foreground transition-colors">Evals</Link>
+          <Link to="/skills" className="text-muted-foreground hover:text-foreground transition-colors">Skills</Link>
         </nav>
       </header>
 
@@ -277,7 +403,7 @@ function RunDetailPage() {
                       {data.run.id}
                     </div>
                     <div className="mt-2 flex items-center gap-2 flex-wrap">
-                      <Badge variant={statusVariant(data.run.status)}>{data.run.status}</Badge>
+                      <Badge className={statusBadgeClass(data.run.status)}>{data.run.status}</Badge>
                       {data.run.paused_agent && (
                         <Badge variant="outline" className="text-amber-600 dark:text-amber-400">
                           breakpoint
@@ -290,10 +416,27 @@ function RunDetailPage() {
                       )}
                     </div>
                   </div>
-                  <Button onClick={handleReplay} disabled={replaying}>
-                    <Play className="h-4 w-4 mr-1" />
-                    {replaying ? 'Replaying…' : 'Replay'}
-                  </Button>
+                  <div className="flex items-center gap-2">
+                    {/* Force-cancel: only shown for non-terminal runs.
+                        Manual safety valve for runs stuck due to worker
+                        crash, abandoned approval, etc. Stage 2 = reaper
+                        worker auto-fails based on heartbeat staleness. */}
+                    {(data.run.status === 'running' ||
+                      data.run.status === 'pending_approval' ||
+                      data.run.status === 'paused') && (
+                      <Button
+                        variant="destructive"
+                        onClick={handleCancel}
+                        disabled={cancelling}
+                      >
+                        {cancelling ? 'Cancelling…' : 'Force Cancel'}
+                      </Button>
+                    )}
+                    <Button onClick={handleReplay} disabled={replaying}>
+                      <Play className="h-4 w-4 mr-1" />
+                      {replaying ? 'Replaying…' : 'Replay'}
+                    </Button>
+                  </div>
                 </div>
 
                 <div className="mt-4 grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
@@ -315,6 +458,67 @@ function RunDetailPage() {
                 {data.run.error && (
                   <div className="mt-4 text-sm text-destructive bg-destructive/10 rounded p-2">
                     {data.run.error}
+                  </div>
+                )}
+
+                {/* Out-of-band approval gate. Two kinds:
+                    - tool_call: agent's per-tool gate (existing).
+                    - node:      pre-exec gate on a non-agent node;
+                                 BFS halts here, reject = error edge. */}
+                {data.run.status === 'pending_approval' && data.run.pending_approval && (
+                  <div className="mt-4 border border-amber-500/40 bg-amber-500/5 rounded p-3 space-y-2">
+                    <div className="flex items-center gap-2">
+                      <Badge variant="outline" className="text-amber-500 border-amber-500/60">
+                        approval needed
+                      </Badge>
+                      {data.run.pending_approval.kind === 'node' ? (
+                        <span className="text-sm font-medium">
+                          Node: <code className="font-mono">{data.run.pending_approval.node_name}</code>{' '}
+                          <span className="text-xs text-muted-foreground">({data.run.pending_approval.node_type})</span>
+                        </span>
+                      ) : (
+                        <span className="text-sm font-medium">
+                          Tool call: <code className="font-mono">{data.run.pending_approval.tool_name}</code>
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      {data.run.pending_approval.kind === 'node'
+                        ? `Pre-exec gate · `
+                        : `Agent requested at iter ${data.run.pending_approval.iter} · `}
+                      {new Date(data.run.pending_approval.requested_at).toLocaleString()}
+                    </p>
+                    {data.run.pending_approval.kind === 'node'
+                      ? data.run.pending_approval.node_input !== undefined && (
+                          <div>
+                            <p className="text-[11px] font-semibold uppercase text-muted-foreground/80 mb-1">Node input</p>
+                            <PrettyJSON value={data.run.pending_approval.node_input} />
+                          </div>
+                        )
+                      : data.run.pending_approval.tool_args !== undefined && (
+                          <div>
+                            <p className="text-[11px] font-semibold uppercase text-muted-foreground/80 mb-1">Args</p>
+                            <PrettyJSON value={data.run.pending_approval.tool_args} />
+                          </div>
+                        )}
+                    <div className="flex items-center gap-2 pt-1">
+                      <Button
+                        size="sm"
+                        className="bg-green-700 hover:bg-green-600 text-white"
+                        disabled={submittingApproval}
+                        onClick={() => submitApproval(true)}
+                      >
+                        Approve
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="destructive"
+                        disabled={submittingApproval}
+                        onClick={() => submitApproval(false)}
+                      >
+                        Reject
+                      </Button>
+                    </div>
                   </div>
                 )}
               </div>
@@ -419,17 +623,38 @@ function AgentTraceBlock({ title, events }: { title: string; events: TraceEvent[
   let totalIn = 0
   let totalOut = 0
   let totalCost = 0
+  // Track provider/model usage across iters. Most agents use one model
+  // for the whole run, but model_override mid-run is theoretically
+  // possible (and OpenAI auto-bumps dated revisions), so collect a Set.
+  const models = new Set<string>()
+  let anyProvider: string | undefined
   for (const ev of events) {
-    if (ev.type !== 'llm_call' || !ev.usage) continue
-    totalIn += ev.usage.input_tokens ?? 0
-    totalOut += ev.usage.output_tokens ?? 0
-    totalCost += ev.usage.cost_usd ?? 0
+    if (ev.type !== 'llm_call') continue
+    if (ev.usage) {
+      totalIn += ev.usage.input_tokens ?? 0
+      totalOut += ev.usage.output_tokens ?? 0
+      totalCost += ev.usage.cost_usd ?? 0
+    }
+    if (ev.model) models.add(ev.model)
+    if (ev.provider && !anyProvider) anyProvider = ev.provider
   }
+  const modelLabel = models.size === 1
+    ? Array.from(models)[0]
+    : models.size > 1
+    ? `${models.size} models`
+    : undefined
 
   return (
     <div className="border rounded p-3 bg-muted/20">
       <div className="flex items-center justify-between mb-2">
-        <div className="text-sm font-medium">{title}</div>
+        <div className="flex items-center gap-2">
+          <div className="text-sm font-medium">{title}</div>
+          {modelLabel && (
+            <Badge variant="outline" className="text-[10px]" title={anyProvider ? `${anyProvider} provider` : undefined}>
+              {anyProvider ? `${anyProvider}/` : ''}{modelLabel}
+            </Badge>
+          )}
+        </div>
         {(totalIn > 0 || totalOut > 0 || totalCost > 0) && (
           <span className="text-xs text-muted-foreground tabular-nums">
             {totalIn.toLocaleString()} in / {totalOut.toLocaleString()} out · ${totalCost.toFixed(4)}
@@ -467,11 +692,17 @@ function IterSection({
   let outTok = 0
   let cost = 0
   let toolCount = 0
+  let provider: string | undefined
+  let model: string | undefined
   for (const ev of events) {
     if (ev.type === 'llm_call' && ev.usage) {
       inTok += ev.usage.input_tokens ?? 0
       outTok += ev.usage.output_tokens ?? 0
       cost += ev.usage.cost_usd ?? 0
+    }
+    if (ev.type === 'llm_call') {
+      if (ev.provider && !provider) provider = ev.provider
+      if (ev.model && !model) model = ev.model
     }
     if (ev.type === 'tool_call') toolCount++
   }
@@ -481,6 +712,11 @@ function IterSection({
       <CollapsibleTrigger className="w-full flex items-center gap-2 text-xs hover:text-primary transition-colors text-left">
         {open ? <ChevronDown className="h-3 w-3 shrink-0" /> : <ChevronRight className="h-3 w-3 shrink-0" />}
         <span className="font-medium text-foreground">iter {iter}</span>
+        {model && (
+          <span className="text-muted-foreground" title={provider ? `${provider} provider` : undefined}>
+            · {provider ? `${provider}/` : ''}{model}
+          </span>
+        )}
         {(inTok > 0 || outTok > 0) && (
           <span className="text-muted-foreground tabular-nums">
             · {inTok.toLocaleString()} in / {outTok.toLocaleString()} out
@@ -523,6 +759,12 @@ function TraceEventRow({ ev }: { ev: TraceEvent }) {
       </div>
       {ev.text && (
         <div className="mt-1 text-muted-foreground whitespace-pre-wrap break-words">{ev.text}</div>
+      )}
+      {/* Empty llm_call text is normal for smaller / local models (Ollama
+          Gemma, etc.) that go straight to tool_calls without narrating.
+          Render a placeholder so it's clear nothing was missed. */}
+      {!ev.text && ev.type === 'llm_call' && (
+        <div className="mt-1 text-muted-foreground/60 italic">(no narration — model went straight to tool call)</div>
       )}
       {ev.tool_args !== undefined && (
         <div className="mt-1">

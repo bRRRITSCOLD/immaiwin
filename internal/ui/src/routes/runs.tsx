@@ -32,7 +32,7 @@ export const Route = createFileRoute('/runs')({
 
 const API_BASE = import.meta.env['VITE_API_URL'] ?? 'http://localhost:8080'
 
-type RunStatus = 'running' | 'success' | 'error' | 'cancelled' | 'paused'
+type RunStatus = 'running' | 'success' | 'error' | 'cancelled' | 'paused' | 'pending_approval'
 
 interface UsageTotal {
   input_tokens?: number
@@ -69,22 +69,29 @@ const STATUS_OPTIONS: { value: 'all' | RunStatus; label: string }[] = [
   { value: 'error', label: 'Error' },
   { value: 'cancelled', label: 'Cancelled' },
   { value: 'paused', label: 'Paused' },
+  { value: 'pending_approval', label: 'Pending approval' },
 ]
 
 const LIMIT_OPTIONS = [25, 50, 100, 200]
 
-function statusVariant(s: RunStatus): 'default' | 'destructive' | 'secondary' | 'outline' {
+// statusBadgeClass maps a run status to a Tailwind className matching
+// the NodeDebugPanel dot colors, so /runs + /runs/:id badges align
+// visually with the canvas indicator users already learned.
+function statusBadgeClass(s: RunStatus): string {
   switch (s) {
     case 'success':
-      return 'default'
+      return 'bg-green-600 hover:bg-green-600 text-white border-transparent'
     case 'error':
-      return 'destructive'
-    case 'paused':
+      return 'bg-red-600 hover:bg-red-600 text-white border-transparent'
     case 'cancelled':
-      return 'secondary'
+      return 'bg-zinc-500 hover:bg-zinc-500 text-white border-transparent'
+    case 'paused':
+      return 'bg-yellow-500 hover:bg-yellow-500 text-black border-transparent'
+    case 'pending_approval':
+      return 'bg-amber-500 hover:bg-amber-500 text-black border-transparent'
     case 'running':
     default:
-      return 'outline'
+      return 'bg-blue-500 hover:bg-blue-500 text-white border-transparent animate-pulse'
   }
 }
 
@@ -155,6 +162,7 @@ function RunsPage() {
   const navigate = useNavigate()
   const [workflows, setWorkflows] = useState<Workflow[]>([])
   const [runs, setRuns] = useState<WorkflowRun[]>([])
+  const [cancellingID, setCancellingID] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
 
   const [workflowFilter, setWorkflowFilter] = useState<string>('all')
@@ -223,6 +231,28 @@ function RunsPage() {
     loadRuns()
   }, [loadRuns])
 
+  const cancelRun = useCallback(
+    async (id: string) => {
+      if (!confirm('Force-cancel this run? Marks it as cancelled.')) return
+      setCancellingID(id)
+      try {
+        const res = await fetch(`${API_BASE}/api/v1/workflow_runs/${id}/cancel`, { method: 'POST' })
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}))
+          toast.error(`Cancel failed: ${body.error ?? res.statusText}`)
+          return
+        }
+        toast.success('Run cancelled')
+        loadRuns()
+      } catch {
+        toast.error('Network error cancelling run')
+      } finally {
+        setCancellingID(null)
+      }
+    },
+    [loadRuns],
+  )
+
   // Fetch the per-workflow daily-cost rollup for the chip. Skipped when
   // the user is viewing "All workflows" (the chip is per-workflow scoped;
   // a cross-workflow daily total isn't meaningful when caps are set per
@@ -284,6 +314,7 @@ function RunsPage() {
           <Link to="/workflows" className="text-muted-foreground hover:text-foreground transition-colors">Workflows</Link>
           <Link to="/runs" className="text-foreground font-medium">Runs</Link>
           <Link to="/evals" className="text-muted-foreground hover:text-foreground transition-colors">Evals</Link>
+          <Link to="/skills" className="text-muted-foreground hover:text-foreground transition-colors">Skills</Link>
         </nav>
       </header>
 
@@ -456,7 +487,7 @@ function RunsPage() {
                   <TableCell>{wfNameByID[r.workflow_id] ?? r.workflow_id}</TableCell>
                   <TableCell>
                     <div className="flex items-center gap-1.5">
-                      <Badge variant={statusVariant(r.status)}>{r.status}</Badge>
+                      <Badge className={statusBadgeClass(r.status)}>{r.status}</Badge>
                       {r.paused_agent && (
                         <Badge variant="outline" className="text-amber-600 dark:text-amber-400">
                           breakpoint
@@ -479,14 +510,30 @@ function RunsPage() {
                     {formatCost(r.usage?.cost_usd)}
                   </TableCell>
                   <TableCell className="text-right">
-                    <Link
-                      to="/runs/$runId"
-                      params={{ runId: r.id }}
-                      className="text-primary hover:underline text-sm"
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      View
-                    </Link>
+                    <div className="flex items-center justify-end gap-2">
+                      {(r.status === 'running' || r.status === 'pending_approval' || r.status === 'paused') && (
+                        <button
+                          type="button"
+                          disabled={cancellingID === r.id}
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            cancelRun(r.id)
+                          }}
+                          className="text-xs text-destructive hover:underline disabled:opacity-50"
+                          title="Force-cancel this run"
+                        >
+                          {cancellingID === r.id ? 'Cancelling…' : 'Cancel'}
+                        </button>
+                      )}
+                      <Link
+                        to="/runs/$runId"
+                        params={{ runId: r.id }}
+                        className="text-primary hover:underline text-sm"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        View
+                      </Link>
+                    </div>
                   </TableCell>
                 </TableRow>
               ))}

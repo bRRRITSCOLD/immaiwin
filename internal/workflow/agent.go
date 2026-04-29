@@ -20,7 +20,30 @@ const (
 	defaultMaxTokens           = 4096
 	defaultAgentTimeout        = 5 * time.Minute
 	defaultMaxMemoryMessages   = 30
+
+	// finalAnswerToolName is the reserved tool name registered onto an
+	// agent's catalog when its `output_schema` field is non-empty. The
+	// LLM is instructed to call this tool with the structured answer
+	// (validated against the schema) instead of returning free text.
+	finalAnswerToolName = "submit_final_answer"
 )
+
+// normaliseOutputSchema confirms the user-supplied JSON Schema parses,
+// then re-marshals into compact bytes so the wire payload to the LLM
+// provider stays small. Returns an error when the schema isn't valid
+// JSON (e.g. the user pasted YAML); silent acceptance would let the
+// validator fall through to permissive at runtime.
+func normaliseOutputSchema(raw string) (json.RawMessage, error) {
+	var v any
+	if err := json.Unmarshal([]byte(raw), &v); err != nil {
+		return nil, err
+	}
+	out, err := json.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	return json.RawMessage(out), nil
+}
 
 // runAIAgent executes an AI Agent node: a reason-act-observe loop that
 // drives an LLM to call tools and produce a final response.
@@ -71,6 +94,7 @@ func (e *WorkflowExecutor) runAIAgent(ctx context.Context, node Node, data map[s
 	timeoutSec := getIntData(data, "timeout_seconds", int(defaultAgentTimeout.Seconds()))
 	temperature := getFloat64Data(data, "temperature")
 	model, _ := data["model_override"].(string)
+	requireApproval := getBoolData(data, "require_approval")
 
 	// 3. Resolve templates in prompt + user input
 	systemPrompt := applyTemplate(getStringData(data, "system_prompt"), input, wfCtx)
@@ -90,6 +114,44 @@ func (e *WorkflowExecutor) runAIAgent(ctx context.Context, node Node, data map[s
 		return nil, fmt.Errorf("ai_agent: build tool catalog: %w", err)
 	}
 
+	// Output-schema gate: when an agent declares `output_schema`, we
+	// append a synthetic `submit_final_answer` tool whose input_schema is
+	// the user's output schema. The agent's instructions tell it to call
+	// this tool when it's done. The catalog's input-validation layer
+	// (just shipped) enforces shape before the call lands here, so by
+	// the time we capture `finalAnswerArgs` it's already validated. The
+	// loop terminates as soon as the model calls this tool.
+	var (
+		finalAnswerArgs   any
+		finalAnswerCalled bool
+	)
+	outputSchemaRaw := strings.TrimSpace(getStringData(data, "output_schema"))
+	if outputSchemaRaw != "" {
+		schemaBytes, schemaErr := normaliseOutputSchema(outputSchemaRaw)
+		if schemaErr != nil {
+			return nil, fmt.Errorf("ai_agent: output_schema invalid JSON: %w", schemaErr)
+		}
+		finalDef := llm.ToolDef{
+			Name:        finalAnswerToolName,
+			Description: "Submit your final structured answer. Call this when you have everything needed to fulfil the user's request. The args passed here become this agent's output. Do NOT call this until you've gathered all information needed.",
+			InputSchema: schemaBytes,
+		}
+		finalHandler := func(ctx context.Context, args json.RawMessage) (string, error) {
+			var decoded any
+			if len(args) > 0 {
+				if uerr := json.Unmarshal(args, &decoded); uerr != nil {
+					return "", fmt.Errorf("submit_final_answer: bad args: %w", uerr)
+				}
+			}
+			finalAnswerArgs = decoded
+			finalAnswerCalled = true
+			return "answer accepted", nil
+		}
+		if addErr := catalog.Add(finalDef, finalHandler); addErr != nil {
+			return nil, fmt.Errorf("ai_agent: register submit_final_answer: %w", addErr)
+		}
+	}
+
 	// Append skill-supplied system-prompt fragments. Skill fragments come
 	// AFTER the agent-author prompt so explicit per-agent instructions
 	// take precedence over generic skill guidance.
@@ -102,6 +164,19 @@ func (e *WorkflowExecutor) runAIAgent(ctx context.Context, node Node, data map[s
 			}
 			sb.WriteString(frag)
 		}
+		systemPrompt = sb.String()
+	}
+
+	// Output-schema directive — appended LAST so it can't be overridden
+	// by the user's prompt or a skill fragment. Tells the model the
+	// terminal action is the synthetic tool call.
+	if outputSchemaRaw != "" {
+		var sb strings.Builder
+		sb.WriteString(systemPrompt)
+		if sb.Len() > 0 {
+			sb.WriteString("\n\n")
+		}
+		sb.WriteString("OUTPUT FORMAT — MANDATORY: When you have everything needed to fulfil the request, you MUST call the `submit_final_answer` tool with the structured answer. Do NOT respond with a plain text final message — only the args you pass to `submit_final_answer` count as your output. Free-text closing messages will be discarded.")
 		systemPrompt = sb.String()
 	}
 
@@ -255,6 +330,8 @@ func (e *WorkflowExecutor) runAIAgent(ctx context.Context, node Node, data map[s
 				TotalTokens:  resp.Usage.TotalTokens,
 				CostUSD:      resp.Usage.CostUSD,
 			},
+			Provider: provider.Name(),
+			Model:    resp.Model,
 		})
 
 		// (Cost cap enforcement is the PRE-CALL block above this iter's
@@ -270,6 +347,18 @@ func (e *WorkflowExecutor) runAIAgent(ctx context.Context, node Node, data map[s
 		switch resp.StopReason {
 		case llm.StopReasonEndTurn:
 			finalText := extractText(resp.Content)
+
+			// Output-schema enforcement: model emitted free text instead
+			// of calling submit_final_answer. Feed back a corrective
+			// observation and re-prompt. Bounded by the loop's max-iter
+			// cap so a stubborn model can't run forever.
+			if outputSchemaRaw != "" && !finalAnswerCalled {
+				correction := "You produced a free-text response, but this agent's output is REQUIRED to come from a `submit_final_answer` tool call. Re-issue your answer by calling submit_final_answer with the structured args. Do not respond with text."
+				messages = append(messages, llm.UserText(correction))
+				emitTrace(TraceEvent{Type: "llm_call", Iter: iter, Text: "(server: rejected free-text answer; demanded submit_final_answer)"})
+				continue
+			}
+
 			emitTrace(TraceEvent{Type: "final", Iter: iter, Text: finalText})
 
 			// Persist memory (only the new turns, not the existing history)
@@ -311,6 +400,159 @@ func (e *WorkflowExecutor) runAIAgent(ctx context.Context, node Node, data map[s
 					ToolID:   call.ID,
 					ToolArgs: rawJSONToAny(call.Input),
 				})
+
+				// Approval gate. Two paths:
+				//   1. Live UI (WS) — env.approveCh wired, decisions
+				//      arrive over the open socket; fast path.
+				//   2. Out-of-band — server-side run (cron / event
+				//      trigger / eval) with no socket. Register a
+				//      channel in the executor's ApprovalRegistry +
+				//      persist `pending_approval` state on the run
+				//      record. The HTTP endpoint
+				//      `POST /runs/:id/approval` looks up the channel
+				//      and pushes the decision in. The eval run path
+				//      still auto-approves: evals must complete
+				//      deterministically without a human in the loop.
+				gateActive := false
+				approveCh := env.approveCh
+				oob := false
+				if requireApproval {
+					if approveCh != nil {
+						gateActive = true
+					} else if env.runID != "" && e.RunRepo != nil {
+						// OOB path — register channel + persist pending
+						// state so the HTTP endpoint can resolve it.
+						// Cross-process: agent runs in worker, HTTP
+						// endpoint runs in api → registry uses Redis
+						// pub/sub under the hood.
+						oobReg := e.approvalRegistryFor()
+						if oobReg != nil {
+							oob = true
+							gateActive = true
+							approveCh = oobReg.Register(ctx, env.runID)
+							defer oobReg.Unregister(env.runID)
+						}
+						if rec, gerr := e.RunRepo.Get(ctx, env.runID); gerr == nil {
+							rec.Status = RunStatusPendingApproval
+							rec.PendingApproval = &PendingApprovalState{
+								Kind:        "tool_call",
+								AgentNodeID: node.ID,
+								Iter:        iter,
+								ToolCallID:  call.ID,
+								ToolName:    call.Name,
+								ToolArgs:    rawJSONToAny(call.Input),
+								RequestedAt: time.Now().UTC(),
+							}
+							if uerr := e.RunRepo.Update(ctx, rec); uerr != nil {
+								slog.Warn("ai_agent: persist pending_approval failed", "run_id", env.runID, "err", uerr)
+							}
+						}
+					}
+					// else: no live ch + no RunRepo → can't OOB; auto-approve.
+				}
+				if gateActive {
+					if env.events != nil {
+						env.events.Emit(stampNow(RunEvent{
+							Type:     EventAgentToolApproval,
+							NodeID:   node.ID,
+							NodeType: node.Type,
+							Iter:     iter,
+							ToolName: call.Name,
+							ToolID:   call.ID,
+							ToolArgs: rawJSONToAny(call.Input),
+						}))
+					}
+					decision, ok := waitForApproval(loopCtx, approveCh, call.ID)
+					if !ok {
+						// Context cancelled while waiting (worker
+						// shutdown / run cancelled / loop timeout).
+						// Emit a synthetic tool_result so the trace
+						// makes it obvious the tool was NOT executed —
+						// the prior `tool_call` event already landed,
+						// otherwise the UI shows an orphan call that
+						// looks like it ran. Also clear pending state
+						// so the UI doesn't keep polling.
+						obs := "tool call NOT executed: approval wait cancelled before decision"
+						emitTrace(TraceEvent{
+							Type:     "tool_result",
+							Iter:     iter,
+							ToolName: call.Name,
+							ToolID:   call.ID,
+							Result:   obs,
+							IsError:  true,
+						})
+						if oob && env.runID != "" && e.RunRepo != nil {
+							if rec, gerr := e.RunRepo.Get(ctx, env.runID); gerr == nil {
+								rec.PendingApproval = nil
+								_ = e.RunRepo.Update(ctx, rec)
+							}
+						}
+						return nil, fmt.Errorf("ai_agent: approval wait cancelled (iter %d, tool %s) — tool not executed", iter, call.Name)
+					}
+					// Decision arrived — flip status back to running and
+					// clear the pending state on the run record so the
+					// UI doesn't keep showing the Approve buttons.
+					if oob {
+						if rec, gerr := e.RunRepo.Get(ctx, env.runID); gerr == nil {
+							rec.Status = RunStatusRunning
+							rec.PendingApproval = nil
+							if uerr := e.RunRepo.Update(ctx, rec); uerr != nil {
+								slog.Warn("ai_agent: clear pending_approval failed", "run_id", env.runID, "err", uerr)
+							}
+						}
+					}
+					if !decision.Approved {
+						reason := decision.Reason
+						if reason == "" {
+							reason = "rejected by user"
+						}
+						obs := "tool call rejected by user: " + reason
+
+						// Mirror the rejection onto the as_tool target node
+						// so the canvas flips it red ("rejected") instead
+						// of leaving it as "not executed". Skill /
+						// built-in tools have no canvas node — those skip
+						// this block.
+						if targetID, ok := env.toolNameToNodeID[call.Name]; ok {
+							if targetNode, hasNode := env.byID[targetID]; hasNode {
+								rejErr := "rejected by user: " + reason
+								if env.events != nil {
+									env.events.Emit(stampNow(RunEvent{
+										Type:     EventStepStart,
+										NodeID:   targetNode.ID,
+										NodeType: targetNode.Type,
+									}))
+									env.events.Emit(stampNow(RunEvent{
+										Type:     EventStepDone,
+										NodeID:   targetNode.ID,
+										NodeType: targetNode.Type,
+										Error:    rejErr,
+										IsError:  true,
+									}))
+								}
+								if env.toolSteps != nil {
+									env.toolSteps.add(StepResult{
+										NodeID:   targetNode.ID,
+										NodeType: targetNode.Type,
+										Error:    rejErr,
+									})
+								}
+							}
+						}
+
+						results = append(results, llm.ToolResultBlock(call.ID, obs, true))
+						emitTrace(TraceEvent{
+							Type:     "tool_result",
+							Iter:     iter,
+							ToolName: call.Name,
+							ToolID:   call.ID,
+							Result:   obs,
+							IsError:  true,
+						})
+						continue
+					}
+				}
+
 				obs, err := catalog.Execute(loopCtx, call.Name, call.Input)
 				isErr := err != nil
 				if isErr {
@@ -333,6 +575,34 @@ func (e *WorkflowExecutor) runAIAgent(ctx context.Context, node Node, data map[s
 					IsError:  isErr,
 				})
 			}
+
+			// Output-schema terminator. If the model called
+			// submit_final_answer, the synthetic handler stashed the
+			// validated args in finalAnswerArgs. Exit the loop now
+			// instead of feeding tool_results back for another iter —
+			// the answer is the args, not whatever the model would say
+			// next. Schema validation happened in catalog.Execute, so
+			// finalAnswerArgs is already shape-correct.
+			if finalAnswerCalled {
+				emitTrace(TraceEvent{Type: "final", Iter: iter})
+				if sessionID != "" && e.Memory != nil {
+					newTurns := []llm.Message{
+						llm.UserText(userInputText),
+						{Role: llm.RoleAssistant, Content: resp.Content},
+					}
+					if mErr := e.Memory.Append(ctx, sessionID, newTurns); mErr != nil {
+						slog.Warn("ai_agent: memory append failed", "session", sessionID, "err", mErr)
+					}
+					_ = e.Memory.Trim(ctx, sessionID, defaultMaxMemoryMessages)
+				}
+				return map[string]any{
+					"output":     finalAnswerArgs,
+					"usage":      usageTotal,
+					"iterations": iter + 1,
+					"trace":      traceEvents,
+				}, nil
+			}
+
 			messages = append(messages, llm.ToolResultMessage(results))
 			continue
 
@@ -412,10 +682,48 @@ func (e *WorkflowExecutor) buildAgentToolCatalog(agent Node, env *runEnv,
 				}
 			}
 			// Pre-exec breakpoint: hold the agent's tool call until the
-			// live UI sends a continue frame when the breakpointed node
-			// is THIS as_tool target. Skipped when no continueCh wired.
-			if env, ok := envFromCtx(ctx); ok && env.stopAt != "" && targetNode.ID == env.stopAt && env.continueCh != nil {
+			// live UI sends a continue frame when this as_tool target is
+			// in the breakpoint set. Skipped when no continueCh wired.
+			if env, ok := envFromCtx(ctx); ok && env.isBreakpoint(targetNode.ID) && env.continueCh != nil {
 				env.waitAtBreakpoint(ctx, targetNode)
+			}
+
+			// Pre-exec NODE-level approval gate. The BFS-side gate
+			// never visits as_tool target nodes (they're agent-driven),
+			// so mirror the gate here. Per-tool gate (`require_approval`
+			// on the agent) already fired upstream — this is the
+			// extra layer when the target node opted into
+			// `require_node_approval`.
+			if env, ok := envFromCtx(ctx); ok {
+				approved, gateErr := e.preExecApproval(ctx, env, targetNode, argInput)
+				if gateErr != nil {
+					return "", gateErr
+				}
+				if !approved {
+					rejErr := "rejected by user (node approval)"
+					if env.events != nil {
+						env.events.Emit(stampNow(RunEvent{
+							Type:     EventStepStart,
+							NodeID:   targetNode.ID,
+							NodeType: targetNode.Type,
+						}))
+						env.events.Emit(stampNow(RunEvent{
+							Type:     EventStepDone,
+							NodeID:   targetNode.ID,
+							NodeType: targetNode.Type,
+							Error:    rejErr,
+							IsError:  true,
+						}))
+					}
+					if env.toolSteps != nil {
+						env.toolSteps.add(StepResult{
+							NodeID:   targetNode.ID,
+							NodeType: targetNode.Type,
+							Error:    rejErr,
+						})
+					}
+					return "", fmt.Errorf("node approval rejected for %s", targetNode.ID)
+				}
 			}
 
 			// Emit step_start for the tool-invoked node so live-stream
@@ -462,7 +770,7 @@ func (e *WorkflowExecutor) buildAgentToolCatalog(agent Node, env *runEnv,
 			// Pre-exec already paused the agent before runNode; setting
 			// stopAtHit again would force a second pause + persist a
 			// PausedAgent we don't need.
-			if env, ok := envFromCtx(ctx); ok && env.stopAt != "" && targetNode.ID == env.stopAt && env.continueCh == nil {
+			if env, ok := envFromCtx(ctx); ok && env.isBreakpoint(targetNode.ID) && env.continueCh == nil {
 				env.stopAtHit = true
 			}
 
@@ -476,6 +784,13 @@ func (e *WorkflowExecutor) buildAgentToolCatalog(agent Node, env *runEnv,
 			slog.Warn("ai_agent: tool collision dropped", "name", def.Name, "err", err)
 			continue
 		}
+		// Index for the approval gate so a rejection can flip the
+		// corresponding canvas node to "rejected" instead of leaving it
+		// stuck on "not executed".
+		if env.toolNameToNodeID == nil {
+			env.toolNameToNodeID = make(map[string]string, optedIn)
+		}
+		env.toolNameToNodeID[def.Name] = targetNode.ID
 	}
 
 	slog.Info("ai_agent: tool catalog built",
@@ -502,6 +817,8 @@ func traceToRunEvent(t TraceEvent, agentNode Node) RunEvent {
 		ToolArgs: t.ToolArgs,
 		Result:   stringifyResult(t.Result),
 		IsError:  t.IsError,
+		Provider: t.Provider,
+		Model:    t.Model,
 	}
 	if t.Usage != nil {
 		ev.Usage = &Usage{
@@ -589,6 +906,34 @@ func getFloat64Data(data map[string]any, key string) *float64 {
 func getStringData(data map[string]any, key string) string {
 	s, _ := data[key].(string)
 	return s
+}
+
+func getBoolData(data map[string]any, key string) bool {
+	if v, ok := data[key]; ok {
+		if b, ok := v.(bool); ok {
+			return b
+		}
+	}
+	return false
+}
+
+// waitForApproval blocks until an ApprovalDecision matching toolCallID
+// arrives on ch, or the context cancels. Decisions for other tool IDs
+// are dropped (defensive — the gate is sequential per agent loop, so
+// a mismatch here means a stale frame from a prior call). Returns
+// (decision, true) on a hit, (zero, false) on ctx cancel.
+func waitForApproval(ctx context.Context, ch chan ApprovalDecision, toolCallID string) (ApprovalDecision, bool) {
+	for {
+		select {
+		case <-ctx.Done():
+			return ApprovalDecision{}, false
+		case d := <-ch:
+			if d.ToolCallID == "" || d.ToolCallID == toolCallID {
+				return d, true
+			}
+			// Stale decision for a prior tool call — drop and keep waiting.
+		}
+	}
 }
 
 func extractText(blocks []llm.Content) string {

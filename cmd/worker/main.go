@@ -9,6 +9,10 @@ import (
 	"strings"
 	"syscall"
 
+	_ "github.com/bRRRITSCOLD/immaiwin-go/internal/llm/anthropic" // register Anthropic provider in llm.Default
+	_ "github.com/bRRRITSCOLD/immaiwin-go/internal/llm/ollama"    // register Ollama provider
+	_ "github.com/bRRRITSCOLD/immaiwin-go/internal/llm/openai"    // register OpenAI provider
+
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/config"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/worker"
 )

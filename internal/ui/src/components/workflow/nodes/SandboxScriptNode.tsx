@@ -7,7 +7,7 @@ import { NumberField } from '~/components/ui/number-field'
 import { StepNameInput } from './StepNameInput'
 import { DynamicHandles } from './DynamicHandles'
 import { AsToolPanel } from './AsToolPanel'
-import { NodeDebugPanel, BreakpointMarker } from '../RunResultsContext'
+import { NodeDebugPanel, BreakpointMarker, ApprovalMarker } from '../RunResultsContext'
 import { SandboxDebugDialog, type DialogMode } from '../SandboxDebugDialog'
 
 const LANGUAGES = [
@@ -112,9 +112,12 @@ export function SandboxScriptNode({ id, data, selected }: NodeProps) {
     updateNodeData(id, updates)
   }
 
+  const requireApproval = (data?.require_node_approval as boolean) ?? false
+
   return (
     <div className="relative min-w-[280px] h-full">
       <BreakpointMarker id={id} />
+      <ApprovalMarker id={id} enabled={requireApproval} onToggle={(_, next) => updateNodeData(id, { require_node_approval: next })} />
       <div className={`overflow-x-hidden rounded-lg border-2 ${borderColor} bg-card text-card-foreground shadow-sm h-full`}>
         <NodeResizer minWidth={280} minHeight={80} isVisible={selected} />
         <div className={`flex items-center gap-2 px-4 py-2.5 border-b ${accentColor}`}>

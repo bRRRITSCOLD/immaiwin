@@ -11,7 +11,7 @@ import { StepNameInput } from './StepNameInput'
 import { DynamicHandles } from './DynamicHandles'
 import { AsToolPanel } from './AsToolPanel'
 import { ConnectionPicker } from './ConnectionPicker'
-import { NodeDebugPanel, BreakpointMarker } from '../RunResultsContext'
+import { NodeDebugPanel, BreakpointMarker, ApprovalMarker } from '../RunResultsContext'
 
 const OPERATIONS = [
   'publish',
@@ -290,10 +290,12 @@ export function RedisRequestNode({ id, data, selected }: NodeProps) {
   }, [form, id, updateNodeData])
 
   const [openMain, setOpenMain] = useState(true)
+  const requireApproval = (data?.require_node_approval as boolean) ?? false
 
   return (
     <div className="relative min-w-[300px] h-full">
       <BreakpointMarker id={id} />
+      <ApprovalMarker id={id} enabled={requireApproval} onToggle={(_, next) => updateNodeData(id, { require_node_approval: next })} />
       <div className="overflow-x-hidden rounded-lg border-2 border-orange-500 bg-card text-card-foreground shadow-sm h-full">
         <NodeResizer minWidth={300} minHeight={80} isVisible={selected} />
         <div className="flex items-center gap-2 px-4 py-2.5 border-b border-orange-500/40">

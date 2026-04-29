@@ -78,10 +78,21 @@ func (r *WorkflowRepository) Upsert(ctx context.Context, wf workflow.Workflow) (
 		"$set":         setFields,
 		"$setOnInsert": bson.M{"created_at": wf.CreatedAt},
 	}
+	unsetFields := bson.M{}
 	if wf.CostLimits != nil {
 		setFields["cost_limits"] = wf.CostLimits
 	} else {
-		update["$unset"] = bson.M{"cost_limits": ""}
+		unsetFields["cost_limits"] = ""
+	}
+	// ParamsSchema persists too. Empty slice → $unset so legacy docs
+	// don't accumulate empty arrays after a clear.
+	if len(wf.ParamsSchema) > 0 {
+		setFields["params_schema"] = wf.ParamsSchema
+	} else {
+		unsetFields["params_schema"] = ""
+	}
+	if len(unsetFields) > 0 {
+		update["$unset"] = unsetFields
 	}
 
 	_, err := r.col.UpdateOne(

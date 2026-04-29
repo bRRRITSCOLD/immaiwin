@@ -11,7 +11,7 @@ import { Field, FieldDescription, FieldError, FieldLabel } from '~/components/ui
 import { StepNameInput } from './StepNameInput'
 import { DynamicHandles } from './DynamicHandles'
 import { AsToolPanel } from './AsToolPanel'
-import { NodeDebugPanel, BreakpointMarker } from '../RunResultsContext'
+import { NodeDebugPanel, BreakpointMarker, ApprovalMarker } from '../RunResultsContext'
 
 const METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'] as const
 type Method = (typeof METHODS)[number]
@@ -222,9 +222,12 @@ export function HTTPRequestNode({ id, data, selected }: NodeProps) {
   )
   const [openOpts, setOpenOpts] = useState(false)
 
+  const requireApproval = (data?.require_node_approval as boolean) ?? false
+
   return (
     <div className="relative min-w-[320px] h-full">
       <BreakpointMarker id={id} />
+      <ApprovalMarker id={id} enabled={requireApproval} onToggle={(_, next) => updateNodeData(id, { require_node_approval: next })} />
       <div className="overflow-x-hidden rounded-lg border-2 border-sky-400 bg-card text-card-foreground shadow-sm h-full">
         <NodeResizer minWidth={320} minHeight={80} isVisible={selected} />
         <div className="flex items-center gap-2 px-4 py-2.5 border-b border-sky-400/40">

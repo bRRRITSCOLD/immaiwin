@@ -191,7 +191,7 @@ function WorkflowsPage() {
     }
   }
 
-  async function handleRun(stopAt?: string, input?: unknown) {
+  async function handleRun(stopAt?: string | string[], input?: unknown) {
     const wf = activeWorkflow()
     if (!wf) return
 
@@ -238,6 +238,7 @@ function WorkflowsPage() {
           <Link to="/workflows" className="text-foreground font-medium">Workflows</Link>
           <Link to="/runs" className="text-muted-foreground hover:text-foreground transition-colors">Runs</Link>
           <Link to="/evals" className="text-muted-foreground hover:text-foreground transition-colors">Evals</Link>
+          <Link to="/skills" className="text-muted-foreground hover:text-foreground transition-colors">Skills</Link>
         </nav>
         {active && (
           <div className="ml-auto flex items-center gap-2">
@@ -273,6 +274,12 @@ function WorkflowsPage() {
               agentRuns={agentRuns}
               pausedRunID={stream.pausedRunID}
               runError={stream.error}
+              onApproveTool={(toolId, approved, reason) => {
+                stream.approveTool(toolId, approved, reason)
+              }}
+              onSetBreakpoints={(ids) => {
+                stream.setBreakpoints(ids)
+              }}
             />
           ) : (
             <div className="flex h-full items-center justify-center text-muted-foreground text-sm">

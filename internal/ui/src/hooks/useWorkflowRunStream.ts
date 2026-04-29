@@ -12,6 +12,7 @@ export interface RunEvent {
     | 'agent_iter'
     | 'agent_llm'
     | 'agent_tool_call'
+    | 'agent_tool_approval'
     | 'agent_tool_result'
     | 'agent_final'
     | 'run_done'
@@ -35,6 +36,11 @@ export interface RunEvent {
     total_tokens: number
     cost_usd: number
   }
+  // Populated on `agent_llm` events. Lets timeline + run detail views
+  // show "anthropic / claude-sonnet-4-6" per iter without chasing
+  // connection config.
+  provider?: string
+  model?: string
   // Populated on the terminal `run_done` event so the UI can flip Run ↔
   // Continue based on whether the run paused mid-way.
   run_id?: string
@@ -54,7 +60,7 @@ export interface NodeRunState {
 
 export interface AgentIter {
   iter: number
-  llm?: { text?: string; usage?: RunEvent['usage'] }
+  llm?: { text?: string; usage?: RunEvent['usage']; provider?: string; model?: string }
   toolCalls: AgentToolCall[]
 }
 
@@ -64,6 +70,10 @@ export interface AgentToolCall {
   args?: unknown
   result?: string
   isError?: boolean
+  // True when the agent paused before executing this tool call, awaiting
+  // a user verdict via approve_tool. Cleared by the timeline buttons
+  // (optimistic) and authoritatively by the agent_tool_result event.
+  pendingApproval?: boolean
 }
 
 export interface WorkflowRunStream {
@@ -77,13 +87,23 @@ export interface WorkflowRunStream {
   // Cleared by reset() and by the next non-paused completion.
   pausedRunID: string | null
   lastRunID: string | null
-  run(workflowId: string, input?: unknown, stopAt?: string, resumeRunID?: string): void
+  run(workflowId: string, input?: unknown, stopAt?: string | string[], resumeRunID?: string): void
   // Releases an in-process pre-exec breakpoint pause by sending a
   // `{type:"continue"}` frame over the live WS. Distinct from re-running
   // with `resumeRunID` (which is for cross-process resume from a saved
   // PausedAgent snapshot). Returns true if the frame was sent, false
   // when no live connection.
   continue_(): boolean
+  // Send an approve_tool decision for a paused tool call (require_approval
+  // gate). Returns true when the frame was sent. Optimistically clears
+  // the pendingApproval flag locally; server's agent_tool_result event
+  // is the authoritative status.
+  approveTool(toolId: string, approved: boolean, reason?: string): boolean
+  // Live-mutate the run's breakpoint set. Sends a set_breakpoints WS
+  // frame; server replaces the executor's stopAtSet so subsequent BFS
+  // steps honour the new list. Returns true when the frame was sent.
+  // No-op when no live WS connection.
+  setBreakpoints(nodeIds: string[]): boolean
   cancel(): void
   reset(): void
 }
@@ -175,7 +195,7 @@ export function useWorkflowRunStream(): WorkflowRunStream {
           const n = ensure()
           const iters = n.iters.map((it) =>
             it.iter === (ev.iter ?? 0)
-              ? { ...it, llm: { text: ev.text, usage: ev.usage } }
+              ? { ...it, llm: { text: ev.text, usage: ev.usage, provider: ev.provider, model: ev.model } }
               : it,
           )
           next[id] = { ...n, iters }
@@ -201,6 +221,25 @@ export function useWorkflowRunStream(): WorkflowRunStream {
           next[id] = { ...n, iters }
           break
         }
+        case 'agent_tool_approval': {
+          // Server is paused waiting for the user to Approve/Reject this
+          // tool call. The matching agent_tool_call event has already
+          // populated the toolCalls entry; flip the local pendingApproval
+          // flag so the timeline renders the buttons.
+          const n = ensure()
+          const iters = n.iters.map((it) =>
+            it.iter === (ev.iter ?? 0)
+              ? {
+                  ...it,
+                  toolCalls: it.toolCalls.map((tc) =>
+                    tc.toolId === ev.tool_id ? { ...tc, pendingApproval: true } : tc,
+                  ),
+                }
+              : it,
+          )
+          next[id] = { ...n, iters }
+          break
+        }
         case 'agent_tool_result': {
           const n = ensure()
           const iters = n.iters.map((it) =>
@@ -209,7 +248,7 @@ export function useWorkflowRunStream(): WorkflowRunStream {
                   ...it,
                   toolCalls: it.toolCalls.map((tc) =>
                     tc.toolId === ev.tool_id
-                      ? { ...tc, result: ev.result, isError: ev.is_error }
+                      ? { ...tc, result: ev.result, isError: ev.is_error, pendingApproval: false }
                       : tc,
                   ),
                 }
@@ -255,7 +294,7 @@ export function useWorkflowRunStream(): WorkflowRunStream {
   }, [])
 
   const run = useCallback(
-    (workflowId: string, input?: unknown, stopAt?: string, resumeRunID?: string) => {
+    (workflowId: string, input?: unknown, stopAt?: string | string[], resumeRunID?: string) => {
       // Reset prior state. Don't clear pausedRunID yet — caller may pass
       // it as resumeRunID; the run_done handler clears it on success.
       setStatus('connecting')
@@ -340,6 +379,47 @@ export function useWorkflowRunStream(): WorkflowRunStream {
     setPausedRunID(null)
   }, [])
 
+  const approveTool = useCallback((toolId: string, approved: boolean, reason?: string) => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+      return false
+    }
+    wsRef.current.send(
+      JSON.stringify({
+        type: 'approve_tool',
+        tool_call_id: toolId,
+        approved,
+        ...(reason ? { reason } : {}),
+      }),
+    )
+    // Optimistically clear pendingApproval so the timeline doesn't lag
+    // behind the WS round-trip. Authoritative clear comes from the
+    // server's agent_tool_result event when the tool finishes (or is
+    // rejected on the server side).
+    setNodes((prev) => {
+      const next = { ...prev }
+      for (const id of Object.keys(next)) {
+        const n = next[id]!
+        const iters = n.iters.map((it) => ({
+          ...it,
+          toolCalls: it.toolCalls.map((tc) =>
+            tc.toolId === toolId ? { ...tc, pendingApproval: false } : tc,
+          ),
+        }))
+        next[id] = { ...n, iters }
+      }
+      return next
+    })
+    return true
+  }, [])
+
+  const setBreakpoints = useCallback((nodeIds: string[]) => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+      return false
+    }
+    wsRef.current.send(JSON.stringify({ type: 'set_breakpoints', node_ids: nodeIds }))
+    return true
+  }, [])
+
   const continue_ = useCallback(() => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
       return false
@@ -376,5 +456,5 @@ export function useWorkflowRunStream(): WorkflowRunStream {
     }
   }, [])
 
-  return { status, events, nodes, error, run, continue_, cancel, reset, pausedRunID, lastRunID }
+  return { status, events, nodes, error, run, continue_, approveTool, setBreakpoints, cancel, reset, pausedRunID, lastRunID }
 }

@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { useForm } from '@tanstack/react-form'
 import { useDropzone } from 'react-dropzone'
 import { z } from 'zod'
@@ -15,7 +15,7 @@ import {
 import { Input } from '~/components/ui/input'
 import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from '~/components/ui/field'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '~/components/ui/tabs'
-import { Plus, Upload, FileUp } from 'lucide-react'
+import { Plus, Upload, FileUp, Copy } from 'lucide-react'
 import type { Workflow } from './useWorkflowStore'
 
 const API_BASE = import.meta.env['VITE_API_URL'] ?? 'http://localhost:8080'
@@ -71,6 +71,61 @@ export function AddWorkflowDialog({ onCreated }: Props) {
       }
     },
   })
+
+  // ── Template state ─────────────────────────────────────────────────────────
+  interface TemplateMeta {
+    slug: string
+    name: string
+    description?: string
+    category?: string
+    workflow: Workflow
+  }
+  const [templates, setTemplates] = useState<TemplateMeta[]>([])
+  const [tmplLoading, setTmplLoading] = useState(false)
+  const [tmplForking, setTmplForking] = useState(false)
+
+  useEffect(() => {
+    if (tab !== 'template' || templates.length > 0) return
+    setTmplLoading(true)
+    fetch(`${API_BASE}/api/v1/workflow_templates`)
+      .then((r) => r.json())
+      .then((d: { templates: TemplateMeta[] }) => setTemplates(d.templates ?? []))
+      .catch(() => toast.error('Failed to load templates'))
+      .finally(() => setTmplLoading(false))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab])
+
+  async function forkTemplate(tmpl: TemplateMeta) {
+    setTmplForking(true)
+    try {
+      const id = crypto.randomUUID()
+      const wf = tmpl.workflow
+      const res = await fetch(`${API_BASE}/api/v1/workflows/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: `${wf.name} (copy)`,
+          params: wf.params ?? {},
+          nodes: wf.nodes ?? [],
+          edges: wf.edges ?? [],
+          ...(wf.cost_limits ? { cost_limits: wf.cost_limits } : {}),
+          ...(wf.params_schema ? { params_schema: wf.params_schema } : {}),
+        }),
+      })
+      if (!res.ok) {
+        const d = await res.json()
+        toast.error(d.error ?? 'Failed to fork template')
+        return
+      }
+      toast.success(`Forked "${tmpl.name}"`)
+      handleClose()
+      onCreated()
+    } catch {
+      toast.error('Network error')
+    } finally {
+      setTmplForking(false)
+    }
+  }
 
   // ── Import state ───────────────────────────────────────────────────────────
   const [bundle, setBundle] = useState<WorkflowBundle | null>(null)
@@ -159,14 +214,15 @@ export function AddWorkflowDialog({ onCreated }: Props) {
         </button>
       </DialogTrigger>
 
-      <DialogContent className="sm:max-w-md">
+      <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>New Workflow</DialogTitle>
         </DialogHeader>
 
         <Tabs value={tab} onValueChange={setTab}>
           <TabsList className="w-full">
-            <TabsTrigger value="create" className="flex-1">Create</TabsTrigger>
+            <TabsTrigger value="create" className="flex-1">Blank</TabsTrigger>
+            <TabsTrigger value="template" className="flex-1">From Template</TabsTrigger>
             <TabsTrigger value="import" className="flex-1">Import</TabsTrigger>
           </TabsList>
 
@@ -225,6 +281,56 @@ export function AddWorkflowDialog({ onCreated }: Props) {
                 </createForm.Subscribe>
               </DialogFooter>
             </form>
+          </TabsContent>
+
+          {/* ── Template tab ──────────────────────────────────────────── */}
+          <TabsContent value="template">
+            <div className="py-2 max-h-[400px] overflow-y-auto space-y-2">
+              {tmplLoading && (
+                <p className="text-xs text-muted-foreground italic py-4 text-center">Loading templates…</p>
+              )}
+              {!tmplLoading && templates.length === 0 && (
+                <p className="text-xs text-muted-foreground italic py-4 text-center">No templates available</p>
+              )}
+              {templates.map((t) => {
+                const nodeCount = t.workflow.nodes?.length ?? 0
+                const edgeCount = t.workflow.edges?.length ?? 0
+                return (
+                  <button
+                    key={t.slug}
+                    type="button"
+                    disabled={tmplForking}
+                    onClick={() => forkTemplate(t)}
+                    className="w-full text-left rounded border border-border hover:border-primary hover:bg-accent/40 transition-colors p-3 disabled:opacity-50"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className="font-medium text-sm truncate">{t.name}</span>
+                        {t.category && (
+                          <span className="text-[9px] uppercase tracking-wider text-muted-foreground bg-muted px-1.5 py-0.5 rounded">
+                            {t.category}
+                          </span>
+                        )}
+                      </div>
+                      <Copy className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                    </div>
+                    {t.description && (
+                      <p className="text-xs text-muted-foreground mt-1 leading-snug">
+                        {t.description}
+                      </p>
+                    )}
+                    <p className="text-[10px] text-muted-foreground/70 mt-1">
+                      {nodeCount} node{nodeCount === 1 ? '' : 's'} · {edgeCount} edge{edgeCount === 1 ? '' : 's'}
+                    </p>
+                  </button>
+                )
+              })}
+            </div>
+            <DialogFooter className="pt-2">
+              <Button type="button" variant="ghost" onClick={handleClose}>
+                Cancel
+              </Button>
+            </DialogFooter>
           </TabsContent>
 
           {/* ── Import tab ────────────────────────────────────────────── */}
