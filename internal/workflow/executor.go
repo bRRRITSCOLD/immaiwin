@@ -19,6 +19,7 @@ import (
 
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/sandbox"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/skills"
+	"github.com/oklog/ulid/v2"
 	"github.com/redis/go-redis/v9"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
@@ -242,6 +243,67 @@ type runEnv struct {
 	// run-repo, etc. Always non-nil after Run() configures it (defaults
 	// to the executor's Events field, then to a no-op).
 	events EventEmitter
+
+	// stopAt is the node ID to halt at (debug breakpoint). Empty when no
+	// breakpoint is set. Tool-invoked node handlers (which bypass main
+	// BFS) read this so a breakpoint on an as_tool target stops the run
+	// after the tool finishes — without it, the BFS-side stopAt check
+	// never fires for tool-invoked nodes.
+	stopAt string
+	// stopAtHit is set by a tool handler when it executes the breakpoint
+	// node. The BFS loop checks it after every iteration and short-
+	// circuits the run. Goroutine-safe via the toolSteps mutex (we reuse
+	// it because the handler already takes that lock).
+	stopAtHit bool
+
+	// resumeAgentState carries the persisted snapshot from a previous
+	// paused run when the current run was started with `resume_run_id`.
+	// The agent loop checks `state.AgentNodeID` against the current node
+	// and rehydrates messages/iter/usage/trace, skipping fresh prompt
+	// construction. nil for a normal run.
+	resumeAgentState *AgentPauseState
+	// resumeRunID is the WorkflowRun ID we're resuming into so the pause-
+	// write targets the same record instead of creating a sibling. Empty
+	// for fresh runs.
+	resumeRunID string
+	// completedNodeIDs is the set of node IDs already executed in the
+	// previous (paused) run; the BFS pre-marks these as visited so the
+	// resume run jumps straight to the paused agent.
+	completedNodeIDs map[string]bool
+
+	// continueCh wakes a paused pre-exec breakpoint when the live UI
+	// sends `{type:"continue"}` over the run WS. Nil disables pre-exec
+	// pause (falls back to the post-exec stopAt path).
+	continueCh chan struct{}
+}
+
+// waitAtBreakpoint blocks until the live UI sends a continue frame OR
+// the run context cancels. Emits a `step_pending` event so the UI can
+// flip the node state to a "pending — click Continue to fire" indicator.
+// No-op when the env has no continueCh — the breakpoint then falls
+// through to the post-exec path that persists `PausedAgent`.
+func (env *runEnv) waitAtBreakpoint(ctx context.Context, node Node) {
+	if env.continueCh == nil || env.events == nil {
+		return
+	}
+	env.events.Emit(stampNow(RunEvent{
+		Type:     EventStepPending,
+		NodeID:   node.ID,
+		NodeType: node.Type,
+	}))
+	select {
+	case <-env.continueCh:
+		// Drain extra tokens so a fast double-click doesn't release
+		// the next breakpoint as well.
+		for {
+			select {
+			case <-env.continueCh:
+			default:
+				return
+			}
+		}
+	case <-ctx.Done():
+	}
 }
 
 // toolStepCollector accumulates StepResults from tool-invoked node runs.
@@ -291,6 +353,202 @@ type adjEntry struct {
 // when callers need to attach a per-invocation emitter (WS handler, tests).
 func (e *WorkflowExecutor) Run(ctx context.Context, wf Workflow, stopAt string, initialInput ...any) ([]StepResult, error) {
 	return e.RunWithEvents(ctx, wf, stopAt, e.Events, initialInput...)
+}
+
+// RunOpts collects per-invocation knobs for RunResumable. Reserved for the
+// resumable + emitter combo so callers don't trigger Run signature growth.
+type RunOpts struct {
+	StopAt      string
+	Input       any
+	ResumeRunID string // when set, resumes a paused WorkflowRun
+	Emitter     EventEmitter
+	// ContinueCh receives a tick when the live UI client sends a
+	// `{type:"continue"}` frame over the run WS. Used by the pre-exec
+	// breakpoint path (`runEnv.waitAtBreakpoint`) to unblock a paused
+	// node *in-process* — distinct from the persisted-resume flow that
+	// re-launches the run from a saved snapshot. Nil disables pre-exec
+	// pause: the breakpoint then falls back to post-exec semantics.
+	ContinueCh chan struct{}
+}
+
+// RunOutcome reports the final state of a Resumable run plus the WorkflowRun
+// ID so the caller (HTTP handler) can echo it back to the UI for the
+// "Continue" button to target on the next click.
+type RunOutcome struct {
+	Steps  []StepResult `json:"steps"`
+	RunID  string       `json:"run_id,omitempty"`
+	Status RunStatus    `json:"status"`
+}
+
+// resumeKeyT is the ctx key we tunnel resume state through. Internal —
+// callers go through RunResumable, not the ctx.
+type resumeKeyT struct{}
+
+var resumeKey = resumeKeyT{}
+
+type resumeBundle struct {
+	runID         string
+	agent         *AgentPauseState
+	completedIDs  map[string]bool
+	continueCh    chan struct{} // for pre-exec breakpoint pause; nil disables
+}
+
+// RunResumable executes a workflow with optional mid-run resume. When
+// `opts.ResumeRunID` is set, the executor loads the persisted
+// `WorkflowRun.PausedAgent` snapshot, pre-marks every node already
+// executed in that run as visited (so they don't re-run), and the
+// matching agent's loop hydrates from the saved messages/iter/usage so
+// the LLM picks up exactly where it left off.
+//
+// On a fresh run (no ResumeRunID), behaves like Run + RunWithEvents but
+// also returns the freshly-minted run ID and final status — handy for
+// the UI to track "is this run paused or done?" without a follow-up GET.
+func (e *WorkflowExecutor) RunResumable(ctx context.Context, wf Workflow, opts RunOpts) (RunOutcome, error) {
+	bundle := &resumeBundle{continueCh: opts.ContinueCh}
+
+	// Resume path: hydrate from existing run record.
+	if opts.ResumeRunID != "" {
+		if e.RunRepo == nil {
+			return RunOutcome{}, fmt.Errorf("workflow: resume requested but RunRepo not configured")
+		}
+		prev, err := e.RunRepo.Get(ctx, opts.ResumeRunID)
+		if err != nil {
+			return RunOutcome{}, fmt.Errorf("workflow: load resume run %q: %w", opts.ResumeRunID, err)
+		}
+		if prev.Status != RunStatusPaused || prev.PausedAgent == nil {
+			return RunOutcome{}, fmt.Errorf("workflow: run %q is not paused (status=%s)", opts.ResumeRunID, prev.Status)
+		}
+		bundle.runID = prev.ID
+		bundle.agent = prev.PausedAgent
+		bundle.completedIDs = make(map[string]bool, len(prev.Steps))
+		for _, s := range prev.Steps {
+			// Skip the agent itself — we want it to re-enter the loop with
+			// hydrated state, not get pre-marked visited.
+			if s.NodeID == prev.PausedAgent.AgentNodeID {
+				continue
+			}
+			bundle.completedIDs[s.NodeID] = true
+		}
+		// Pre-flip status back to running so successive observers see the
+		// transition. Updated again at the end (success/paused/error).
+		prev.Status = RunStatusRunning
+		prev.PausedAgent = nil
+		_ = e.RunRepo.Update(ctx, prev)
+	}
+
+	// Pre-run daily cost cap check. Skipped on resume (already running
+	// once; check happens mid-run via the agent loop). Skipped when no
+	// cap configured or no run repo. On breach we ALSO persist a tiny
+	// run record (status=error, error="cost_exceeded:...") so the /runs
+	// table reflects the rejected attempt — without it the user sees
+	// silence on the listing and thinks the cap didn't fire.
+	if opts.ResumeRunID == "" && wf.CostLimits != nil && wf.CostLimits.MaxDailyUSD > 0 && e.RunRepo != nil {
+		spent, sumErr := e.RunRepo.SumCostSince(ctx, wf.ID, startOfUTCDay(time.Now()))
+		if sumErr == nil && spent >= wf.CostLimits.MaxDailyUSD {
+			ce := &CostExceededError{Axis: "daily", CapUSD: wf.CostLimits.MaxDailyUSD, SpentUSD: spent}
+			now := time.Now().UTC()
+			rejectedID := ulid.Make().String()
+			rec := WorkflowRun{
+				ID:           rejectedID,
+				WorkflowID:   wf.ID,
+				TenantID:     "default",
+				StartedAt:    now,
+				FinishedAt:   &now,
+				Status:       RunStatusError,
+				Params:       wf.Params,
+				TriggerInput: opts.Input,
+				Error:        ce.Error(),
+			}
+			if _, cerr := e.RunRepo.Create(ctx, rec); cerr == nil {
+				if emitter := opts.Emitter; emitter != nil {
+					emitter.Emit(stampNow(RunEvent{Type: EventCostExceeded, Error: ce.Error(), RunID: rejectedID}))
+					emitter.Emit(stampNow(RunEvent{Type: EventRunDone, Status: string(RunStatusError), RunID: rejectedID}))
+				}
+				return RunOutcome{Status: RunStatusError, RunID: rejectedID}, ce
+			}
+			if emitter := opts.Emitter; emitter != nil {
+				emitter.Emit(stampNow(RunEvent{Type: EventCostExceeded, Error: ce.Error()}))
+			}
+			return RunOutcome{Status: RunStatusError}, ce
+		}
+	}
+
+	// Fresh-run path: create a new WorkflowRun record so the agent loop
+	// (and the eventual pause-write, if stopAt fires) has a concrete
+	// document to update. RunRepo is optional — when not configured we
+	// run without persistence, same behaviour as the old Run().
+	if bundle.runID == "" && e.RunRepo != nil {
+		runRec := WorkflowRun{
+			ID:         ulid.Make().String(),
+			WorkflowID: wf.ID,
+			TenantID:   "default",
+			StartedAt:  time.Now().UTC(),
+			Status:     RunStatusRunning,
+			Params:     wf.Params,
+		}
+		if opts.Input != nil {
+			runRec.TriggerInput = opts.Input
+		}
+		if created, cerr := e.RunRepo.Create(ctx, runRec); cerr == nil {
+			bundle.runID = created.ID
+		}
+	}
+
+	ctx = context.WithValue(ctx, resumeKey, bundle)
+
+	emitter := opts.Emitter
+	if emitter == nil {
+		emitter = e.Events
+	}
+
+	var steps []StepResult
+	var err error
+	if opts.Input != nil {
+		steps, err = e.RunWithEvents(ctx, wf, opts.StopAt, emitter, opts.Input)
+	} else {
+		steps, err = e.RunWithEvents(ctx, wf, opts.StopAt, emitter)
+	}
+	// Persist final state. The agent loop already wrote PausedAgent + status
+	// when stopAtHit fired, so we don't clobber a paused record here.
+	//
+	// Any step with a non-empty Error promotes the run to status=error.
+	// RunWithEvents itself returns nil even on per-node failures (BFS
+	// just follows the error edge or drops the queue), so without this
+	// scan a cost-cap breach or any handler error showed up as a green
+	// "success" badge with an angry red step inside — confusing as hell.
+	status := RunStatusSuccess
+	stepErr := ""
+	if err != nil {
+		status = RunStatusError
+		stepErr = err.Error()
+	}
+	if status == RunStatusSuccess {
+		for _, s := range steps {
+			if s.Error != "" {
+				status = RunStatusError
+				stepErr = s.Error
+				break
+			}
+		}
+	}
+	if bundle.runID != "" && e.RunRepo != nil {
+		if rec, gerr := e.RunRepo.Get(ctx, bundle.runID); gerr == nil {
+			if rec.Status != RunStatusPaused {
+				rec.Status = status
+				now := time.Now().UTC()
+				rec.FinishedAt = &now
+				rec.Steps = steps
+				rec.Usage = aggregateUsage(rec.AgentTraces)
+				if stepErr != "" {
+					rec.Error = stepErr
+				}
+				_ = e.RunRepo.Update(ctx, rec)
+			} else {
+				status = RunStatusPaused
+			}
+		}
+	}
+	return RunOutcome{Steps: steps, RunID: bundle.runID, Status: status}, err
 }
 
 // RunWithEvents is Run with an explicit per-invocation EventEmitter. Pass
@@ -359,6 +617,21 @@ func (e *WorkflowExecutor) RunWithEvents(ctx context.Context, wf Workflow, stopA
 		tenantID:  "default",
 		toolSteps: &toolStepCollector{},
 		events:    emitter,
+		stopAt:    stopAt,
+	}
+	// Resume hydration: when called via RunResumable a bundle is stashed in
+	// ctx with the previous run's ID, paused agent state, and the set of
+	// node IDs already executed. We pre-mark visited so the BFS doesn't
+	// re-run the http_request etc. that completed before the pause.
+	if rb, ok := ctx.Value(resumeKey).(*resumeBundle); ok && rb != nil {
+		env.resumeAgentState = rb.agent
+		env.resumeRunID = rb.runID
+		env.runID = rb.runID
+		env.continueCh = rb.continueCh
+		env.completedNodeIDs = rb.completedIDs
+		for id := range rb.completedIDs {
+			visited[id] = true
+		}
 	}
 	ctx = context.WithValue(ctx, runEnvKey, env)
 
@@ -380,6 +653,13 @@ func (e *WorkflowExecutor) RunWithEvents(ctx context.Context, wf Workflow, stopA
 			err          error
 			extraResults []StepResult
 		)
+
+		// Pre-exec breakpoint: when a stopAt node is about to run, hold
+		// here until the live UI sends a continue frame. Skipped when no
+		// continueCh is wired (then post-exec stopAt path takes over).
+		if env.stopAt != "" && node.ID == env.stopAt && env.continueCh != nil {
+			env.waitAtBreakpoint(ctx, node)
+		}
 
 		emitter.Emit(stampNow(RunEvent{
 			Type:     EventStepStart,
@@ -418,9 +698,25 @@ func (e *WorkflowExecutor) RunWithEvents(ctx context.Context, wf Workflow, stopA
 			stepDone.Error = err.Error()
 			stepDone.IsError = true
 		}
+		// When the node is the agent that paused mid-loop (its output
+		// carries `paused: true` and `env.stopAtHit` is set), tag the
+		// event so the UI renders "paused" instead of green/success.
+		if env.stopAtHit && node.Type == NodeTypeAIAgent {
+			stepDone.Status = "paused"
+		}
 		emitter.Emit(stampNow(stepDone))
 
 		if stopAt != "" && node.ID == stopAt {
+			results = append(results, env.toolSteps.drain()...)
+			emitter.Emit(stampNow(RunEvent{Type: EventRunDone, Status: "paused", RunID: env.runID}))
+			return results, nil
+		}
+		// A tool-invoked node (HTTP/Redis as_tool target) bypasses main
+		// BFS but may have hit the breakpoint. Short-circuit here so the
+		// run halts immediately rather than continuing past the agent.
+		if env.stopAtHit {
+			results = append(results, env.toolSteps.drain()...)
+			emitter.Emit(stampNow(RunEvent{Type: EventRunDone, Status: "paused", RunID: env.runID}))
 			return results, nil
 		}
 
@@ -441,7 +737,7 @@ func (e *WorkflowExecutor) RunWithEvents(ctx context.Context, wf Workflow, stopA
 	// per-call) — preserved by the mutex-guarded slice.
 	results = append(results, env.toolSteps.drain()...)
 
-	emitter.Emit(stampNow(RunEvent{Type: EventRunDone}))
+	emitter.Emit(stampNow(RunEvent{Type: EventRunDone, Status: "success", RunID: env.runID}))
 
 	return results, nil
 }
@@ -2283,5 +2579,50 @@ func toSlice(input any) []any {
 	default:
 		return []any{v}
 	}
+}
+
+// startOfUTCDay returns midnight UTC for the given time.
+func startOfUTCDay(t time.Time) time.Time {
+	t = t.UTC()
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
+}
+
+// CostExceededError is the typed error returned when a workflow.CostLimits
+// cap blocks a run (pre-start daily cap) or aborts one mid-run (per-run or
+// daily cap during agent loop). The Axis field tells the UI which cap
+// fired so it can label the error appropriately ("daily cap" vs "run cap").
+type CostExceededError struct {
+	Axis    string  // "run" or "daily"
+	CapUSD  float64 // configured cap
+	SpentUSD float64 // observed spend at breach time
+}
+
+func (e *CostExceededError) Error() string {
+	return fmt.Sprintf("cost_exceeded: %s cap $%.4f reached (spent $%.4f)", e.Axis, e.CapUSD, e.SpentUSD)
+}
+
+// IsCostExceeded reports whether err (or anything it wraps) is a
+// *CostExceededError. UI / handlers use this to render a typed badge
+// rather than the raw error string.
+func IsCostExceeded(err error) bool {
+	var ce *CostExceededError
+	return errors.As(err, &ce)
+}
+
+// aggregateUsage walks every llm_call event across every agent trace and
+// sums input/output tokens + cost into one WorkflowRun.Usage. Same source
+// the live AgentCostBadge reads, so the persisted total matches the UI.
+// CostUSD stays full-precision float64 — UI decides rounding.
+func aggregateUsage(traces map[string][]TraceEvent) UsageTotal {
+	var total UsageTotal
+	for _, evs := range traces {
+		for _, ev := range evs {
+			if ev.Type != "llm_call" || ev.Usage == nil {
+				continue
+			}
+			total.Add(ev.Usage.InputTokens, ev.Usage.OutputTokens, ev.Usage.CostUSD)
+		}
+	}
+	return total
 }
 

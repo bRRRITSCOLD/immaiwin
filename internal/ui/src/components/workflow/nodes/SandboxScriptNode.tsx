@@ -3,6 +3,7 @@ import { Bug, Container, HelpCircle, Maximize2, Package } from 'lucide-react'
 import { useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import { Tooltip, TooltipTrigger, TooltipContent } from '~/components/ui/tooltip'
+import { NumberField } from '~/components/ui/number-field'
 import { StepNameInput } from './StepNameInput'
 import { DynamicHandles } from './DynamicHandles'
 import { AsToolPanel } from './AsToolPanel'
@@ -192,14 +193,14 @@ export function SandboxScriptNode({ id, data, selected }: NodeProps) {
           </label>
           <label className="nodrag flex items-center gap-1 text-[9px] text-muted-foreground">
             CPU
-            <input
-              type="number"
+            <NumberField
               min={0.1}
               max={4}
               step={0.1}
-              className="w-10 bg-muted border border-border rounded px-1 py-0.5 text-[9px] outline-none"
+              className="w-10 bg-muted border border-border rounded px-1 py-0.5 text-[9px] outline-none h-auto shadow-none"
               value={cpuLimit}
-              onChange={(e) => updateNodeData(id, { cpu_limit: Number(e.target.value) || 0.5 })}
+              emptyValue={0.5}
+              onChange={(v) => updateNodeData(id, { cpu_limit: v || 0.5 })}
             />
           </label>
           <label className="nodrag flex items-center gap-1 text-[9px] text-muted-foreground cursor-pointer">

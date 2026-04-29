@@ -1,12 +1,18 @@
 import { create } from 'zustand'
 import type { Node, Edge } from '@xyflow/react'
 
+export interface CostLimits {
+  max_run_usd: number
+  max_daily_usd: number
+}
+
 export interface Workflow {
   id: string
   name: string
   params: Record<string, string>
   nodes: Node[]
   edges: Edge[]
+  cost_limits?: CostLimits | null
   created_at: string
   updated_at: string
 }
@@ -42,6 +48,7 @@ interface WorkflowStore {
   setSelectedEdgeType(type: EdgePaletteType | null): void
   setAttachingFrom(af: AttachingFrom | null): void
   updateActiveGraph(nodes: Node[], edges: Edge[], params: Record<string, string>): void
+  updateActiveCostLimits(cost_limits: CostLimits | null): void
   activeWorkflow(): Workflow | null
 }
 
@@ -79,6 +86,16 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
     set({
       workflows: workflows.map((w) =>
         w.id === activeId ? { ...w, nodes, edges, params } : w,
+      ),
+    })
+  },
+
+  updateActiveCostLimits(cost_limits) {
+    const { activeId, workflows } = get()
+    if (!activeId) return
+    set({
+      workflows: workflows.map((w) =>
+        w.id === activeId ? { ...w, cost_limits } : w,
       ),
     })
   },

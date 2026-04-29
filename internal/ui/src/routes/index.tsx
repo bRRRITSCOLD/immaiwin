@@ -14,11 +14,6 @@ function TradesPage() {
         <Separator orientation="vertical" className="h-5" />
         <nav className="flex items-center gap-3 text-sm">
           <Link to="/" className="text-foreground font-medium">Polymarket</Link>
-          <Link to="/news" className="text-muted-foreground hover:text-foreground transition-colors">News</Link>
-          <Link to="/options" className="text-muted-foreground hover:text-foreground transition-colors">Options</Link>
-          <Link to="/futures" className="text-muted-foreground hover:text-foreground transition-colors">Futures</Link>
-          <Link to="/dashboard" className="text-muted-foreground hover:text-foreground transition-colors">Dashboard</Link>
-          <Link to="/scrapers" className="text-muted-foreground hover:text-foreground transition-colors">Scrapers</Link>
           <Link to="/workflows" className="text-muted-foreground hover:text-foreground transition-colors">Workflows</Link>
         </nav>
       </header>

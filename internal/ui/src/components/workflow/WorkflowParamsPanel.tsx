@@ -1,13 +1,17 @@
 import { useState } from 'react'
-import { ChevronDown, ChevronUp, Plus, Trash2 } from 'lucide-react'
+import { ChevronDown, ChevronUp, Plus, Save, Trash2 } from 'lucide-react'
+import { Button } from '~/components/ui/button'
 import { Input } from '~/components/ui/input'
 
 interface Props {
   params: Record<string, string>
   onChange(params: Record<string, string>): void
+  // Persists the workflow doc (params ride along on the existing PUT
+  // payload). Same handler the toolbar Save button uses.
+  onSave(): void
 }
 
-export function WorkflowParamsPanel({ params, onChange }: Props) {
+export function WorkflowParamsPanel({ params, onChange, onSave }: Props) {
   const [open, setOpen] = useState(false)
   const entries = Object.entries(params)
 
@@ -95,6 +99,16 @@ export function WorkflowParamsPanel({ params, onChange }: Props) {
             <Plus className="h-3 w-3" />
             Add parameter
           </button>
+
+          <Button
+            variant="secondary"
+            size="sm"
+            className="w-full h-7 text-[11px]"
+            onClick={onSave}
+          >
+            <Save className="h-3 w-3 mr-1" />
+            Save parameters
+          </Button>
         </div>
       )}
     </div>

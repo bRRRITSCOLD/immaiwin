@@ -10,14 +10,10 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as WorkflowsRouteImport } from './routes/workflows'
-import { Route as WatchlistRouteImport } from './routes/watchlist'
-import { Route as ScrapersRouteImport } from './routes/scrapers'
-import { Route as OptionsRouteImport } from './routes/options'
-import { Route as NewsRouteImport } from './routes/news'
-import { Route as MarketsRouteImport } from './routes/markets'
-import { Route as FuturesRouteImport } from './routes/futures'
-import { Route as DashboardRouteImport } from './routes/dashboard'
+import { Route as RunsRouteImport } from './routes/runs'
+import { Route as EvalsRouteImport } from './routes/evals'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as RunsRunIdRouteImport } from './routes/runs_.$runId'
 import { Route as DocsCustomImagesRouteImport } from './routes/docs.custom-images'
 
 const WorkflowsRoute = WorkflowsRouteImport.update({
@@ -25,44 +21,24 @@ const WorkflowsRoute = WorkflowsRouteImport.update({
   path: '/workflows',
   getParentRoute: () => rootRouteImport,
 } as any)
-const WatchlistRoute = WatchlistRouteImport.update({
-  id: '/watchlist',
-  path: '/watchlist',
+const RunsRoute = RunsRouteImport.update({
+  id: '/runs',
+  path: '/runs',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ScrapersRoute = ScrapersRouteImport.update({
-  id: '/scrapers',
-  path: '/scrapers',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const OptionsRoute = OptionsRouteImport.update({
-  id: '/options',
-  path: '/options',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const NewsRoute = NewsRouteImport.update({
-  id: '/news',
-  path: '/news',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const MarketsRoute = MarketsRouteImport.update({
-  id: '/markets',
-  path: '/markets',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const FuturesRoute = FuturesRouteImport.update({
-  id: '/futures',
-  path: '/futures',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const DashboardRoute = DashboardRouteImport.update({
-  id: '/dashboard',
-  path: '/dashboard',
+const EvalsRoute = EvalsRouteImport.update({
+  id: '/evals',
+  path: '/evals',
   getParentRoute: () => rootRouteImport,
 } as any)
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const RunsRunIdRoute = RunsRunIdRouteImport.update({
+  id: '/runs_/$runId',
+  path: '/runs/$runId',
   getParentRoute: () => rootRouteImport,
 } as any)
 const DocsCustomImagesRoute = DocsCustomImagesRouteImport.update({
@@ -73,91 +49,63 @@ const DocsCustomImagesRoute = DocsCustomImagesRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
-  '/dashboard': typeof DashboardRoute
-  '/futures': typeof FuturesRoute
-  '/markets': typeof MarketsRoute
-  '/news': typeof NewsRoute
-  '/options': typeof OptionsRoute
-  '/scrapers': typeof ScrapersRoute
-  '/watchlist': typeof WatchlistRoute
+  '/evals': typeof EvalsRoute
+  '/runs': typeof RunsRoute
   '/workflows': typeof WorkflowsRoute
   '/docs/custom-images': typeof DocsCustomImagesRoute
+  '/runs/$runId': typeof RunsRunIdRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
-  '/dashboard': typeof DashboardRoute
-  '/futures': typeof FuturesRoute
-  '/markets': typeof MarketsRoute
-  '/news': typeof NewsRoute
-  '/options': typeof OptionsRoute
-  '/scrapers': typeof ScrapersRoute
-  '/watchlist': typeof WatchlistRoute
+  '/evals': typeof EvalsRoute
+  '/runs': typeof RunsRoute
   '/workflows': typeof WorkflowsRoute
   '/docs/custom-images': typeof DocsCustomImagesRoute
+  '/runs/$runId': typeof RunsRunIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
-  '/dashboard': typeof DashboardRoute
-  '/futures': typeof FuturesRoute
-  '/markets': typeof MarketsRoute
-  '/news': typeof NewsRoute
-  '/options': typeof OptionsRoute
-  '/scrapers': typeof ScrapersRoute
-  '/watchlist': typeof WatchlistRoute
+  '/evals': typeof EvalsRoute
+  '/runs': typeof RunsRoute
   '/workflows': typeof WorkflowsRoute
   '/docs/custom-images': typeof DocsCustomImagesRoute
+  '/runs_/$runId': typeof RunsRunIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
-    | '/dashboard'
-    | '/futures'
-    | '/markets'
-    | '/news'
-    | '/options'
-    | '/scrapers'
-    | '/watchlist'
+    | '/evals'
+    | '/runs'
     | '/workflows'
     | '/docs/custom-images'
+    | '/runs/$runId'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
-    | '/dashboard'
-    | '/futures'
-    | '/markets'
-    | '/news'
-    | '/options'
-    | '/scrapers'
-    | '/watchlist'
+    | '/evals'
+    | '/runs'
     | '/workflows'
     | '/docs/custom-images'
+    | '/runs/$runId'
   id:
     | '__root__'
     | '/'
-    | '/dashboard'
-    | '/futures'
-    | '/markets'
-    | '/news'
-    | '/options'
-    | '/scrapers'
-    | '/watchlist'
+    | '/evals'
+    | '/runs'
     | '/workflows'
     | '/docs/custom-images'
+    | '/runs_/$runId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
-  DashboardRoute: typeof DashboardRoute
-  FuturesRoute: typeof FuturesRoute
-  MarketsRoute: typeof MarketsRoute
-  NewsRoute: typeof NewsRoute
-  OptionsRoute: typeof OptionsRoute
-  ScrapersRoute: typeof ScrapersRoute
-  WatchlistRoute: typeof WatchlistRoute
+  EvalsRoute: typeof EvalsRoute
+  RunsRoute: typeof RunsRoute
   WorkflowsRoute: typeof WorkflowsRoute
   DocsCustomImagesRoute: typeof DocsCustomImagesRoute
+  RunsRunIdRoute: typeof RunsRunIdRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -169,53 +117,18 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof WorkflowsRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/watchlist': {
-      id: '/watchlist'
-      path: '/watchlist'
-      fullPath: '/watchlist'
-      preLoaderRoute: typeof WatchlistRouteImport
+    '/runs': {
+      id: '/runs'
+      path: '/runs'
+      fullPath: '/runs'
+      preLoaderRoute: typeof RunsRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/scrapers': {
-      id: '/scrapers'
-      path: '/scrapers'
-      fullPath: '/scrapers'
-      preLoaderRoute: typeof ScrapersRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/options': {
-      id: '/options'
-      path: '/options'
-      fullPath: '/options'
-      preLoaderRoute: typeof OptionsRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/news': {
-      id: '/news'
-      path: '/news'
-      fullPath: '/news'
-      preLoaderRoute: typeof NewsRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/markets': {
-      id: '/markets'
-      path: '/markets'
-      fullPath: '/markets'
-      preLoaderRoute: typeof MarketsRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/futures': {
-      id: '/futures'
-      path: '/futures'
-      fullPath: '/futures'
-      preLoaderRoute: typeof FuturesRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/dashboard': {
-      id: '/dashboard'
-      path: '/dashboard'
-      fullPath: '/dashboard'
-      preLoaderRoute: typeof DashboardRouteImport
+    '/evals': {
+      id: '/evals'
+      path: '/evals'
+      fullPath: '/evals'
+      preLoaderRoute: typeof EvalsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/': {
@@ -223,6 +136,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/runs_/$runId': {
+      id: '/runs_/$runId'
+      path: '/runs/$runId'
+      fullPath: '/runs/$runId'
+      preLoaderRoute: typeof RunsRunIdRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/docs/custom-images': {
@@ -237,15 +157,11 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
-  DashboardRoute: DashboardRoute,
-  FuturesRoute: FuturesRoute,
-  MarketsRoute: MarketsRoute,
-  NewsRoute: NewsRoute,
-  OptionsRoute: OptionsRoute,
-  ScrapersRoute: ScrapersRoute,
-  WatchlistRoute: WatchlistRoute,
+  EvalsRoute: EvalsRoute,
+  RunsRoute: RunsRoute,
   WorkflowsRoute: WorkflowsRoute,
   DocsCustomImagesRoute: DocsCustomImagesRoute,
+  RunsRunIdRoute: RunsRunIdRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

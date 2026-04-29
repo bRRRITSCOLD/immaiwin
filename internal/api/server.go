@@ -43,10 +43,12 @@ func NewServer(
 	fwl handler.FuturesWatchlistStore,
 	sc handler.ScraperConfigStore,
 	wfStore handler.WorkflowStore,
+	wfRunStore workflow.WorkflowRunStore,
 	wfExec *workflow.WorkflowExecutor,
 	connStore handler.ConnectionStore,
 	connInvalidator handler.ConnectionInvalidator,
 	skillBackend *handler.SkillBackend,
+	evalDeps handler.EvalDeps,
 	db *mongo.Database,
 	sandboxRT sandbox.Runtime,
 ) *Server {
@@ -81,11 +83,20 @@ func NewServer(
 
 	// Workflows
 	r.GET("/api/v1/workflows", handler.ListWorkflows(wfStore))
+	r.GET("/api/v1/workflows/:id", handler.GetWorkflow(wfStore))
 	r.PUT("/api/v1/workflows/:id", handler.UpsertWorkflow(wfStore))
 	r.DELETE("/api/v1/workflows/:id", handler.DeleteWorkflow(wfStore))
 	r.POST("/api/v1/workflows/:id/run", handler.RunWorkflow(wfStore, wfExec))
 	r.GET("/api/v1/workflows/:id/run/stream", handler.RunWorkflowWS(wfStore, wfExec))
 	r.GET("/api/v1/workflows/:id/ws-preview", handler.PreviewWorkflowWS(wfStore, connStore, db))
+
+	// Workflow runs (history page). Register the static `daily_total`
+	// route BEFORE `:id` so gin's radix tree doesn't route the literal
+	// segment through the wildcard handler.
+	r.GET("/api/v1/workflow_runs", handler.ListWorkflowRuns(wfRunStore))
+	r.GET("/api/v1/workflow_runs/daily_total", handler.DailyTotal(wfRunStore, wfStore))
+	r.GET("/api/v1/workflow_runs/daily_totals", handler.DailyTotals(wfRunStore, wfStore))
+	r.GET("/api/v1/workflow_runs/:id", handler.GetWorkflowRun(wfRunStore, wfStore))
 
 	// Connections
 	r.GET("/api/v1/connections", handler.ListConnections(connStore))
@@ -98,6 +109,16 @@ func NewServer(
 	// are still registered so the UI can call them unconditionally.
 	r.GET("/api/v1/skills", handler.ListSkills(skillBackend))
 	r.POST("/api/v1/skills/refresh", handler.RefreshSkills(skillBackend))
+
+	// Evals (P-eval). Disabled when EvalDeps is empty; handlers respond
+	// with 503 so the UI can fail open.
+	r.GET("/api/v1/evals", handler.ListEvals(evalDeps))
+	r.PUT("/api/v1/evals/:id", handler.UpsertEval(evalDeps))
+	r.GET("/api/v1/evals/:id", handler.GetEval(evalDeps))
+	r.DELETE("/api/v1/evals/:id", handler.DeleteEval(evalDeps))
+	r.POST("/api/v1/evals/:id/run", handler.RunEval(evalDeps))
+	r.GET("/api/v1/eval_runs", handler.ListEvalRuns(evalDeps))
+	r.GET("/api/v1/eval_runs/:id", handler.GetEvalRun(evalDeps))
 
 	// Connection OAuth (generic)
 	r.GET("/auth/connections/:id/callback", handler.ConnectionOAuthCallback(connStore, db))

@@ -9,7 +9,7 @@ export interface StepResult {
   // never set it) keep rendering as "success/error" via the error field.
   // Streaming runs set this to 'running' while in flight and 'done'/'error'
   // when the corresponding step_done event arrives.
-  status?: 'running' | 'done' | 'error'
+  status?: 'running' | 'done' | 'error' | 'paused' | 'cancelled'
 }
 
 export type RunResults = Record<string, StepResult[]>
@@ -22,6 +22,22 @@ export const RunResultsContext = createContext<RunResults | null>(null)
 // lets per-node memoisation off the results map stay stable across status
 // changes (every node panel doesn't re-render on every status flip).
 export const RunStatusContext = createContext<{ running: boolean }>({ running: false })
+
+// AgentIter mirrors the structure produced by useWorkflowRunStream — kept
+// duplicated (rather than re-exported from the hook) so this context can
+// be consumed without dragging in WS-specific code.
+export interface AgentIterSummary {
+  iter: number
+  llm?: { text?: string; usage?: { input_tokens?: number; output_tokens?: number; total_tokens?: number; cost_usd?: number } }
+  toolCalls: { toolName: string; toolId: string; args?: unknown; result?: string; isError?: boolean }[]
+}
+
+// AgentRunContext exposes per-agent-node iter timelines so the AI Agent
+// node UI can render a live ReAct breakdown (LLM call + tool calls per
+// iteration) without a parallel WS connection per node. Filled in by the
+// page-level provider that owns the WS hook; stays nil when no run is in
+// flight or for non-agent nodes.
+export const AgentRunContext = createContext<Record<string, AgentIterSummary[]> | null>(null)
 
 export interface DebugState {
   debugMode: boolean
@@ -108,17 +124,29 @@ export function NodeDebugPanel({ id }: { id: string }) {
   const step = steps[idx]!
   const hasError = !!step.error || step.status === 'error'
   const isRunning = step.status === 'running'
+  const isPaused = step.status === 'paused'
+  const isCancelled = step.status === 'cancelled'
   const isMulti = total > 1
 
-  // Live status indicator — running takes precedence over success so the
-  // canvas accurately reflects the WS stream while tool-invoked children
-  // are still in flight.
+  // Live status indicator — error > cancelled > paused > running > success.
   const dotClass = hasError
     ? 'bg-red-500'
+    : isCancelled
+    ? 'bg-zinc-500'
+    : isPaused
+    ? 'bg-yellow-500'
     : isRunning
     ? 'bg-blue-500 animate-pulse'
     : 'bg-green-500'
-  const label = hasError ? 'error' : isRunning ? 'running' : 'success'
+  const label = hasError
+    ? 'error'
+    : isCancelled
+    ? 'cancelled'
+    : isPaused
+    ? 'paused'
+    : isRunning
+    ? 'running'
+    : 'success'
 
   return (
     <div className="nodrag border-t border-border/40">

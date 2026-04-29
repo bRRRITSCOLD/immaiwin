@@ -77,8 +77,25 @@ type Workflow struct {
 	Params    map[string]string `bson:"params"        json:"params"`
 	Nodes     []Node            `bson:"nodes"         json:"nodes"`
 	Edges     []Edge            `bson:"edges"         json:"edges"`
-	CreatedAt time.Time         `bson:"created_at"    json:"created_at"`
-	UpdatedAt time.Time         `bson:"updated_at"    json:"updated_at"`
+	// CostLimits enforces per-workflow USD caps on agent LLM spend.
+	// Zero (or omitted) on either field means "no cap on that axis."
+	// Caps are checked BEFORE a run starts (daily) and AFTER every
+	// llm_call inside the agent loop (per-run + daily). Breaches stop
+	// the run with status=error and error="cost_exceeded: <axis>".
+	CostLimits *CostLimits `bson:"cost_limits,omitempty" json:"cost_limits,omitempty"`
+	CreatedAt  time.Time   `bson:"created_at"    json:"created_at"`
+	UpdatedAt  time.Time   `bson:"updated_at"    json:"updated_at"`
+}
+
+// CostLimits is the per-workflow cap config.
+type CostLimits struct {
+	// MaxRunUSD aborts a single run once cumulative LLM cost exceeds
+	// this dollar amount. 0 = unlimited.
+	MaxRunUSD float64 `bson:"max_run_usd"   json:"max_run_usd"`
+	// MaxDailyUSD aborts (and blocks new starts of) any run for this
+	// workflow once today's UTC-day cost-sum (across all runs of this
+	// workflow) exceeds this dollar amount. 0 = unlimited.
+	MaxDailyUSD float64 `bson:"max_daily_usd" json:"max_daily_usd"`
 }
 
 // OrderedNodes returns all nodes reachable from trigger nodes in BFS order.

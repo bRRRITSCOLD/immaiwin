@@ -32,16 +32,21 @@ import (
 
 // runWfWsRequest is the only client→server message we currently accept.
 type runWfWsRequest struct {
-	Type   string `json:"type"`
-	Input  any    `json:"input,omitempty"`
-	StopAt string `json:"stop_at,omitempty"`
+	Type        string `json:"type"`
+	Input       any    `json:"input,omitempty"`
+	StopAt      string `json:"stop_at,omitempty"`
+	ResumeRunID string `json:"resume_run_id,omitempty"`
 }
 
-// runWfWsFrame is the server→client envelope. Same shape as
-// workflow.RunEvent plus a generic Error field for upgrade/load failures.
+// runWfWsFrame is the server→client envelope. Plain alias of
+// workflow.RunEvent — earlier this carried an OUTER `Error` field which
+// shadowed the embedded `RunEvent.Error` (same `json:"error"` tag, outer
+// wins) and silently stripped error messages off every step_done/error
+// event, leaving the UI's red-error pane empty. Pre-run failures that
+// don't yet have a RunEvent context still fit by setting
+// RunEvent.Type="error" + RunEvent.Error in writeWfWsError.
 type runWfWsFrame struct {
 	workflow.RunEvent
-	Error string `json:"error,omitempty"`
 }
 
 // wsEventEmitter relays workflow.RunEvents over a WebSocket. Implements
@@ -66,7 +71,7 @@ func (e *wsEventEmitter) Emit(ev workflow.RunEvent) {
 // writeWfWsError is a one-off error frame writer for failures that
 // happen before the run starts (bad upgrade, missing workflow, etc.).
 func writeWfWsError(ws *websocket.Conn, msg string) {
-	frame := runWfWsFrame{Error: msg, RunEvent: workflow.RunEvent{Type: "error"}}
+	frame := runWfWsFrame{RunEvent: workflow.RunEvent{Type: "error", Error: msg}}
 	data, err := json.Marshal(frame)
 	if err != nil {
 		return
@@ -112,18 +117,34 @@ func RunWorkflowWS(store WorkflowStore, exec *workflow.WorkflowExecutor) gin.Han
 
 		// Cancel-on-disconnect: derive a child context that cancels when
 		// either the request context ends OR the client closes the
-		// socket. A parallel goroutine listens for the inevitable read
-		// error from a closed conn and triggers the cancel.
+		// socket. The same goroutine also relays additional client
+		// frames into the run — `{type:"continue"}` releases a pre-exec
+		// breakpoint pause via env.continueCh.
 		runCtx, cancel := context.WithCancel(c.Request.Context())
 		defer cancel()
+		continueCh := make(chan struct{}, 4)
 		go func() {
 			for {
-				if _, _, err := ws.ReadMessage(); err != nil {
+				_, raw, err := ws.ReadMessage()
+				if err != nil {
 					cancel()
 					return
 				}
+				var msg struct {
+					Type string `json:"type"`
+				}
+				if json.Unmarshal(raw, &msg) != nil {
+					continue
+				}
+				switch msg.Type {
+				case "continue":
+					select {
+					case continueCh <- struct{}{}:
+					default:
+						// Buffer full — drop to keep the read loop snappy.
+					}
+				}
 				// Future: handle "interrupt", "approve_tool", etc.
-				// For now further messages are ignored.
 			}
 		}()
 
@@ -135,13 +156,26 @@ func RunWorkflowWS(store WorkflowStore, exec *workflow.WorkflowExecutor) gin.Han
 
 		emitter := &wsEventEmitter{ws: ws}
 
-		var initialInput []any
-		if req.Input != nil {
-			initialInput = []any{req.Input}
-		}
-
-		if _, err := exec.RunWithEvents(runCtx, wf, req.StopAt, emitter, initialInput...); err != nil {
-			emitter.Emit(workflow.RunEvent{Type: "error", Error: err.Error()})
+		// RunResumable internally emits the terminal `run_done` event with
+		// the correct status + run_id from inside the BFS, so we don't
+		// need a duplicate emit on the WS handler side. (Earlier code
+		// double-emitted, which made the second frame land with a zero
+		// timestamp.) Keep the outcome captured for any future logic that
+		// needs the final status outside the stream.
+		_, err = exec.RunResumable(runCtx, wf, workflow.RunOpts{
+			StopAt:      req.StopAt,
+			Input:       req.Input,
+			ResumeRunID: req.ResumeRunID,
+			Emitter:     emitter,
+			ContinueCh:  continueCh,
+		})
+		if err != nil {
+			// Cost cap breaches already emit `cost_exceeded` from inside the
+			// executor; re-emitting as a generic `error` produces a duplicate
+			// toast. Suppress here for that one typed case.
+			if !workflow.IsCostExceeded(err) {
+				emitter.Emit(workflow.RunEvent{Type: "error", Error: err.Error()})
+			}
 			return
 		}
 	}

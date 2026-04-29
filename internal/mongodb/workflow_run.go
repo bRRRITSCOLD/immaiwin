@@ -3,6 +3,7 @@ package mongodb
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/workflow"
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -80,6 +81,85 @@ func (r *WorkflowRunRepository) List(ctx context.Context, workflowID string, lim
 		return nil, err
 	}
 	return runs, nil
+}
+
+// ListWithFilter implements workflow.WorkflowRunStore for the runs page.
+// Empty filter fields are skipped; limit defaults to 50 (capped at 200).
+func (r *WorkflowRunRepository) ListWithFilter(ctx context.Context, f workflow.RunFilter) ([]workflow.WorkflowRun, error) {
+	limit := f.Limit
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	skip := f.Skip
+	if skip < 0 {
+		skip = 0
+	}
+
+	q := bson.M{}
+	if f.WorkflowID != "" {
+		q["workflow_id"] = f.WorkflowID
+	}
+	if f.Status != "" {
+		q["status"] = f.Status
+	}
+	if !f.StartedAfter.IsZero() || !f.StartedBefore.IsZero() {
+		startedQ := bson.M{}
+		if !f.StartedAfter.IsZero() {
+			startedQ["$gte"] = f.StartedAfter
+		}
+		if !f.StartedBefore.IsZero() {
+			startedQ["$lte"] = f.StartedBefore
+		}
+		q["started_at"] = startedQ
+	}
+
+	opts := options.Find().
+		SetSort(bson.D{{Key: "started_at", Value: -1}}).
+		SetLimit(int64(limit)).
+		SetSkip(int64(skip))
+
+	cur, err := r.col.Find(ctx, q, opts)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = cur.Close(ctx) }()
+
+	var runs []workflow.WorkflowRun
+	if err := cur.All(ctx, &runs); err != nil {
+		return nil, err
+	}
+	return runs, nil
+}
+
+// SumCostSince aggregates the cost of all runs for a workflow since `since`.
+// Returns 0 when no matching runs (Mongo $sum on empty group). Used by the
+// daily cap enforcement.
+func (r *WorkflowRunRepository) SumCostSince(ctx context.Context, workflowID string, since time.Time) (float64, error) {
+	pipeline := mongo.Pipeline{
+		{{Key: "$match", Value: bson.M{
+			"workflow_id": workflowID,
+			"started_at":  bson.M{"$gte": since},
+		}}},
+		{{Key: "$group", Value: bson.M{
+			"_id":   nil,
+			"total": bson.M{"$sum": "$usage.cost_usd"},
+		}}},
+	}
+	cur, err := r.col.Aggregate(ctx, pipeline)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = cur.Close(ctx) }()
+	var rows []struct {
+		Total float64 `bson:"total"`
+	}
+	if err := cur.All(ctx, &rows); err != nil {
+		return 0, err
+	}
+	if len(rows) == 0 {
+		return 0, nil
+	}
+	return rows[0].Total, nil
 }
 
 // AppendTrace atomically pushes a trace event to a run's agent_traces map.

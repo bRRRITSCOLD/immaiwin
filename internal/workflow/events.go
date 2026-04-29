@@ -24,6 +24,8 @@ type EventType string
 const (
 	EventStepStart       EventType = "step_start"
 	EventStepDone        EventType = "step_done"
+	EventStepPending     EventType = "step_pending" // pre-exec breakpoint pause
+	EventCostExceeded    EventType = "cost_exceeded" // workflow CostLimits cap breached
 	EventAgentIter       EventType = "agent_iter"
 	EventAgentLLM        EventType = "agent_llm"
 	EventAgentToolCall   EventType = "agent_tool_call"
@@ -54,6 +56,10 @@ type RunEvent struct {
 	Output     any       `json:"output,omitempty"`
 	Error      string    `json:"error,omitempty"`
 	Usage      *Usage    `json:"usage,omitempty"`
+	// Populated on the terminal "run_done" event so clients can flip Run ↔
+	// Continue based on whether the run paused mid-way.
+	RunID  string `json:"run_id,omitempty"`
+	Status string `json:"status,omitempty"`
 }
 
 // Usage mirrors the per-call LLM accounting on the wire. We use a separate

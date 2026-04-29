@@ -84,6 +84,24 @@ func UpsertWorkflow(store WorkflowStore) gin.HandlerFunc {
 	}
 }
 
+// GetWorkflow returns a single workflow by ID. Used by /runs detail page
+// when only a workflow_id is on hand and the page wants node names.
+func GetWorkflow(store WorkflowStore) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		id := c.Param("id")
+		if id == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "id required"})
+			return
+		}
+		wf, err := store.GetByID(c.Request.Context(), id)
+		if err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, wf)
+	}
+}
+
 // DeleteWorkflow removes the workflow with the given ID.
 func DeleteWorkflow(store WorkflowStore) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -101,6 +119,16 @@ func DeleteWorkflow(store WorkflowStore) gin.HandlerFunc {
 }
 
 // RunWorkflow executes the workflow graph and returns per-step results.
+//
+// Body fields:
+//   - stop_at:        node ID to halt after (debug breakpoint)
+//   - input:          optional initial input passed to trigger nodes
+//   - resume_run_id:  when non-empty, resume the previously paused run
+//                     (agent loop hydrates from saved messages/iter; non-
+//                     agent nodes already executed are skipped).
+//
+// Response includes run_id + status so the UI can switch the Run button
+// to "Continue" while the run is paused.
 func RunWorkflow(store WorkflowStore, exec *workflow.WorkflowExecutor) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id := c.Param("id")
@@ -110,8 +138,9 @@ func RunWorkflow(store WorkflowStore, exec *workflow.WorkflowExecutor) gin.Handl
 		}
 
 		var req struct {
-			StopAt string `json:"stop_at"`
-			Input  any    `json:"input,omitempty"`
+			StopAt      string `json:"stop_at"`
+			Input       any    `json:"input,omitempty"`
+			ResumeRunID string `json:"resume_run_id,omitempty"`
 		}
 		_ = json.NewDecoder(c.Request.Body).Decode(&req)
 
@@ -125,17 +154,25 @@ func RunWorkflow(store WorkflowStore, exec *workflow.WorkflowExecutor) gin.Handl
 			return
 		}
 
-		var steps []workflow.StepResult
-		if req.Input != nil {
-			steps, err = exec.Run(c.Request.Context(), wf, req.StopAt, req.Input)
-		} else {
-			steps, err = exec.Run(c.Request.Context(), wf, req.StopAt)
-		}
+		outcome, err := exec.RunResumable(c.Request.Context(), wf, workflow.RunOpts{
+			StopAt:      req.StopAt,
+			Input:       req.Input,
+			ResumeRunID: req.ResumeRunID,
+		})
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error":  err.Error(),
+				"run_id": outcome.RunID,
+				"status": outcome.Status,
+				"steps":  outcome.Steps,
+			})
 			return
 		}
 
-		c.JSON(http.StatusOK, gin.H{"steps": steps})
+		c.JSON(http.StatusOK, gin.H{
+			"steps":  outcome.Steps,
+			"run_id": outcome.RunID,
+			"status": outcome.Status,
+		})
 	}
 }

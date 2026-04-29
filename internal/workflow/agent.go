@@ -120,13 +120,34 @@ func (e *WorkflowExecutor) runAIAgent(ctx context.Context, node Node, data map[s
 	loopCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
 	defer cancel()
 
-	// 7. Build initial messages = history + new user turn
-	messages := append([]llm.Message{}, history...)
-	messages = append(messages, llm.UserText(userInputText))
-
-	// Track totals across the loop for the return payload + run record.
-	var usageTotal UsageTotal
-	var traceEvents []TraceEvent
+	// 7. Build initial messages, or hydrate from a paused-run snapshot when
+	// the workflow run was started via `resume_run_id`. The hydrated path
+	// skips the user turn (already in messages) and starts the ReAct loop
+	// at the saved iter so the LLM picks up immediately after the previous
+	// tool_result.
+	var (
+		messages    []llm.Message
+		startIter   int
+		usageTotal  UsageTotal
+		traceEvents []TraceEvent
+	)
+	if env.resumeAgentState != nil && env.resumeAgentState.AgentNodeID == node.ID {
+		startIter = env.resumeAgentState.Iter
+		messages = env.resumeAgentState.Messages
+		usageTotal = env.resumeAgentState.UsageTotal
+		traceEvents = env.resumeAgentState.Trace
+		// Use the saved prompt/input verbatim — the workflow-author may
+		// have edited the agent node between pause and resume, but loop
+		// state must be deterministic for the LLM.
+		systemPrompt = env.resumeAgentState.SystemPrompt
+		userInputText = env.resumeAgentState.UserInput
+		slog.Info("ai_agent: resuming from paused state",
+			"agent", node.ID, "run_id", env.runID, "iter", startIter,
+			"messages", len(messages), "trace_events", len(traceEvents))
+	} else {
+		messages = append([]llm.Message{}, history...)
+		messages = append(messages, llm.UserText(userInputText))
+	}
 
 	emitTrace := func(ev TraceEvent) {
 		ev.At = time.Now().UTC()
@@ -146,8 +167,68 @@ func (e *WorkflowExecutor) runAIAgent(ctx context.Context, node Node, data map[s
 	}
 
 	// 8. ReAct loop
-	for iter := 0; iter < maxIters; iter++ {
+	for iter := startIter; iter < maxIters; iter++ {
+		// Halt if a debug breakpoint was hit during the previous iter's
+		// tool dispatch. Persist the agent's working state to the
+		// WorkflowRun record so the next Run with `resume_run_id` can
+		// pick up exactly here. Returns the current trace + usage so the
+		// UI sees what got done before the stop.
+		if env.stopAtHit {
+			if env.runID != "" && e.RunRepo != nil {
+				if rec, gerr := e.RunRepo.Get(ctx, env.runID); gerr == nil {
+					rec.Status = RunStatusPaused
+					rec.PausedAgent = &AgentPauseState{
+						AgentNodeID:  node.ID,
+						Iter:         iter,
+						Messages:     messages,
+						UsageTotal:   usageTotal,
+						Trace:        traceEvents,
+						SystemPrompt: systemPrompt,
+						UserInput:    userInputText,
+					}
+					if uerr := e.RunRepo.Update(ctx, rec); uerr != nil {
+						slog.Warn("ai_agent: persist paused state failed", "run_id", env.runID, "err", uerr)
+					}
+				}
+			}
+			return map[string]any{
+				"output":     "(paused — resume to continue)",
+				"usage":      usageTotal,
+				"iterations": iter,
+				"trace":      traceEvents,
+				"paused":     true,
+				"run_id":     env.runID,
+			}, nil
+		}
 		emitTrace(TraceEvent{Type: "iter_start", Iter: iter})
+
+		// Cost cap PRE-CALL gate. Same logic as post-call below, run BEFORE
+		// the chat to avoid burning one extra LLM call after the cap was
+		// breached by a previous iter or a sibling workflow run. Bounded
+		// "1-call slip": only iter 0 can slip through because there's no
+		// post-iter check to gate iter 0 with — the pre-run cap check at
+		// executor.RunResumable handles that case (and we re-check here
+		// using `prior` so a sibling run that finished mid-flight is
+		// caught on the very next iter).
+		if env.wf != nil && env.wf.CostLimits != nil {
+			if cap := env.wf.CostLimits.MaxRunUSD; cap > 0 && usageTotal.CostUSD >= cap {
+				ce := &CostExceededError{Axis: "run", CapUSD: cap, SpentUSD: usageTotal.CostUSD}
+				if env.events != nil {
+					env.events.Emit(stampNow(RunEvent{Type: EventCostExceeded, NodeID: node.ID, NodeType: node.Type, Error: ce.Error()}))
+				}
+				return nil, ce
+			}
+			if cap := env.wf.CostLimits.MaxDailyUSD; cap > 0 && e.RunRepo != nil {
+				prior, sumErr := e.RunRepo.SumCostSince(ctx, env.wf.ID, startOfUTCDay(time.Now()))
+				if sumErr == nil && prior+usageTotal.CostUSD >= cap {
+					ce := &CostExceededError{Axis: "daily", CapUSD: cap, SpentUSD: prior + usageTotal.CostUSD}
+					if env.events != nil {
+						env.events.Emit(stampNow(RunEvent{Type: EventCostExceeded, NodeID: node.ID, NodeType: node.Type, Error: ce.Error()}))
+					}
+					return nil, ce
+				}
+			}
+		}
 
 		req := llm.ChatRequest{
 			Model:       model,
@@ -175,6 +256,12 @@ func (e *WorkflowExecutor) runAIAgent(ctx context.Context, node Node, data map[s
 				CostUSD:      resp.Usage.CostUSD,
 			},
 		})
+
+		// (Cost cap enforcement is the PRE-CALL block above this iter's
+		// `provider.Chat`. The post-call slot is intentionally empty so
+		// iter N's call can't be blocked retroactively after billing —
+		// iter N+1's pre-call check catches the breach using the freshly-
+		// updated usageTotal.)
 
 		// Always append the assistant turn so the LLM sees its own emission
 		// when we feed back observations.
@@ -324,6 +411,13 @@ func (e *WorkflowExecutor) buildAgentToolCatalog(agent Node, env *runEnv,
 					return "", fmt.Errorf("tool %s: bad args: %w", toolName, err)
 				}
 			}
+			// Pre-exec breakpoint: hold the agent's tool call until the
+			// live UI sends a continue frame when the breakpointed node
+			// is THIS as_tool target. Skipped when no continueCh wired.
+			if env, ok := envFromCtx(ctx); ok && env.stopAt != "" && targetNode.ID == env.stopAt && env.continueCh != nil {
+				env.waitAtBreakpoint(ctx, targetNode)
+			}
+
 			// Emit step_start for the tool-invoked node so live-stream
 			// clients see it transition into running. BFS skips these
 			// nodes (they're agent-driven), so without this hook the
@@ -361,6 +455,15 @@ func (e *WorkflowExecutor) buildAgentToolCatalog(agent Node, env *runEnv,
 					done.IsError = true
 				}
 				env.events.Emit(stampNow(done))
+			}
+
+			// Post-exec breakpoint fallback: only activates when no
+			// continueCh is wired (i.e. caller didn't enable pre-exec).
+			// Pre-exec already paused the agent before runNode; setting
+			// stopAtHit again would force a second pause + persist a
+			// PausedAgent we don't need.
+			if env, ok := envFromCtx(ctx); ok && env.stopAt != "" && targetNode.ID == env.stopAt && env.continueCh == nil {
+				env.stopAtHit = true
 			}
 
 			if err != nil {

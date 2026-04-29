@@ -1,0 +1,539 @@
+// /runs/:runId — single workflow run detail.
+//
+// Shows the persisted run record + (if available) the workflow doc the
+// run executed against so we can label nodes by name. Renders three
+// sections:
+//
+//  1. Header with metadata + Replay button
+//  2. Trigger input (raw JSON, collapsible)
+//  3. Per-node steps (output / error)
+//  4. Per-agent traces (iter timeline)
+//
+// "Replay" POSTs the original trigger_input back to /api/v1/workflows/:id/run
+// — same shape as the workflows page Run button. After the replay returns
+// we navigate to the new run id so the user lands on a fresh detail view.
+
+import { createFileRoute, Link } from '@tanstack/react-router'
+import { useCallback, useEffect, useState } from 'react'
+import { toast } from 'sonner'
+import { ArrowLeft, Play } from 'lucide-react'
+import { Badge } from '~/components/ui/badge'
+import { Button } from '~/components/ui/button'
+import { Separator } from '~/components/ui/separator'
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from '~/components/ui/collapsible'
+import { ChevronDown, ChevronRight } from 'lucide-react'
+
+export const Route = createFileRoute('/runs_/$runId')({
+  component: RunDetailPage,
+})
+
+const API_BASE = import.meta.env['VITE_API_URL'] ?? 'http://localhost:8080'
+
+type RunStatus = 'running' | 'success' | 'error' | 'cancelled' | 'paused'
+
+interface UsageTotal {
+  input_tokens?: number
+  output_tokens?: number
+  total_tokens?: number
+  cost_usd?: number
+}
+
+interface StepResult {
+  node_id: string
+  node_type: string
+  output?: unknown
+  error?: string
+}
+
+interface TraceEvent {
+  at: string
+  type: 'iter_start' | 'llm_call' | 'tool_call' | 'tool_result' | 'final'
+  iter?: number
+  tool_name?: string
+  tool_id?: string
+  tool_args?: unknown
+  result?: unknown
+  text?: string
+  usage?: UsageTotal
+  is_error?: boolean
+}
+
+interface PausedAgent {
+  agent_node_id?: string
+  iter?: number
+}
+
+interface WorkflowRun {
+  id: string
+  workflow_id: string
+  tenant_id: string
+  started_at: string
+  finished_at?: string
+  status: RunStatus
+  trigger_input?: unknown
+  params?: Record<string, string>
+  steps?: StepResult[]
+  agent_traces?: Record<string, TraceEvent[]>
+  usage?: UsageTotal
+  error?: string
+  paused_agent?: PausedAgent | null
+}
+
+interface WorkflowNode {
+  id: string
+  type: string
+  data?: { name?: string; label?: string; [k: string]: unknown }
+}
+
+interface WorkflowDoc {
+  id: string
+  name: string
+  nodes?: WorkflowNode[]
+}
+
+interface RunDetailResponse {
+  run: WorkflowRun
+  workflow: WorkflowDoc | null
+}
+
+function statusVariant(s: RunStatus): 'default' | 'destructive' | 'secondary' | 'outline' {
+  switch (s) {
+    case 'success':
+      return 'default'
+    case 'error':
+      return 'destructive'
+    case 'paused':
+    case 'cancelled':
+      return 'secondary'
+    case 'running':
+    default:
+      return 'outline'
+  }
+}
+
+function formatDuration(start: string, end?: string): string {
+  if (!end) return '—'
+  const ms = new Date(end).getTime() - new Date(start).getTime()
+  if (!Number.isFinite(ms) || ms < 0) return '—'
+  if (ms < 1000) return `${ms}ms`
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`
+  const m = Math.floor(ms / 60_000)
+  const s = Math.floor((ms % 60_000) / 1000)
+  return `${m}m ${s}s`
+}
+
+// Detail page mirrors the live canvas AgentCostBadge: always 4 decimals so
+// sub-cent ai-agent calls stay visible. Persisted cost_usd is full-precision
+// float64 (executor.aggregateUsage sums it from per-llm_call traces).
+function formatCost(usd?: number): string {
+  return `$${(usd ?? 0).toFixed(4)}`
+}
+
+function nodeLabel(wf: WorkflowDoc | null, nodeId: string, fallbackType?: string): string {
+  if (!wf?.nodes) return fallbackType ? `${fallbackType} (${nodeId})` : nodeId
+  const n = wf.nodes.find((x) => x.id === nodeId)
+  if (!n) return fallbackType ? `${fallbackType} (${nodeId})` : nodeId
+  const name = (n.data?.name as string | undefined) ?? (n.data?.label as string | undefined)
+  if (name) return `${name} (${n.type})`
+  return `${n.type} (${nodeId})`
+}
+
+function PrettyJSON({ value }: { value: unknown }) {
+  if (value === undefined || value === null) {
+    return <span className="text-muted-foreground italic">empty</span>
+  }
+  let text: string
+  try {
+    text = typeof value === 'string' ? value : JSON.stringify(value, null, 2)
+  } catch {
+    text = String(value)
+  }
+  return (
+    <pre className="text-xs bg-muted/50 rounded p-2 overflow-auto max-h-96 font-mono whitespace-pre-wrap break-words">
+      {text}
+    </pre>
+  )
+}
+
+function CollapsibleSection({
+  title,
+  defaultOpen,
+  children,
+}: {
+  title: React.ReactNode
+  defaultOpen?: boolean
+  children: React.ReactNode
+}) {
+  const [open, setOpen] = useState(!!defaultOpen)
+  return (
+    <Collapsible open={open} onOpenChange={setOpen}>
+      <CollapsibleTrigger className="flex items-center gap-1 text-sm font-medium hover:text-primary transition-colors">
+        {open ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+        {title}
+      </CollapsibleTrigger>
+      <CollapsibleContent className="mt-2">{children}</CollapsibleContent>
+    </Collapsible>
+  )
+}
+
+function RunDetailPage() {
+  const { runId } = Route.useParams()
+  const [data, setData] = useState<RunDetailResponse | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [replaying, setReplaying] = useState(false)
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/workflow_runs/${runId}`)
+      if (!res.ok) {
+        const err = await res.json()
+        toast.error(`Failed to load run: ${err.error}`)
+        return
+      }
+      setData(await res.json())
+    } catch {
+      toast.error('Network error loading run')
+    } finally {
+      setLoading(false)
+    }
+  }, [runId])
+
+  useEffect(() => {
+    load()
+  }, [load])
+
+  const handleReplay = useCallback(async () => {
+    if (!data?.run) return
+    setReplaying(true)
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/workflows/${data.run.workflow_id}/run`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ input: data.run.trigger_input ?? null }),
+      })
+      const body = await res.json()
+      if (!res.ok) {
+        toast.error(`Replay failed: ${body.error ?? 'unknown'}`)
+        return
+      }
+      // POST /workflows/:id/run is synchronous — when this resolves the
+      // executor has finished (or paused). Open the new run's detail in a
+      // fresh tab so the current view stays parked on the original run.
+      const newID = body.run_id as string | undefined
+      if (newID) {
+        toast.success('Replay completed')
+        window.open(`/runs/${newID}`, '_blank', 'noopener,noreferrer')
+      } else {
+        toast.success('Replay completed (no new run id)')
+        load()
+      }
+    } catch {
+      toast.error('Network error replaying run')
+    } finally {
+      setReplaying(false)
+    }
+  }, [data, load])
+
+  return (
+    <div className="h-screen overflow-hidden bg-background text-foreground flex flex-col">
+      <header className="sticky top-0 z-10 border-b bg-background/90 backdrop-blur-sm px-6 py-3 flex items-center gap-4 shrink-0">
+        <h1 className="text-lg font-semibold tracking-tight">immaiwin</h1>
+        <Separator orientation="vertical" className="h-5" />
+        <nav className="flex items-center gap-3 text-sm">
+          <Link to="/" className="text-muted-foreground hover:text-foreground transition-colors">Polymarket</Link>
+          <Link to="/workflows" className="text-muted-foreground hover:text-foreground transition-colors">Workflows</Link>
+          <Link to="/runs" className="text-foreground font-medium">Runs</Link>
+          <Link to="/evals" className="text-muted-foreground hover:text-foreground transition-colors">Evals</Link>
+        </nav>
+      </header>
+
+      <main className="flex-1 overflow-auto p-6">
+        <div className="max-w-5xl mx-auto">
+          <div className="mb-4">
+            <Button variant="ghost" size="sm" asChild>
+              <Link to="/runs">
+                <ArrowLeft className="h-4 w-4 mr-1" />
+                Back to runs
+              </Link>
+            </Button>
+          </div>
+
+          {loading && <div className="text-muted-foreground text-sm">Loading…</div>}
+
+          {!loading && data && (
+            <>
+              <div className="border rounded-md bg-card p-4 mb-6">
+                <div className="flex items-start justify-between gap-4 flex-wrap">
+                  <div>
+                    <div className="text-sm text-muted-foreground">
+                      {data.workflow?.name ?? data.run.workflow_id}
+                    </div>
+                    <div className="text-2xl font-semibold tracking-tight font-mono">
+                      {data.run.id}
+                    </div>
+                    <div className="mt-2 flex items-center gap-2 flex-wrap">
+                      <Badge variant={statusVariant(data.run.status)}>{data.run.status}</Badge>
+                      {data.run.paused_agent && (
+                        <Badge variant="outline" className="text-amber-600 dark:text-amber-400">
+                          breakpoint
+                        </Badge>
+                      )}
+                      {data.run.error?.startsWith('cost_exceeded:') && (
+                        <Badge variant="outline" className="text-amber-700 dark:text-amber-300 border-amber-700 dark:border-amber-300">
+                          cost cap
+                        </Badge>
+                      )}
+                    </div>
+                  </div>
+                  <Button onClick={handleReplay} disabled={replaying}>
+                    <Play className="h-4 w-4 mr-1" />
+                    {replaying ? 'Replaying…' : 'Replay'}
+                  </Button>
+                </div>
+
+                <div className="mt-4 grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                  <Stat label="Started" value={new Date(data.run.started_at).toLocaleString()} />
+                  <Stat
+                    label="Finished"
+                    value={data.run.finished_at ? new Date(data.run.finished_at).toLocaleString() : '—'}
+                  />
+                  <Stat
+                    label="Duration"
+                    value={formatDuration(data.run.started_at, data.run.finished_at)}
+                  />
+                  <Stat
+                    label="Tokens / Cost"
+                    value={`${(data.run.usage?.total_tokens ?? 0).toLocaleString()} · ${formatCost(data.run.usage?.cost_usd)}`}
+                  />
+                </div>
+
+                {data.run.error && (
+                  <div className="mt-4 text-sm text-destructive bg-destructive/10 rounded p-2">
+                    {data.run.error}
+                  </div>
+                )}
+              </div>
+
+              {data.run.trigger_input !== undefined && data.run.trigger_input !== null && (
+                <div className="border rounded-md bg-card p-4 mb-6">
+                  <CollapsibleSection title="Trigger input">
+                    <PrettyJSON value={data.run.trigger_input} />
+                  </CollapsibleSection>
+                </div>
+              )}
+
+              {data.run.params && Object.keys(data.run.params).length > 0 && (
+                <div className="border rounded-md bg-card p-4 mb-6">
+                  <CollapsibleSection title="Params">
+                    <PrettyJSON value={data.run.params} />
+                  </CollapsibleSection>
+                </div>
+              )}
+
+              {data.run.steps && data.run.steps.length > 0 && (
+                <div className="border rounded-md bg-card p-4 mb-6">
+                  <h2 className="text-sm font-semibold mb-3">Steps</h2>
+                  <div className="space-y-3">
+                    {data.run.steps.map((s, i) => (
+                      <div key={`${s.node_id}-${i}`} className="border rounded p-3 bg-muted/20">
+                        <div className="flex items-center justify-between">
+                          <div className="text-sm font-medium">
+                            {nodeLabel(data.workflow, s.node_id, s.node_type)}
+                          </div>
+                          {s.error && <Badge variant="destructive">error</Badge>}
+                        </div>
+                        {s.error && (
+                          <div className="mt-2 text-sm text-destructive">{s.error}</div>
+                        )}
+                        {s.output !== undefined && (
+                          <div className="mt-2">
+                            <CollapsibleSection title="Output">
+                              <PrettyJSON value={s.output} />
+                            </CollapsibleSection>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {data.run.agent_traces && Object.keys(data.run.agent_traces).length > 0 && (
+                <div className="border rounded-md bg-card p-4 mb-6">
+                  <h2 className="text-sm font-semibold mb-3">Agent traces</h2>
+                  <div className="space-y-4">
+                    {Object.entries(data.run.agent_traces).map(([nodeId, events]) => (
+                      <AgentTraceBlock
+                        key={nodeId}
+                        title={nodeLabel(data.workflow, nodeId, 'ai_agent')}
+                        events={events}
+                      />
+                    ))}
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      </main>
+    </div>
+  )
+}
+
+function Stat({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <div className="text-xs text-muted-foreground uppercase tracking-wide">{label}</div>
+      <div className="font-mono text-sm mt-0.5">{value}</div>
+    </div>
+  )
+}
+
+// AgentTraceBlock groups TraceEvents by iter and renders a compact
+// per-iteration timeline matching the live AgentTimelinePanel +
+// AgentCostBadge:
+//
+//   AI Agent (ai_agent)                   1318 in / 62 out · $0.0031
+//     ▾ iter 0 · 84 in / 35 out · $0.0010 · 1 tool
+//     ▾ iter 1 · 1234 in / 27 out · $0.0021
+//
+// Source of truth is the persisted llm_call.Usage on each TraceEvent
+// (one llm_call per iter); tool_call events are counted for the badge.
+function AgentTraceBlock({ title, events }: { title: string; events: TraceEvent[] }) {
+  const byIter = events.reduce<Record<number, TraceEvent[]>>((acc, ev) => {
+    const k = ev.iter ?? 0
+    if (!acc[k]) acc[k] = []
+    acc[k].push(ev)
+    return acc
+  }, {})
+  const iterKeys = Object.keys(byIter)
+    .map(Number)
+    .sort((a, b) => a - b)
+
+  // Agent total — same numbers as AgentCostBadge on the workflow canvas.
+  let totalIn = 0
+  let totalOut = 0
+  let totalCost = 0
+  for (const ev of events) {
+    if (ev.type !== 'llm_call' || !ev.usage) continue
+    totalIn += ev.usage.input_tokens ?? 0
+    totalOut += ev.usage.output_tokens ?? 0
+    totalCost += ev.usage.cost_usd ?? 0
+  }
+
+  return (
+    <div className="border rounded p-3 bg-muted/20">
+      <div className="flex items-center justify-between mb-2">
+        <div className="text-sm font-medium">{title}</div>
+        {(totalIn > 0 || totalOut > 0 || totalCost > 0) && (
+          <span className="text-xs text-muted-foreground tabular-nums">
+            {totalIn.toLocaleString()} in / {totalOut.toLocaleString()} out · ${totalCost.toFixed(4)}
+          </span>
+        )}
+      </div>
+      <div className="space-y-2">
+        {iterKeys.map((i) => (
+          <IterSection
+            key={i}
+            iter={i}
+            events={byIter[i]!}
+            defaultOpen={i === iterKeys[0]}
+          />
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// IterSection renders one iteration of the ReAct loop with a header that
+// summarizes its llm_call usage + tool-call count, mirroring the live
+// AgentTimelinePanel row.
+function IterSection({
+  iter,
+  events,
+  defaultOpen,
+}: {
+  iter: number
+  events: TraceEvent[]
+  defaultOpen?: boolean
+}) {
+  const [open, setOpen] = useState(!!defaultOpen)
+  let inTok = 0
+  let outTok = 0
+  let cost = 0
+  let toolCount = 0
+  for (const ev of events) {
+    if (ev.type === 'llm_call' && ev.usage) {
+      inTok += ev.usage.input_tokens ?? 0
+      outTok += ev.usage.output_tokens ?? 0
+      cost += ev.usage.cost_usd ?? 0
+    }
+    if (ev.type === 'tool_call') toolCount++
+  }
+
+  return (
+    <Collapsible open={open} onOpenChange={setOpen}>
+      <CollapsibleTrigger className="w-full flex items-center gap-2 text-xs hover:text-primary transition-colors text-left">
+        {open ? <ChevronDown className="h-3 w-3 shrink-0" /> : <ChevronRight className="h-3 w-3 shrink-0" />}
+        <span className="font-medium text-foreground">iter {iter}</span>
+        {(inTok > 0 || outTok > 0) && (
+          <span className="text-muted-foreground tabular-nums">
+            · {inTok.toLocaleString()} in / {outTok.toLocaleString()} out
+          </span>
+        )}
+        {cost > 0 && (
+          <span className="text-muted-foreground tabular-nums">· ${cost.toFixed(4)}</span>
+        )}
+        {toolCount > 0 && (
+          <span className="text-muted-foreground">
+            · {toolCount} tool{toolCount === 1 ? '' : 's'}
+          </span>
+        )}
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <div className="space-y-2 ml-5 mt-2">
+          {events.map((ev, idx) => (
+            <TraceEventRow key={idx} ev={ev} />
+          ))}
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
+  )
+}
+
+function TraceEventRow({ ev }: { ev: TraceEvent }) {
+  return (
+    <div className="text-xs border-l-2 border-muted pl-2">
+      <div className="flex items-center gap-2">
+        <Badge variant="outline" className="text-[10px]">
+          {ev.type}
+        </Badge>
+        {ev.tool_name && <span className="font-mono">{ev.tool_name}</span>}
+        {ev.is_error && <Badge variant="destructive">error</Badge>}
+        {ev.usage && (
+          <span className="text-muted-foreground tabular-nums">
+            {(ev.usage.total_tokens ?? 0).toLocaleString()} tok
+          </span>
+        )}
+      </div>
+      {ev.text && (
+        <div className="mt-1 text-muted-foreground whitespace-pre-wrap break-words">{ev.text}</div>
+      )}
+      {ev.tool_args !== undefined && (
+        <div className="mt-1">
+          <PrettyJSON value={ev.tool_args} />
+        </div>
+      )}
+      {ev.result !== undefined && (
+        <div className="mt-1">
+          <PrettyJSON value={ev.result} />
+        </div>
+      )}
+    </div>
+  )
+}

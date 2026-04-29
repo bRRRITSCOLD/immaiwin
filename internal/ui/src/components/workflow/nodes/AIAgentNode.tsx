@@ -1,14 +1,16 @@
 import { NodeResizer, type NodeProps, useReactFlow } from '@xyflow/react'
 import { Bot, Wrench, HelpCircle } from 'lucide-react'
-import { useState } from 'react'
+import { useContext, useState } from 'react'
 import { Textarea } from '~/components/ui/textarea'
 import { Input } from '~/components/ui/input'
+import { NumberField } from '~/components/ui/number-field'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '~/components/ui/select'
 import { Tooltip, TooltipTrigger, TooltipContent } from '~/components/ui/tooltip'
 import { StepNameInput } from './StepNameInput'
 import { DynamicHandles } from './DynamicHandles'
 import { SkillsPanel } from './SkillsPanel'
-import { NodeDebugPanel, BreakpointMarker } from '../RunResultsContext'
+import { AgentTimelinePanel } from './AgentTimelinePanel'
+import { NodeDebugPanel, BreakpointMarker, AgentRunContext } from '../RunResultsContext'
 import { useWorkflowStore } from '../useWorkflowStore'
 
 const LLM_TYPES = ['anthropic', 'openai', 'ollama'] as const
@@ -38,6 +40,7 @@ export function AIAgentNode({ id, data, selected }: NodeProps) {
         <div className="flex items-center gap-2 px-4 py-2.5 border-b border-purple-400/40">
           <Bot className="h-4 w-4 text-purple-400 shrink-0" />
           <span className="text-sm font-medium">AI Agent</span>
+          <AgentCostBadge id={id} />
         </div>
         <StepNameInput id={id} data={data} />
 
@@ -143,47 +146,43 @@ export function AIAgentNode({ id, data, selected }: NodeProps) {
                       </TooltipContent>
                     </Tooltip>
                   </div>
-                  <Input
+                  <NumberField
                     className="nodrag h-7 text-xs"
-                    type="number"
                     min={1}
                     max={50}
                     value={maxIters}
-                    onChange={(e) => updateNodeData(id, { max_iterations: Number(e.target.value) })}
+                    onChange={(v) => updateNodeData(id, { max_iterations: v })}
                   />
                 </div>
                 <div>
                   <p className="text-[10px] text-muted-foreground">Max tokens</p>
-                  <Input
+                  <NumberField
                     className="nodrag h-7 text-xs"
-                    type="number"
                     min={256}
                     max={16384}
                     value={maxTokens}
-                    onChange={(e) => updateNodeData(id, { max_tokens: Number(e.target.value) })}
+                    onChange={(v) => updateNodeData(id, { max_tokens: v })}
                   />
                 </div>
                 <div>
                   <p className="text-[10px] text-muted-foreground">Temperature</p>
-                  <Input
+                  <NumberField
                     className="nodrag h-7 text-xs"
-                    type="number"
                     min={0}
                     max={2}
                     step={0.1}
                     value={temperature}
-                    onChange={(e) => updateNodeData(id, { temperature: Number(e.target.value) })}
+                    onChange={(v) => updateNodeData(id, { temperature: v })}
                   />
                 </div>
                 <div>
                   <p className="text-[10px] text-muted-foreground">Timeout (s)</p>
-                  <Input
+                  <NumberField
                     className="nodrag h-7 text-xs"
-                    type="number"
                     min={30}
                     max={3600}
                     value={timeoutSec}
-                    onChange={(e) => updateNodeData(id, { timeout_seconds: Number(e.target.value) })}
+                    onChange={(v) => updateNodeData(id, { timeout_seconds: v })}
                   />
                 </div>
               </div>
@@ -199,9 +198,40 @@ export function AIAgentNode({ id, data, selected }: NodeProps) {
         </div>
 
         <SkillsPanel nodeId={id} data={data as Record<string, unknown>} />
+        <AgentTimelinePanel id={id} />
         <NodeDebugPanel id={id} />
       </div>
       <DynamicHandles nodeId={id} nodeType="ai_agent" data={data as Record<string, unknown>} />
     </div>
+  )
+}
+
+// AgentCostBadge tallies token + cost across every iter of the live run
+// for this agent node and renders inline in the header. Hidden when no
+// iters yet (idle/no-run). Updates on every `agent_llm` event arrival
+// because AgentRunContext is rebuilt by the page-level memo.
+function AgentCostBadge({ id }: { id: string }) {
+  const ctx = useContext(AgentRunContext)
+  const iters = ctx?.[id] ?? []
+  if (iters.length === 0) return null
+  let inTok = 0
+  let outTok = 0
+  let cost = 0
+  for (const iter of iters) {
+    inTok += iter.llm?.usage?.input_tokens ?? 0
+    outTok += iter.llm?.usage?.output_tokens ?? 0
+    cost += iter.llm?.usage?.cost_usd ?? 0
+  }
+  return (
+    <span className="ml-auto flex items-center gap-2 text-[10px] text-muted-foreground tabular-nums">
+      <span title="input → output tokens">
+        {inTok.toLocaleString()}/{outTok.toLocaleString()} tok
+      </span>
+      {cost > 0 && (
+        <span className="text-foreground/80 font-medium" title="estimated cost (provider pricing table)">
+          ${cost.toFixed(4)}
+        </span>
+      )}
+    </span>
   )
 }
