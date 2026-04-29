@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/llm"
@@ -73,6 +74,8 @@ func UpsertConnection(store ConnectionStore, invalidator ConnectionInvalidator) 
 			workflow.ConnectionTypePolymarket: true,
 			workflow.ConnectionTypeSchwab:     true,
 			workflow.ConnectionTypeAnthropic:  true,
+			workflow.ConnectionTypeOpenAI:     true,
+			workflow.ConnectionTypeOllama:     true,
 		}
 		if !validTypes[conn.Type] {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported connection type"})
@@ -116,6 +119,13 @@ func UpsertConnection(store ConnectionStore, invalidator ConnectionInvalidator) 
 				c.JSON(http.StatusBadRequest, gin.H{"error": "config.api_key is required for anthropic"})
 				return
 			}
+		case workflow.ConnectionTypeOpenAI:
+			if conn.Config["api_key"] == "" {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "config.api_key is required for openai"})
+				return
+			}
+		case workflow.ConnectionTypeOllama:
+			// No required config — endpoint defaults to http://localhost:11434.
 		}
 
 		saved, err := store.Upsert(c.Request.Context(), conn)
@@ -197,6 +207,16 @@ func TestConnection(db *mongo.Database) gin.HandlerFunc {
 				c.JSON(http.StatusOK, gin.H{"ok": false, "error": err.Error()})
 				return
 			}
+		case workflow.ConnectionTypeOpenAI:
+			if err := testOpenAI(ctx, req.Config); err != nil {
+				c.JSON(http.StatusOK, gin.H{"ok": false, "error": err.Error()})
+				return
+			}
+		case workflow.ConnectionTypeOllama:
+			if err := testOllama(ctx, req.Config); err != nil {
+				c.JSON(http.StatusOK, gin.H{"ok": false, "error": err.Error()})
+				return
+			}
 		default:
 			c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported connection type"})
 			return
@@ -258,6 +278,42 @@ func testAnthropic(_ context.Context, cfg map[string]string) error {
 	// remote API. A live ping would consume tokens for every Test click.
 	if _, err := llm.Build(string(workflow.ConnectionTypeAnthropic), cfg); err != nil {
 		return err
+	}
+	return nil
+}
+
+func testOpenAI(_ context.Context, cfg map[string]string) error {
+	// Same approach as testAnthropic — factory validates required fields
+	// without burning tokens on a live call.
+	if _, err := llm.Build(string(workflow.ConnectionTypeOpenAI), cfg); err != nil {
+		return err
+	}
+	return nil
+}
+
+func testOllama(ctx context.Context, cfg map[string]string) error {
+	// Ollama has no required config so factory always succeeds; do a live
+	// HEAD on the endpoint instead so a misconfigured URL surfaces here
+	// instead of at the first agent run. Local + cheap (no model load).
+	if _, err := llm.Build(string(workflow.ConnectionTypeOllama), cfg); err != nil {
+		return err
+	}
+	endpoint := cfg["endpoint"]
+	if endpoint == "" {
+		endpoint = "http://localhost:11434"
+	}
+	endpoint = strings.TrimRight(endpoint, "/")
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+"/api/tags", nil)
+	if err != nil {
+		return fmt.Errorf("build request: %w", err)
+	}
+	resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
+	if err != nil {
+		return fmt.Errorf("ping ollama: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("ollama responded %d", resp.StatusCode)
 	}
 	return nil
 }

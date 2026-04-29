@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"strings"
 	"time"
 
@@ -88,12 +87,8 @@ func (w *workflowWSClientWorker) Run(ctx context.Context) error {
 		}
 	}()
 
-	exec := &workflow.WorkflowExecutor{
-		HTTPClient:   &http.Client{Timeout: 30 * time.Second},
-		DB:           defaultDB,
-		Redis:        rc,
-		ConnResolver: connResolver,
-	}
+	exec, sandboxClose := BuildWorkerExecutor(ctx, cfg, mc.DB(), rc, connResolver)
+	defer sandboxClose()
 
 	tracked := make(map[string]*trackedWSConsumer)
 

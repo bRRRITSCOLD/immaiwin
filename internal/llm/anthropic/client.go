@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -312,15 +313,53 @@ func (c *Client) Chat(ctx context.Context, req llm.ChatRequest) (*llm.ChatRespon
 	httpReq.Header.Set("anthropic-version", c.version)
 	httpReq.Header.Set("x-api-key", c.apiKey)
 
-	resp, err := c.http.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("anthropic: do: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
+	// Transient-error retry loop. Anthropic returns:
+	//   429 — rate limit (RPM/TPM)
+	//   529 — "overloaded_error" (server-side capacity, retry recommended)
+	//   503 — service unavailable / upstream timeout
+	// All are server-rejected (no tokens billed), so retry is free. 500
+	// is omitted — those are usually hard backend errors that won't
+	// recover on retry; surface them to the caller instead. 4xx other
+	// than 429 are real (bad auth / bad input) and not retried.
+	const maxRetries = 3
+	var resp *http.Response
+	var raw []byte
+	for attempt := 0; ; attempt++ {
+		retryReq, rErr := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint+"/v1/messages", bytes.NewReader(body))
+		if rErr != nil {
+			return nil, fmt.Errorf("anthropic: build request: %w", rErr)
+		}
+		retryReq.Header = httpReq.Header.Clone()
 
-	raw, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("anthropic: read body: %w", err)
+		var doErr error
+		resp, doErr = c.http.Do(retryReq)
+		if doErr != nil {
+			return nil, fmt.Errorf("anthropic: do: %w", doErr)
+		}
+		raw, err = io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if err != nil {
+			return nil, fmt.Errorf("anthropic: read body: %w", err)
+		}
+
+		retryable := resp.StatusCode == http.StatusTooManyRequests ||
+			resp.StatusCode == 529 ||
+			resp.StatusCode == http.StatusServiceUnavailable
+		if !retryable || attempt >= maxRetries {
+			break
+		}
+
+		wait := time.Duration(1<<attempt) * time.Second
+		if ra := resp.Header.Get("Retry-After"); ra != "" {
+			if secs, perr := strconv.Atoi(strings.TrimSpace(ra)); perr == nil && secs > 0 && secs < 30 {
+				wait = time.Duration(secs) * time.Second
+			}
+		}
+		select {
+		case <-time.After(wait):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 	}
 
 	if resp.StatusCode >= 400 {

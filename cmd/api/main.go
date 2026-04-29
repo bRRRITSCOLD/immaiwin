@@ -19,6 +19,8 @@ import (
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/polymarket"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/rediss"
 	_ "github.com/bRRRITSCOLD/immaiwin-go/internal/llm/anthropic" // register Anthropic provider in llm.Default
+	_ "github.com/bRRRITSCOLD/immaiwin-go/internal/llm/ollama"    // register Ollama provider
+	_ "github.com/bRRRITSCOLD/immaiwin-go/internal/llm/openai"    // register OpenAI provider
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/sandbox"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/sandbox/docker"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/sandbox/k3s"
@@ -182,10 +184,17 @@ func main() {
 		slog.Warn("agent chat memory init failed (agents will run without history)", "err", err)
 		chatMem = nil
 	}
+	// runRepo doubles as workflow.WorkflowRunStore for the executor + the
+	// /runs history handlers. On init failure we keep the runStore as a
+	// nil interface (NOT typed-nil) so downstream `store == nil` guards
+	// actually fire.
+	var runStore workflow.WorkflowRunStore
 	runRepo, err := mongodb.NewWorkflowRunRepository(ctx, mc.DB())
 	if err != nil {
 		slog.Warn("workflow run repo init failed (agent traces will not persist)", "err", err)
 		runRepo = nil
+	} else {
+		runStore = runRepo
 	}
 
 	// Skill resolver. Off by default; opt-in via SKILLS_ENABLED. When enabled
@@ -212,17 +221,45 @@ func main() {
 	}
 
 	wfExec := &workflow.WorkflowExecutor{
-		HTTPClient:   &http.Client{Timeout: 30 * time.Second},
-		DB:           defaultDB,
-		Redis:        rc,
-		ConnResolver: connResolver,
-		SandboxRT:    sandboxRT,
-		Memory:       chatMem,
-		RunRepo:      runRepo,
+		HTTPClient:     &http.Client{Timeout: 30 * time.Second},
+		DB:             defaultDB,
+		Redis:          rc,
+		ConnResolver:   connResolver,
+		SandboxRT:      sandboxRT,
+		ApprovalBroker: rc,
+		Memory:         chatMem,
+		RunRepo:      runStore,
 		SkillRes:     skillRes,
 	}
 
-	srv := api.NewServer(cfg.API, rc, pm, wl, tr, nr, tokens, owl, fwl, sc, wfRepo, wfExec, connRepo, connResolver, skillBackend, mc.DB(), sandboxRT)
+	// Eval harness (Tier C). Best-effort init — the rest of the API stays
+	// up if Mongo can't create the eval indexes for any reason.
+	var evalDeps handler.EvalDeps
+	if evalRepo, eerr := mongodb.NewEvalRepository(ctx, mc.DB()); eerr != nil {
+		slog.Warn("eval repo init failed (evals disabled)", "err", eerr)
+	} else {
+		evalDeps = handler.EvalDeps{
+			Store: evalRepo,
+			Runner: &workflow.EvalRunner{
+				Evals:     evalRepo,
+				Workflows: wfRepo,
+				Executor:  wfExec,
+			},
+		}
+	}
+
+	// User repo for auth. Best-effort init — failures degrade auth
+	// (login/register return 503) without taking down the rest of the API.
+	userRepo, uerr := mongodb.NewUserRepository(ctx, mc.DB())
+	if uerr != nil {
+		slog.Warn("user repo init failed (auth disabled)", "err", uerr)
+		userRepo = nil
+	}
+	if cfg.Auth.JWTSecret == "" {
+		slog.Warn("AUTH_JWT_SECRET not configured — auth endpoints will refuse requests; set a 32+ byte hex value in .env to enable")
+	}
+
+	srv := api.NewServer(cfg.API, cfg.Auth, rc, pm, wl, tr, nr, tokens, owl, fwl, sc, wfRepo, runStore, wfExec, connRepo, connResolver, skillBackend, evalDeps, userRepo, mc.DB(), sandboxRT)
 
 	go func() {
 		slog.Info("api server listening", "addr", srv.Addr())

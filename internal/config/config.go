@@ -13,7 +13,33 @@ type Config struct {
 	Schwab        SchwabConfig  `envPrefix:"SCHWAB_"`
 	Sandbox       SandboxConfig `envPrefix:"SANDBOX_"`
 	Skills        SkillsConfig  `envPrefix:"SKILLS_"`
+	Auth          AuthConfig    `envPrefix:"AUTH_"`
 	EncryptionKey string        `env:"ENCRYPTION_KEY" envDefault:""`
+}
+
+// AuthConfig drives JWT issuance + verification for the user-auth
+// system. JWTSecret MUST be set in any non-dev deployment — the empty
+// default is intentionally invalid so the API refuses to boot when the
+// operator forgot to configure it.
+type AuthConfig struct {
+	// JWTSecret is the HS256 signing key. Recommend 32+ random bytes
+	// hex-encoded. Used for both UI cookie tokens and API Bearer
+	// tokens (when issued via /auth/login). API keys live in a
+	// separate collection and don't go through JWT signing.
+	JWTSecret string `env:"JWT_SECRET" envDefault:""`
+	// JWTTTL controls how long a freshly-issued JWT remains valid
+	// (e.g. "24h", "168h" for a week). Refresh = re-login until we
+	// add a refresh-token flow.
+	JWTTTL string `env:"JWT_TTL" envDefault:"168h"`
+	// CookieDomain scopes the auth cookie when set. Empty = host-only.
+	CookieDomain string `env:"COOKIE_DOMAIN" envDefault:""`
+	// CookieSecure enforces the Secure flag on the auth cookie.
+	// Disabled in dev (HTTP). Set true behind HTTPS.
+	CookieSecure bool `env:"COOKIE_SECURE" envDefault:"false"`
+	// AllowRegistration toggles the public /auth/register endpoint.
+	// In a closed deployment, set false + create users via CLI / admin
+	// UI (admin UI deferred backlog).
+	AllowRegistration bool `env:"ALLOW_REGISTRATION" envDefault:"true"`
 }
 
 // SkillsConfig configures the agent skills system (P1.9–P1.12).

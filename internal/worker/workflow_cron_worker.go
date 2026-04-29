@@ -5,19 +5,38 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/config"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/mongodb"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/rediss"
+	"github.com/bRRRITSCOLD/immaiwin-go/internal/skills"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/workflow"
 	"github.com/robfig/cron/v3"
+	mongoDriver "go.mongodb.org/mongo-driver/v2/mongo"
 )
 
-const cronSyncInterval = 30 * time.Second
+// buildSkillResolver constructs a skill resolver if SKILLS_ENABLED is
+// set in config. Mirrors cmd/api init so cron-driven agent runs see the
+// same skill catalog as canvas-driven runs. Best-effort — returns nil
+// on any failure so a misconfigured skills dir doesn't break workers.
+func buildSkillResolver(ctx context.Context, cfg *config.Config, db *mongoDriver.Database) *skills.Resolver {
+	if !cfg.Skills.Enabled {
+		return nil
+	}
+	registry, err := mongodb.NewSkillRegistry(ctx, db)
+	if err != nil {
+		slog.Warn("workflow-cron: skill registry init failed (skills disabled)", "err", err)
+		return nil
+	}
+	fsSrc := skills.NewLocalFSSource(cfg.Skills.Dir, "local-fs")
+	return skills.NewResolver(registry, fsSrc)
+}
+
+const cronSyncInterval = 5 * time.Second
 
 var WorkflowCronWorker = &workflowCronWorker{}
 
@@ -108,22 +127,39 @@ func (w *workflowCronWorker) Run(ctx context.Context) error {
 		}
 	}()
 
-	exec := &workflow.WorkflowExecutor{
-		HTTPClient:   &http.Client{Timeout: 30 * time.Second},
-		DB:           defaultDB,
-		Redis:        rc,
-		ConnResolver: connResolver,
-	}
+	// All worker exec wiring goes through BuildWorkerExecutor so cron,
+	// webhook, ws-client, redis-subscribe, and rabbitmq workers share
+	// identical dep sets. Drift between worker types caused the
+	// cron-worker bug; this helper is the single source of truth.
+	exec, sandboxClose := BuildWorkerExecutor(ctx, cfg, mc.DB(), rc, connResolver)
+	defer sandboxClose()
 
-	parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
+	// 6-field parser w/ optional seconds. Standard 5-field cron
+	// (`*/5 * * * *`) still parses since cron.Second is optional.
+	// Adds sub-minute scheduling like `*/5 * * * * *` = every 5 seconds.
+	parser := cron.NewParser(cron.SecondOptional | cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
 	scheduler := cron.New(cron.WithParser(parser))
 	scheduler.Start()
 	defer scheduler.Stop()
 
 	tracked := make(map[string]trackedEntry)
 	running := &sync.Map{} // wfID → true while in-flight
+	// Re-entrancy guard: skip a sync tick when a previous one is still
+	// in flight. Mongo lookups + cron entry diffing can take >tick on
+	// large workflow sets; without this guard the ticker stacks
+	// goroutines and produces duplicate "scheduled" log spam.
+	var syncing atomic.Bool
 
-	syncSchedules(ctx, repo, exec, scheduler, tracked, running)
+	runSync := func() {
+		if !syncing.CompareAndSwap(false, true) {
+			slog.Debug("workflow-cron: skip sync — previous still in flight")
+			return
+		}
+		defer syncing.Store(false)
+		syncSchedules(ctx, repo, exec, scheduler, tracked, running)
+	}
+
+	runSync()
 
 	ticker := time.NewTicker(cronSyncInterval)
 	defer ticker.Stop()
@@ -133,7 +169,7 @@ func (w *workflowCronWorker) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
-			syncSchedules(ctx, repo, exec, scheduler, tracked, running)
+			runSync()
 		}
 	}
 }
@@ -233,7 +269,11 @@ func runCronWorkflow(
 		return
 	}
 
-	steps, err := exec.Run(ctx, wf, "")
+	// Use RunResumable so the run gets persisted into WorkflowRunStore
+	// (visible in /runs UI) and the agent's OOB approval gate has a
+	// runID to register against.
+	outcome, err := exec.RunResumable(ctx, wf, workflow.RunOpts{})
+	steps := outcome.Steps
 	elapsed := time.Since(start).Round(time.Millisecond)
 
 	var errCount int

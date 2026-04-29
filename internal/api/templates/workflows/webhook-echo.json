@@ -1,0 +1,40 @@
+{
+  "name": "Webhook Echo",
+  "description": "Minimal webhook trigger that captures incoming POST body and writes it to logs via a Notify node. Useful as a starter for any webhook-driven flow.",
+  "category": "Webhooks",
+  "workflow": {
+    "name": "Webhook Echo",
+    "params": {},
+    "nodes": [
+      {
+        "id": "trigger-1",
+        "type": "trigger",
+        "position": { "x": -200, "y": 0 },
+        "data": {
+          "name": "incoming_webhook",
+          "trigger_type": "webhook",
+          "webhook_slug": "echo",
+          "handles": [
+            { "id": "start-out", "side": "right", "offset": 50, "paletteType": "start" }
+          ]
+        }
+      },
+      {
+        "id": "notify-1",
+        "type": "notify",
+        "position": { "x": 200, "y": 0 },
+        "data": {
+          "name": "log_payload",
+          "message": "Received webhook: {{input}}",
+          "handles": [
+            { "id": "success", "side": "right", "offset": 35, "paletteType": "success" },
+            { "id": "in-left", "side": "left", "offset": 50, "paletteType": "receive" }
+          ]
+        }
+      }
+    ],
+    "edges": [
+      { "id": "e1", "source": "trigger-1", "target": "notify-1", "sourceHandle": "start-out", "data": { "paletteType": "start" } }
+    ]
+  }
+}

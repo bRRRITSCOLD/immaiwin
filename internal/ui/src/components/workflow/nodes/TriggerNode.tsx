@@ -18,6 +18,7 @@ import { NodeDebugPanel, BreakpointMarker } from '../RunResultsContext'
 const triggerTypes = [
   { value: 'manual', label: 'Manual' },
   { value: 'cron', label: 'Cron Schedule' },
+  { value: 'webhook', label: 'Webhook (HTTP)' },
   { value: 'rabbitmq', label: 'RabbitMQ' },
   { value: 'redis_subscribe', label: 'Redis Subscribe' },
   { value: 'polymarket_ws', label: 'Polymarket WS' },
@@ -27,6 +28,9 @@ const triggerTypes = [
 type TriggerType = (typeof triggerTypes)[number]['value']
 
 const cronFields = [
+  // Seconds is optional — leave blank for standard 5-field cron
+  // (minute granularity). Fill in for sub-minute scheduling.
+  { key: 'cron_sec', label: 'Second', placeholder: '(blank)' },
   { key: 'cron_min', label: 'Minute', placeholder: '*' },
   { key: 'cron_hour', label: 'Hour', placeholder: '*' },
   { key: 'cron_dom', label: 'Day of Month', placeholder: '*' },
@@ -34,9 +38,24 @@ const cronFields = [
   { key: 'cron_dow', label: 'Day of Week', placeholder: '*' },
 ] as const
 
+// parseCronToFields splits a cron string into per-field state. Accepts
+// either 5 fields (legacy) or 6 fields (with leading seconds). For 5
+// fields, cron_sec stays empty so the rendered form matches the
+// minute-granularity input.
 function parseCronToFields(cron: string): Record<string, string> {
   const parts = (cron || '').trim().split(/\s+/)
+  if (parts.length === 6) {
+    return {
+      cron_sec: parts[0] || '',
+      cron_min: parts[1] || '*',
+      cron_hour: parts[2] || '*',
+      cron_dom: parts[3] || '*',
+      cron_mon: parts[4] || '*',
+      cron_dow: parts[5] || '*',
+    }
+  }
   return {
+    cron_sec: '',
     cron_min: parts[0] || '*',
     cron_hour: parts[1] || '*',
     cron_dom: parts[2] || '*',
@@ -45,20 +64,30 @@ function parseCronToFields(cron: string): Record<string, string> {
   }
 }
 
+// buildCronFromData emits a 6-field expression when cron_sec is set,
+// otherwise a 5-field expression so existing minute-only schedules
+// stay readable. The backend's parser accepts either via
+// `cron.SecondOptional`.
 function buildCronFromData(data: Record<string, unknown>): string {
-  return [
+  const sec = ((data.cron_sec as string) || '').trim()
+  const fields = [
     (data.cron_min as string) || '*',
     (data.cron_hour as string) || '*',
     (data.cron_dom as string) || '*',
     (data.cron_mon as string) || '*',
     (data.cron_dow as string) || '*',
-  ].join(' ')
+  ]
+  if (sec !== '') {
+    return [sec, ...fields].join(' ')
+  }
+  return fields.join(' ')
 }
 
 export function TriggerNode({ id, data, selected }: NodeProps) {
   const { updateNodeData } = useReactFlow()
   const triggerType = ((data.trigger_type as string) || 'manual') as TriggerType
   const isCron = triggerType === 'cron'
+  const isWebhook = triggerType === 'webhook'
   const isRabbitMQ = triggerType === 'rabbitmq'
   const isRedisSubscribe = triggerType === 'redis_subscribe'
   const isPolymarketWS = triggerType === 'polymarket_ws'
@@ -150,6 +179,9 @@ export function TriggerNode({ id, data, selected }: NodeProps) {
                 </label>
               </div>
             </div>
+          )}
+          {isWebhook && (
+            <WebhookFields id={id} data={data} updateNodeData={updateNodeData} />
           )}
           {isRabbitMQ && (
             <div className="space-y-2">
@@ -266,6 +298,70 @@ export function TriggerNode({ id, data, selected }: NodeProps) {
         <NodeDebugPanel id={id} />
       </div>
       <DynamicHandles nodeId={id} nodeType="trigger" data={data as Record<string, unknown>} />
+    </div>
+  )
+}
+
+// WebhookFields renders the webhook trigger config: a slug (auto-
+// suggested when empty), an optional shared secret for HMAC SHA-256
+// signature verification, and a copy-friendly URL preview so the
+// integrator knows where to POST.
+function WebhookFields({
+  id,
+  data,
+  updateNodeData,
+}: {
+  id: string
+  data: Record<string, unknown>
+  updateNodeData: (id: string, patch: Record<string, unknown>) => void
+}) {
+  const slug = (data.webhook_slug as string) ?? ''
+  const secret = (data.webhook_secret as string) ?? ''
+  // Read API base from Vite env. Fallback to relative URL if missing.
+  const apiBase = (import.meta.env['VITE_API_URL'] as string | undefined) ?? ''
+  const url = slug ? `${apiBase}/api/v1/webhooks/${slug}` : ''
+  return (
+    <div className="space-y-2">
+      <div className="space-y-0.5">
+        <label className="text-xs text-muted-foreground">Slug</label>
+        <Input
+          className="font-mono text-sm h-8"
+          placeholder="my-webhook"
+          value={slug}
+          onChange={(e) => updateNodeData(id, { webhook_slug: e.target.value.trim() })}
+        />
+      </div>
+      {url && (
+        <div className="space-y-0.5">
+          <label className="text-xs text-muted-foreground">POST URL</label>
+          <div className="flex items-center gap-1">
+            <Input className="font-mono text-[11px] h-8 flex-1" readOnly value={url} />
+            <button
+              type="button"
+              className="nodrag text-[10px] px-2 py-1 rounded border border-border hover:bg-muted/50 transition-colors"
+              onClick={() => navigator.clipboard.writeText(url)}
+              title="Copy URL"
+            >
+              Copy
+            </button>
+          </div>
+        </div>
+      )}
+      <div className="space-y-0.5">
+        <label className="text-xs text-muted-foreground">Secret (optional)</label>
+        <Input
+          className="font-mono text-sm h-8"
+          type="password"
+          placeholder="leave blank for unauthenticated"
+          value={secret}
+          onChange={(e) => updateNodeData(id, { webhook_secret: e.target.value })}
+        />
+        {secret && (
+          <p className="text-[10px] text-muted-foreground">
+            Sender must include <code className="text-[10px]">X-Webhook-Signature: sha256=&lt;hex&gt;</code> over the raw body.
+          </p>
+        )}
+      </div>
     </div>
   )
 }

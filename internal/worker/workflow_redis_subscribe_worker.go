@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
-	"net/http"
 	"strings"
 	"time"
 
@@ -131,12 +130,8 @@ func (w *workflowRedisSubscribeWorker) Run(ctx context.Context) error {
 		}
 	}()
 
-	exec := &workflow.WorkflowExecutor{
-		HTTPClient:   &http.Client{Timeout: 30 * time.Second},
-		DB:           defaultDB,
-		Redis:        rc,
-		ConnResolver: connResolver,
-	}
+	exec, sandboxClose := BuildWorkerExecutor(ctx, cfg, mc.DB(), rc, connResolver)
+	defer sandboxClose()
 
 	tracked := make(map[string]*trackedRedisSubscriber)
 

@@ -4,9 +4,12 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/api/handler"
+	"github.com/bRRRITSCOLD/immaiwin-go/internal/api/middleware"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/config"
+	"github.com/bRRRITSCOLD/immaiwin-go/internal/mongodb"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/rediss"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/sandbox"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/workflow"
@@ -33,20 +36,24 @@ type marketsClient interface {
 
 func NewServer(
 	cfg config.APIConfig,
+	authCfg config.AuthConfig,
 	rc *rediss.Client,
 	pm marketsClient,
 	wl handler.WatchlistStore,
 	tr handler.TradesLister,
 	nr handler.NewsLister,
-	auth handler.SchwabAuthorizer,
+	schwabAuth handler.SchwabAuthorizer,
 	owl handler.OptionsWatchlistStore,
 	fwl handler.FuturesWatchlistStore,
 	sc handler.ScraperConfigStore,
 	wfStore handler.WorkflowStore,
+	wfRunStore workflow.WorkflowRunStore,
 	wfExec *workflow.WorkflowExecutor,
 	connStore handler.ConnectionStore,
 	connInvalidator handler.ConnectionInvalidator,
 	skillBackend *handler.SkillBackend,
+	evalDeps handler.EvalDeps,
+	users *mongodb.UserRepository,
 	db *mongo.Database,
 	sandboxRT sandbox.Runtime,
 ) *Server {
@@ -56,15 +63,59 @@ func NewServer(
 	fb := rediss.NewBroadcaster(rc, rediss.FuturesChannel)
 
 	r := gin.New()
-	r.Use(gin.Logger(), gin.Recovery(), cors.Default())
+	// CORS w/ credentials so the UI's httpOnly auth cookie rides over
+	// cross-origin requests in dev (UI on :3000, API on :8080). Allow
+	// any origin since dev has no fixed host; tighten via config in
+	// prod once we add an UI base-URL env var.
+	corsCfg := cors.Config{
+		AllowOriginFunc:  func(string) bool { return true },
+		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"},
+		AllowHeaders:     []string{"Origin", "Content-Type", "Accept", "Authorization"},
+		AllowCredentials: true,
+		MaxAge:           12 * time.Hour,
+	}
+	r.Use(gin.Logger(), gin.Recovery(), cors.New(corsCfg))
+
+	// Auth dependencies — wired once, threaded through both the
+	// /api/v1/auth handlers and the request-scoped middleware that
+	// validates JWTs on protected routes.
+	authTTL := 168 * time.Hour
+	if authCfg.JWTTTL != "" {
+		if d, err := time.ParseDuration(authCfg.JWTTTL); err == nil && d > 0 {
+			authTTL = d
+		}
+	}
+	authDeps := handler.AuthDeps{
+		Users:    users,
+		Cfg:      authCfg,
+		JWTBytes: []byte(authCfg.JWTSecret),
+		TTL:      authTTL,
+	}
+	// OptionalAuth on every request so handlers can read the user
+	// from ctx when present (Phase B will swap to RequireAuth on
+	// data routes once tenant scoping is in). Skipped during Phase A
+	// when users repo is nil (degraded boot).
+	if users != nil && len(authDeps.JWTBytes) > 0 {
+		r.Use(middleware.OptionalAuth(authDeps.JWTBytes, users))
+	}
 
 	r.GET("/health", handler.Health)
 
-	// Auth
-	r.GET("/auth/schwab", handler.SchwabAuthorize(auth))
-	r.GET("/auth/schwab/callback", handler.SchwabCallback(auth))
-	r.GET("/api/v1/auth/schwab/status", handler.SchwabStatus(auth))
-	r.DELETE("/api/v1/auth/schwab", handler.SchwabDisconnect(auth))
+	// User auth — public except /me which requires a valid token.
+	r.POST("/api/v1/auth/register", handler.Register(authDeps))
+	r.POST("/api/v1/auth/login", handler.Login(authDeps))
+	r.POST("/api/v1/auth/logout", handler.Logout(authDeps))
+	if users != nil && len(authDeps.JWTBytes) > 0 {
+		r.GET("/api/v1/auth/me",
+			middleware.RequireAuth(authDeps.JWTBytes, users),
+			handler.Me(authDeps))
+	}
+
+	// Schwab OAuth (legacy — predates user auth)
+	r.GET("/auth/schwab", handler.SchwabAuthorize(schwabAuth))
+	r.GET("/auth/schwab/callback", handler.SchwabCallback(schwabAuth))
+	r.GET("/api/v1/auth/schwab/status", handler.SchwabStatus(schwabAuth))
+	r.DELETE("/api/v1/auth/schwab", handler.SchwabDisconnect(schwabAuth))
 
 	// Trades (Polymarket)
 	r.GET("/api/v1/trades/stream", handler.StreamTrades(tr, b))
@@ -81,11 +132,30 @@ func NewServer(
 
 	// Workflows
 	r.GET("/api/v1/workflows", handler.ListWorkflows(wfStore))
+	r.GET("/api/v1/workflows/:id", handler.GetWorkflow(wfStore))
 	r.PUT("/api/v1/workflows/:id", handler.UpsertWorkflow(wfStore))
 	r.DELETE("/api/v1/workflows/:id", handler.DeleteWorkflow(wfStore))
 	r.POST("/api/v1/workflows/:id/run", handler.RunWorkflow(wfStore, wfExec))
 	r.GET("/api/v1/workflows/:id/run/stream", handler.RunWorkflowWS(wfStore, wfExec))
 	r.GET("/api/v1/workflows/:id/ws-preview", handler.PreviewWorkflowWS(wfStore, connStore, db))
+
+	// Workflow runs (history page). Register the static `daily_total`
+	// route BEFORE `:id` so gin's radix tree doesn't route the literal
+	// segment through the wildcard handler.
+	r.GET("/api/v1/workflow_runs", handler.ListWorkflowRuns(wfRunStore))
+	r.GET("/api/v1/workflow_runs/daily_total", handler.DailyTotal(wfRunStore, wfStore))
+	r.GET("/api/v1/workflow_runs/daily_totals", handler.DailyTotals(wfRunStore, wfStore))
+	r.GET("/api/v1/workflow_runs/:id", handler.GetWorkflowRun(wfRunStore, wfStore))
+	r.POST("/api/v1/workflow_runs/:id/approval", handler.SubmitRunApproval(wfExec, wfRunStore))
+	r.POST("/api/v1/workflow_runs/:id/cancel", handler.CancelRun(wfExec, wfRunStore))
+
+	// Webhook trigger — POST /api/v1/webhooks/:slug runs the workflow
+	// whose trigger node has matching webhook_slug. Body becomes the
+	// trigger output (JSON or raw string).
+	r.POST("/api/v1/webhooks/:slug", handler.HandleWebhook(wfStore, wfExec))
+
+	// Workflow templates — bundled at compile time, served read-only.
+	r.GET("/api/v1/workflow_templates", handler.ListWorkflowTemplates())
 
 	// Connections
 	r.GET("/api/v1/connections", handler.ListConnections(connStore))
@@ -98,6 +168,16 @@ func NewServer(
 	// are still registered so the UI can call them unconditionally.
 	r.GET("/api/v1/skills", handler.ListSkills(skillBackend))
 	r.POST("/api/v1/skills/refresh", handler.RefreshSkills(skillBackend))
+
+	// Evals (P-eval). Disabled when EvalDeps is empty; handlers respond
+	// with 503 so the UI can fail open.
+	r.GET("/api/v1/evals", handler.ListEvals(evalDeps))
+	r.PUT("/api/v1/evals/:id", handler.UpsertEval(evalDeps))
+	r.GET("/api/v1/evals/:id", handler.GetEval(evalDeps))
+	r.DELETE("/api/v1/evals/:id", handler.DeleteEval(evalDeps))
+	r.POST("/api/v1/evals/:id/run", handler.RunEval(evalDeps))
+	r.GET("/api/v1/eval_runs", handler.ListEvalRuns(evalDeps))
+	r.GET("/api/v1/eval_runs/:id", handler.GetEvalRun(evalDeps))
 
 	// Connection OAuth (generic)
 	r.GET("/auth/connections/:id/callback", handler.ConnectionOAuthCallback(connStore, db))

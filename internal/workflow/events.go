@@ -22,14 +22,17 @@ import (
 type EventType string
 
 const (
-	EventStepStart       EventType = "step_start"
-	EventStepDone        EventType = "step_done"
-	EventAgentIter       EventType = "agent_iter"
-	EventAgentLLM        EventType = "agent_llm"
-	EventAgentToolCall   EventType = "agent_tool_call"
-	EventAgentToolResult EventType = "agent_tool_result"
-	EventAgentFinal      EventType = "agent_final"
-	EventRunDone         EventType = "run_done"
+	EventStepStart           EventType = "step_start"
+	EventStepDone            EventType = "step_done"
+	EventStepPending         EventType = "step_pending" // pre-exec breakpoint pause
+	EventCostExceeded        EventType = "cost_exceeded" // workflow CostLimits cap breached
+	EventAgentIter           EventType = "agent_iter"
+	EventAgentLLM            EventType = "agent_llm"
+	EventAgentToolCall       EventType = "agent_tool_call"
+	EventAgentToolResult     EventType = "agent_tool_result"
+	EventAgentToolApproval   EventType = "agent_tool_approval" // require_approval gate awaiting user decision
+	EventAgentFinal          EventType = "agent_final"
+	EventRunDone             EventType = "run_done"
 )
 
 // RunEvent is the wire shape pushed onto the event channel. Same struct
@@ -54,6 +57,15 @@ type RunEvent struct {
 	Output     any       `json:"output,omitempty"`
 	Error      string    `json:"error,omitempty"`
 	Usage      *Usage    `json:"usage,omitempty"`
+	// Provider + Model populated on `agent_llm` events so the live UI +
+	// run detail page can show which LLM produced the iter without
+	// chasing the agent node's connection config.
+	Provider string `json:"provider,omitempty"`
+	Model    string `json:"model,omitempty"`
+	// Populated on the terminal "run_done" event so clients can flip Run ↔
+	// Continue based on whether the run paused mid-way.
+	RunID  string `json:"run_id,omitempty"`
+	Status string `json:"status,omitempty"`
 }
 
 // Usage mirrors the per-call LLM accounting on the wire. We use a separate

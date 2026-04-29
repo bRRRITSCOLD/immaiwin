@@ -3,15 +3,17 @@ import { Bell } from 'lucide-react'
 import { Textarea } from '~/components/ui/textarea'
 import { StepNameInput } from './StepNameInput'
 import { DynamicHandles } from './DynamicHandles'
-import { NodeDebugPanel, BreakpointMarker } from '../RunResultsContext'
+import { NodeDebugPanel, BreakpointMarker, ApprovalMarker } from '../RunResultsContext'
 
 export function NotifyNode({ id, data, selected }: NodeProps) {
   const { updateNodeData } = useReactFlow()
   const message = (data?.message as string) ?? ''
+  const requireApproval = (data?.require_node_approval as boolean) ?? false
 
   return (
     <div className="relative min-w-[240px] h-full">
       <BreakpointMarker id={id} />
+      <ApprovalMarker id={id} enabled={requireApproval} onToggle={(_, next) => updateNodeData(id, { require_node_approval: next })} />
       <div className="overflow-x-hidden rounded-lg border-2 border-amber-500 bg-card text-card-foreground shadow-sm h-full">
         <NodeResizer minWidth={240} minHeight={80} isVisible={selected} />
         <div className="flex items-center gap-2 px-4 py-2.5 border-b border-amber-500/40">

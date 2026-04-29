@@ -12,7 +12,7 @@ import { StepNameInput } from './StepNameInput'
 import { DynamicHandles } from './DynamicHandles'
 import { AsToolPanel } from './AsToolPanel'
 import { ConnectionPicker } from './ConnectionPicker'
-import { NodeDebugPanel, BreakpointMarker } from '../RunResultsContext'
+import { NodeDebugPanel, BreakpointMarker, ApprovalMarker } from '../RunResultsContext'
 
 // ── operation list ───────────────────────────────────────────────────────────
 
@@ -254,10 +254,12 @@ export function MongoRequestNode({ id, data, selected }: NodeProps) {
   const [openPagination, setOpenPagination] = useState(false)
   const [openDistinct, setOpenDistinct] = useState(true)
   const [openCursor, setOpenCursor] = useState(true)
+  const requireApproval = (data?.require_node_approval as boolean) ?? false
 
   return (
     <div className="relative min-w-[320px] h-full">
       <BreakpointMarker id={id} />
+      <ApprovalMarker id={id} enabled={requireApproval} onToggle={(_, next) => updateNodeData(id, { require_node_approval: next })} />
       <div className="overflow-x-hidden rounded-lg border-2 border-green-600 bg-card text-card-foreground shadow-sm h-full">
         <NodeResizer minWidth={320} minHeight={80} isVisible={selected} />
         <div className="flex items-center gap-2 px-4 py-2.5 border-b border-green-600/40">

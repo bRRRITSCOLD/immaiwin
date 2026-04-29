@@ -60,21 +60,45 @@ func (r *WorkflowRepository) Upsert(ctx context.Context, wf workflow.Workflow) (
 	}
 	wf.UpdatedAt = now
 
+	// $set explicit-whitelists fields so unrelated docs don't pick up
+	// schema drift. Whenever you add a Workflow field that should round-
+	// trip via Upsert, add it here too — silent-drop bugs from this
+	// list have bitten us twice.
+	setFields := bson.M{
+		"name":       wf.Name,
+		"params":     wf.Params,
+		"nodes":      wf.Nodes,
+		"edges":      wf.Edges,
+		"updated_at": wf.UpdatedAt,
+	}
+	// Pointer field — when nil (caps cleared) we want $unset rather than
+	// $set: nil so existing docs don't carry a stale value. Mongo doesn't
+	// allow $set + $unset on the same field in one update, so branch.
+	update := bson.M{
+		"$set":         setFields,
+		"$setOnInsert": bson.M{"created_at": wf.CreatedAt},
+	}
+	unsetFields := bson.M{}
+	if wf.CostLimits != nil {
+		setFields["cost_limits"] = wf.CostLimits
+	} else {
+		unsetFields["cost_limits"] = ""
+	}
+	// ParamsSchema persists too. Empty slice → $unset so legacy docs
+	// don't accumulate empty arrays after a clear.
+	if len(wf.ParamsSchema) > 0 {
+		setFields["params_schema"] = wf.ParamsSchema
+	} else {
+		unsetFields["params_schema"] = ""
+	}
+	if len(unsetFields) > 0 {
+		update["$unset"] = unsetFields
+	}
+
 	_, err := r.col.UpdateOne(
 		ctx,
 		bson.M{"_id": wf.ID},
-		bson.M{
-			"$set": bson.M{
-				"name":       wf.Name,
-				"params":     wf.Params,
-				"nodes":      wf.Nodes,
-				"edges":      wf.Edges,
-				"updated_at": wf.UpdatedAt,
-			},
-			"$setOnInsert": bson.M{
-				"created_at": wf.CreatedAt,
-			},
-		},
+		update,
 		options.UpdateOne().SetUpsert(true),
 	)
 	return wf, err

@@ -176,6 +176,8 @@ export function ConnectionDialog({ open, onOpenChange, connection, onSaved }: Pr
                       <SelectItem value="polymarket">Polymarket</SelectItem>
                       <SelectItem value="schwab">Schwab</SelectItem>
                       <SelectItem value="anthropic">Anthropic</SelectItem>
+                      <SelectItem value="openai">OpenAI</SelectItem>
+                      <SelectItem value="ollama">Ollama</SelectItem>
                     </SelectContent>
                   </Select>
                 </Field>
@@ -201,6 +203,8 @@ export function ConnectionDialog({ open, onOpenChange, connection, onSaved }: Pr
                     if (type === 'rabbitmq') return <RabbitMQFields config={config} setField={setField} />
                     if (type === 'schwab') return <SchwabFields config={config} setField={setField} connectionId={id} isSaved={saved} disabled={justCreated} />
                     if (type === 'anthropic') return <AnthropicFields config={config} setField={setField} />
+                    if (type === 'openai') return <OpenAIFields config={config} setField={setField} />
+                    if (type === 'ollama') return <OllamaFields config={config} setField={setField} />
                     return <PolymarketFields config={config} setField={setField} />
                   }}
                 </form.Field>
@@ -382,6 +386,40 @@ function AnthropicFields({ config, setField }: { config: Record<string, string>;
         <ConfigInput label="Endpoint" configKey="endpoint" config={config} setField={setField} placeholder="https://api.anthropic.com" description="Override base URL (gateways/proxies)" />
         <ConfigInput label="API Version" configKey="version" config={config} setField={setField} placeholder="2023-06-01" />
         <ConfigInput label="Timeout" configKey="timeout" config={config} setField={setField} placeholder="60s" description="Go duration: 30s, 5m, 1h" />
+      </Section>
+    </FieldGroup>
+  )
+}
+
+// ── OpenAI fields ────────────────────────────────────────────────────────────
+
+function OpenAIFields({ config, setField }: { config: Record<string, string>; setField: (k: string, v: string) => void }) {
+  return (
+    <FieldGroup>
+      <ConfigInput label="API Key" configKey="api_key" config={config} setField={setField} placeholder="sk-…" type="password" />
+      <ConfigInput label="Default Model" configKey="default_model" config={config} setField={setField} placeholder="gpt-4o-mini" description="e.g. gpt-4o, gpt-4o-mini, gpt-4-turbo, gpt-3.5-turbo" />
+
+      <Section title="Advanced">
+        <ConfigInput label="Endpoint" configKey="endpoint" config={config} setField={setField} placeholder="https://api.openai.com" description="Override base URL (Azure / proxies)" />
+        <ConfigInput label="Organization" configKey="organization" config={config} setField={setField} placeholder="org-…" description="Sent as OpenAI-Organization header" />
+        <ConfigInput label="Project" configKey="project" config={config} setField={setField} placeholder="proj_…" description="Sent as OpenAI-Project header" />
+        <ConfigInput label="Timeout" configKey="timeout" config={config} setField={setField} placeholder="60s" description="Go duration: 30s, 5m, 1h" />
+      </Section>
+    </FieldGroup>
+  )
+}
+
+// ── Ollama fields ────────────────────────────────────────────────────────────
+
+function OllamaFields({ config, setField }: { config: Record<string, string>; setField: (k: string, v: string) => void }) {
+  return (
+    <FieldGroup>
+      <ConfigInput label="Endpoint" configKey="endpoint" config={config} setField={setField} placeholder="http://localhost:11434" description="Local Ollama server URL" />
+      <ConfigInput label="Default Model" configKey="default_model" config={config} setField={setField} placeholder="llama3.1" description="Tool-capable models: llama3.1, qwen2.5, mistral-nemo. Tag with :7b/:70b etc." />
+
+      <Section title="Advanced">
+        <ConfigInput label="Keep Alive" configKey="keep_alive" config={config} setField={setField} placeholder="5m" description="How long Ollama keeps the model warm in VRAM" />
+        <ConfigInput label="Timeout" configKey="timeout" config={config} setField={setField} placeholder="10m" description="HTTP timeout — large models cold-start may exceed 60s" />
       </Section>
     </FieldGroup>
   )

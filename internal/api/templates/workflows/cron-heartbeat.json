@@ -1,0 +1,50 @@
+{
+  "name": "Cron Heartbeat",
+  "description": "Scheduled trigger (every 5 minutes by default) that publishes a heartbeat ping to a Redis channel. Demonstrates: cron syntax, Redis publish, params templating.",
+  "category": "Schedules",
+  "workflow": {
+    "name": "Cron Heartbeat",
+    "params": {
+      "redis_channel": "heartbeat.tick"
+    },
+    "nodes": [
+      {
+        "id": "trigger-1",
+        "type": "trigger",
+        "position": { "x": -200, "y": 0 },
+        "data": {
+          "name": "every_5_min",
+          "trigger_type": "cron",
+          "cron": "*/5 * * * *",
+          "cron_min": "*/5",
+          "cron_hour": "*",
+          "cron_dom": "*",
+          "cron_mon": "*",
+          "cron_dow": "*",
+          "skip_if_running": true,
+          "handles": [
+            { "id": "start-out", "side": "right", "offset": 50, "paletteType": "start" }
+          ]
+        }
+      },
+      {
+        "id": "redis-1",
+        "type": "redis_request",
+        "position": { "x": 200, "y": 0 },
+        "data": {
+          "name": "publish_heartbeat",
+          "operation": "publish",
+          "channel": "{{params.redis_channel}}",
+          "payload": "{\"ts\":\"{{now}}\",\"source\":\"cron-heartbeat\"}",
+          "handles": [
+            { "id": "success", "side": "right", "offset": 35, "paletteType": "success" },
+            { "id": "in-left", "side": "left", "offset": 50, "paletteType": "receive" }
+          ]
+        }
+      }
+    ],
+    "edges": [
+      { "id": "e1", "source": "trigger-1", "target": "redis-1", "sourceHandle": "start-out", "data": { "paletteType": "start" } }
+    ]
+  }
+}

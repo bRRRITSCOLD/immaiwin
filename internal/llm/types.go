@@ -53,27 +53,27 @@ const (
 // ToolUseBlock, ToolResultBlock) to construct rather than building structs
 // by hand.
 type Content struct {
-	Type ContentType `json:"type"`
+	Type ContentType `json:"type" bson:"type"`
 
 	// Text — for ContentTypeText
-	Text string `json:"text,omitempty"`
+	Text string `json:"text,omitempty" bson:"text,omitempty"`
 
 	// Tool use — for ContentTypeToolUse (model-emitted call)
-	ID    string          `json:"id,omitempty"`     // tool_use_id; correlates with ToolResult
-	Name  string          `json:"name,omitempty"`   // tool name
-	Input json.RawMessage `json:"input,omitempty"`  // tool args (raw JSON; caller decodes)
+	ID    string          `json:"id,omitempty"    bson:"id,omitempty"`     // tool_use_id; correlates with ToolResult
+	Name  string          `json:"name,omitempty"  bson:"name,omitempty"`   // tool name
+	Input json.RawMessage `json:"input,omitempty" bson:"input,omitempty"`  // tool args (raw JSON; caller decodes)
 
 	// Tool result — for ContentTypeToolResult (caller-produced observation)
-	ToolUseID string `json:"tool_use_id,omitempty"`
-	IsError   bool   `json:"is_error,omitempty"`
+	ToolUseID string `json:"tool_use_id,omitempty" bson:"tool_use_id,omitempty"`
+	IsError   bool   `json:"is_error,omitempty"    bson:"is_error,omitempty"`
 	// ToolResult content can be string OR structured; keep as raw text for v1.
-	ResultText string `json:"result_text,omitempty"`
+	ResultText string `json:"result_text,omitempty" bson:"result_text,omitempty"`
 }
 
 // Message is one turn in a chat history.
 type Message struct {
-	Role    Role      `json:"role"`
-	Content []Content `json:"content"`
+	Role    Role      `json:"role"    bson:"role"`
+	Content []Content `json:"content" bson:"content"`
 }
 
 // ToolDef describes a callable surface to the LLM. The InputSchema is a

@@ -9,7 +9,7 @@ export interface StepResult {
   // never set it) keep rendering as "success/error" via the error field.
   // Streaming runs set this to 'running' while in flight and 'done'/'error'
   // when the corresponding step_done event arrives.
-  status?: 'running' | 'done' | 'error'
+  status?: 'running' | 'done' | 'error' | 'paused' | 'cancelled'
 }
 
 export type RunResults = Record<string, StepResult[]>
@@ -23,23 +23,52 @@ export const RunResultsContext = createContext<RunResults | null>(null)
 // changes (every node panel doesn't re-render on every status flip).
 export const RunStatusContext = createContext<{ running: boolean }>({ running: false })
 
+// AgentIter mirrors the structure produced by useWorkflowRunStream — kept
+// duplicated (rather than re-exported from the hook) so this context can
+// be consumed without dragging in WS-specific code.
+export interface AgentIterSummary {
+  iter: number
+  llm?: {
+    text?: string
+    usage?: { input_tokens?: number; output_tokens?: number; total_tokens?: number; cost_usd?: number }
+    provider?: string
+    model?: string
+  }
+  toolCalls: { toolName: string; toolId: string; args?: unknown; result?: string; isError?: boolean; pendingApproval?: boolean }[]
+}
+
+// AgentRunContext exposes per-agent-node iter timelines so the AI Agent
+// node UI can render a live ReAct breakdown (LLM call + tool calls per
+// iteration) without a parallel WS connection per node. Filled in by the
+// page-level provider that owns the WS hook; stays nil when no run is in
+// flight or for non-agent nodes.
+export const AgentRunContext = createContext<Record<string, AgentIterSummary[]> | null>(null)
+
+// ToolApprovalContext exposes the approveTool function from the live WS
+// hook so the AgentTimelinePanel can render Approve/Reject buttons on a
+// paused tool call without each panel maintaining its own WS connection.
+// Null when no live run is connected (post-run snapshots, replay view).
+export const ToolApprovalContext = createContext<((toolId: string, approved: boolean, reason?: string) => void) | null>(null)
+
 export interface DebugState {
   debugMode: boolean
-  breakpointId: string | null
+  // Multi-breakpoint set. Multiple nodes can carry a breakpoint and the
+  // executor halts at each one in turn (Continue advances to the next).
+  breakpointIds: Set<string>
   toggleBreakpoint(nodeId: string): void
 }
 
 export const DebugContext = createContext<DebugState>({
   debugMode: false,
-  breakpointId: null,
+  breakpointIds: new Set(),
   toggleBreakpoint: () => {},
 })
 
 export function BreakpointMarker({ id }: { id: string }) {
-  const { debugMode, breakpointId, toggleBreakpoint } = useContext(DebugContext)
+  const { debugMode, breakpointIds, toggleBreakpoint } = useContext(DebugContext)
   if (!debugMode) return null
 
-  const isSet = breakpointId === id
+  const isSet = breakpointIds.has(id)
 
   return (
     <button
@@ -55,6 +84,43 @@ export function BreakpointMarker({ id }: { id: string }) {
       title={isSet ? 'Remove breakpoint' : 'Set breakpoint'}
     >
       {isSet && <span className="block h-1.5 w-1.5 rounded-full bg-white" />}
+    </button>
+  )
+}
+
+// ApprovalMarker is the per-node "require approval" toggle. Sits on
+// the top-RIGHT corner of each node so it doesn't clash with
+// BreakpointMarker (top-left). Toggling sets / clears
+// `node.data.require_approval`. The executor's BFS halts at any node
+// with the flag set + persists `pending_approval` state on the run
+// record so /runs/:id can present an Approve/Reject panel.
+//
+// Rendered on every node EXCEPT ai_agent — that node has its own
+// per-tool gate inside its config panel; gating both layers would
+// double-prompt for the same intent.
+export function ApprovalMarker({
+  id,
+  enabled,
+  onToggle,
+}: {
+  id: string
+  enabled: boolean
+  onToggle(id: string, next: boolean): void
+}) {
+  return (
+    <button
+      className="nodrag absolute -right-3.5 -top-3.5 z-10 h-5 w-5 rounded-full border-2 flex items-center justify-center transition-colors hover:scale-110"
+      style={{
+        borderColor: enabled ? '#f59e0b' : '#666',
+        backgroundColor: enabled ? '#f59e0b' : 'transparent',
+      }}
+      onClick={(e) => {
+        e.stopPropagation()
+        onToggle(id, !enabled)
+      }}
+      title={enabled ? 'Remove pre-exec approval gate' : 'Require approval before running'}
+    >
+      {enabled && <span className="block h-1.5 w-1.5 rounded-full bg-white" />}
     </button>
   )
 }
@@ -107,18 +173,37 @@ export function NodeDebugPanel({ id }: { id: string }) {
   const idx = Math.min(iterIdx, total - 1)
   const step = steps[idx]!
   const hasError = !!step.error || step.status === 'error'
+  const isRejected = hasError && (step.error ?? '').startsWith('rejected by user')
   const isRunning = step.status === 'running'
+  const isPaused = step.status === 'paused'
+  const isCancelled = step.status === 'cancelled'
   const isMulti = total > 1
 
-  // Live status indicator — running takes precedence over success so the
-  // canvas accurately reflects the WS stream while tool-invoked children
-  // are still in flight.
-  const dotClass = hasError
+  // Live status indicator — rejected > error > cancelled > paused > running > success.
+  // Rejected gets amber to match the awaiting-approval colour and to
+  // visually distinguish "user vetoed this" from "node blew up".
+  const dotClass = isRejected
+    ? 'bg-amber-500'
+    : hasError
     ? 'bg-red-500'
+    : isCancelled
+    ? 'bg-zinc-500'
+    : isPaused
+    ? 'bg-yellow-500'
     : isRunning
     ? 'bg-blue-500 animate-pulse'
     : 'bg-green-500'
-  const label = hasError ? 'error' : isRunning ? 'running' : 'success'
+  const label = isRejected
+    ? 'rejected'
+    : hasError
+    ? 'error'
+    : isCancelled
+    ? 'cancelled'
+    : isPaused
+    ? 'paused'
+    : isRunning
+    ? 'running'
+    : 'success'
 
   return (
     <div className="nodrag border-t border-border/40">

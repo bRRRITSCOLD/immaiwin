@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Play, Square, Terminal, Bug } from 'lucide-react'
 import { WSPreviewPanel } from './WSPreviewPanel'
 import {
   ReactFlow,
@@ -27,8 +28,9 @@ import { SandboxScriptNode } from './nodes/SandboxScriptNode'
 import { AIAgentNode } from './nodes/AIAgentNode'
 import { useWorkflowStore, type Workflow } from './useWorkflowStore'
 import { WorkflowParamsPanel } from './WorkflowParamsPanel'
+import { WorkflowCostLimitsPanel } from './WorkflowCostLimitsPanel'
 import { WorkflowHelpLegend } from './WorkflowHelpLegend'
-import { RunResultsContext, RunStatusContext, DebugContext, type RunResults } from './RunResultsContext'
+import { RunResultsContext, RunStatusContext, AgentRunContext, DebugContext, ToolApprovalContext, type RunResults, type AgentIterSummary } from './RunResultsContext'
 
 const nodeTypes: NodeTypes = {
   trigger: TriggerNode,
@@ -78,6 +80,8 @@ const defaultNodeData: Record<string, Record<string, unknown>> = {
     max_tokens: 4096,
     temperature: 1,
     timeout_seconds: 300,
+    require_approval: false,
+    output_schema: '',
     skills: [],
   },
 }
@@ -229,12 +233,41 @@ function applyEdgeStyle(
 interface Props {
   workflow: Workflow
   onSave(nodes: Node[], edges: Edge[], params: Record<string, string>): void
-  onRun(stopAt?: string, input?: unknown): void
+  onRun(stopAt?: string | string[], input?: unknown): void
+  onCancel?: () => void
+  onContinue?: () => void
   onClearRun(): void
   lastRun?: RunResults
+  // True when at least one node is paused on a live pre-exec breakpoint.
+  // Used to flip the running state's red Cancel into a green Continue
+  // (the run is *technically* in flight from the server's perspective —
+  // it's blocked on continueCh — but the user wants to advance, not abort).
+  hasLivePause?: boolean
   // True while a workflow run is in flight. Threaded into RunStatusContext
   // so child nodes can render "idle" vs "not executed" correctly.
   runRunning?: boolean
+  // Per-agent-node iter timelines from the live WS stream. Threaded into
+  // AgentRunContext so AIAgentNode → AgentTimelinePanel renders without
+  // a parallel WS subscription per node.
+  agentRuns?: Record<string, AgentIterSummary[]>
+  // Hook function to send an approve_tool decision over the live WS for
+  // a paused tool call. Threaded into ToolApprovalContext so the agent
+  // timeline panel renders Approve/Reject buttons. Null/undefined when
+  // there's no live WS (post-run snapshot view).
+  onApproveTool?: (toolId: string, approved: boolean, reason?: string) => void
+  // Hook function to mirror breakpoint-set changes onto the live WS so
+  // the running executor honours mid-run breakpoint toggles. No-op when
+  // no live WS / not in a debug run.
+  onSetBreakpoints?: (nodeIds: string[]) => void
+  // Set when the most-recent run paused (a stopAt-bound tool fired inside
+  // an agent's ReAct loop). Truthy flips the Run button into "Continue"
+  // mode; the parent passes the run_id back via onRun on the next click.
+  pausedRunID?: string | null
+  // Set when the most-recent run terminated with a pre-step error (cost
+  // cap, missing config, etc) — there's no per-node step_done to attach
+  // the message to, so we render a canvas-level banner instead. Cleared
+  // by onClearRun.
+  runError?: string | null
 }
 
 const routingCycle = ['default', 'smoothstep', 'step', 'straight'] as const
@@ -279,15 +312,15 @@ interface EdgeMenuState {
   flowY: number
 }
 
-function WorkflowCanvasInner({ workflow, onSave, onRun, onClearRun, lastRun, runRunning }: Props) {
-  const { updateActiveGraph, selectedEdgeType, setSelectedEdgeType, attachingFrom, setAttachingFrom } = useWorkflowStore()
+function WorkflowCanvasInner({ workflow, onSave, onRun, onCancel, onContinue, onClearRun, lastRun, runRunning, agentRuns, pausedRunID, hasLivePause, runError, onApproveTool, onSetBreakpoints }: Props) {
+  const { updateActiveGraph, updateActiveCostLimits, updateActiveParamsSchema, selectedEdgeType, setSelectedEdgeType, attachingFrom, setAttachingFrom } = useWorkflowStore()
   const { screenToFlowPosition } = useReactFlow()
   const [nodes, setNodes, onNodesChange] = useNodesState(workflow.nodes)
   const [edges, setEdges, onEdgesChange] = useEdgesState(workflow.edges)
   const [params, setParams] = useState<Record<string, string>>(workflow.params ?? {})
   const reactFlowWrapper = useRef<HTMLDivElement>(null)
   const [debugMode, setDebugMode] = useState(false)
-  const [breakpointId, setBreakpointId] = useState<string | null>(null)
+  const [breakpointIds, setBreakpointIds] = useState<Set<string>>(new Set())
   const [edgeMenu, setEdgeMenu] = useState<EdgeMenuState | null>(null)
   const [wsPreviewOpen, setWSPreviewOpen] = useState(false)
 
@@ -449,10 +482,25 @@ function WorkflowCanvasInner({ workflow, onSave, onRun, onClearRun, lastRun, run
 
   const toggleBreakpoint = useCallback(
     (nodeId: string) => {
-      setBreakpointId((prev) => (prev === nodeId ? null : nodeId))
+      setBreakpointIds((prev) => {
+        const next = new Set(prev)
+        if (next.has(nodeId)) next.delete(nodeId)
+        else next.add(nodeId)
+        return next
+      })
     },
     [],
   )
+
+  // Mid-run breakpoint sync: whenever the breakpoint set changes during
+  // a live run, push the new IDs over the WS so the executor honours
+  // toggles without restarting. Skipped when no run is in flight (the
+  // run kickoff already sends the set as part of the initial frame).
+  useEffect(() => {
+    if (!onSetBreakpoints) return
+    if (!runRunning && !pausedRunID && !hasLivePause) return
+    onSetBreakpoints(Array.from(breakpointIds))
+  }, [breakpointIds, runRunning, pausedRunID, hasLivePause, onSetBreakpoints])
 
   function handleSave() {
     updateActiveGraph(nodes, edges, params)
@@ -461,7 +509,7 @@ function WorkflowCanvasInner({ workflow, onSave, onRun, onClearRun, lastRun, run
 
   function toggleDebugMode() {
     if (debugMode) {
-      setBreakpointId(null)
+      setBreakpointIds(new Set())
     } else {
       onClearRun() // entering debug mode — stale full-run results would be misleading
     }
@@ -469,13 +517,32 @@ function WorkflowCanvasInner({ workflow, onSave, onRun, onClearRun, lastRun, run
   }
 
   return (
-    <DebugContext.Provider value={{ debugMode, breakpointId, toggleBreakpoint }}>
+    <DebugContext.Provider value={{ debugMode, breakpointIds, toggleBreakpoint }}>
     <RunStatusContext.Provider value={{ running: !!runRunning }}>
+    <AgentRunContext.Provider value={agentRuns ?? null}>
+    <ToolApprovalContext.Provider value={onApproveTool ?? null}>
     <RunResultsContext.Provider value={lastRun ?? null}>
       <div className="w-full h-full flex flex-col">
       <div ref={reactFlowWrapper} className={`flex-1 relative ${selectedEdgeType ? 'cursor-crosshair' : ''}`}>
         <div className="absolute top-3 left-3 z-10 flex flex-col gap-2">
-          <WorkflowParamsPanel params={params} onChange={setParams} />
+          <WorkflowParamsPanel
+            params={params}
+            onChange={setParams}
+            onSave={handleSave}
+            schema={workflow.params_schema}
+            onSchemaChange={(s) => updateActiveParamsSchema(s)}
+          />
+          {/* Cost limits only matter when an AI Agent node exists — caps
+              gate LLM token spend, no agent = nothing to gate. Hide the
+              panel reactively as the user adds/removes ai_agent nodes so
+              the toolbar doesn't carry config that has no current effect. */}
+          {nodes.some((n) => n.type === 'ai_agent') && (
+            <WorkflowCostLimitsPanel
+              costLimits={workflow.cost_limits ?? null}
+              onChange={(cl) => updateActiveCostLimits(cl)}
+              onSave={handleSave}
+            />
+          )}
           <WorkflowHelpLegend />
         </div>
 
@@ -487,9 +554,30 @@ function WorkflowCanvasInner({ workflow, onSave, onRun, onClearRun, lastRun, run
 
         {debugMode && (
           <div className="absolute top-3 left-1/2 -translate-x-1/2 z-10 text-xs bg-red-900/60 text-red-200 px-3 py-1.5 rounded-md border border-red-700 pointer-events-none">
-            {breakpointId
-              ? 'Breakpoint set — click Run ↓ to run to this node'
-              : 'Click a node to set breakpoint'}
+            {breakpointIds.size === 0
+              ? 'Click a node to set breakpoint'
+              : `${breakpointIds.size} breakpoint${breakpointIds.size === 1 ? '' : 's'} set — click Run ↓ to run; Continue advances to next`}
+          </div>
+        )}
+
+        {/* Run-level error banner — surfaces failures that abort BEFORE any
+            node executes (cost-cap breach, missing config, malformed
+            graph). Per-node errors still attach via NodeDebugPanel; this
+            slot covers the gap where step_done never fired. Sits BELOW
+            the toolbar (top-16 ≈ 64px past the buttons row) so the close
+            button stays clickable. */}
+        {runError && !runRunning && (
+          <div className="absolute top-16 right-3 z-20 max-w-[480px] text-xs bg-red-700 text-white px-3 py-2 rounded-md border border-red-300 shadow-lg flex items-start gap-2">
+            <span className="font-semibold shrink-0">Run failed:</span>
+            <span className="flex-1 break-words">{runError}</span>
+            <button
+              type="button"
+              onClick={onClearRun}
+              className="shrink-0 text-red-200 hover:text-white px-1 leading-none"
+              title="Dismiss + clear last run"
+            >
+              ✕
+            </button>
           </div>
         )}
 
@@ -517,16 +605,36 @@ function WorkflowCanvasInner({ workflow, onSave, onRun, onClearRun, lastRun, run
         </ReactFlow>
 
         <div className="absolute top-3 right-3 z-10 flex gap-2">
-          <button
-            onClick={toggleDebugMode}
-            className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
-              debugMode
-                ? 'bg-red-600 text-white hover:bg-red-700'
-                : 'bg-muted text-muted-foreground hover:bg-muted/80'
-            }`}
-          >
-            {debugMode ? 'Exit Debug' : 'Debug'}
-          </button>
+          {/* Run / Debug mode tabs — mirrors SandboxDebugDialog so the
+              canvas toolbar speaks the same visual language as the Monaco
+              debug dialog. Switching modes is disabled while a run is in
+              flight to avoid an inconsistent debugger state. */}
+          <div className="flex items-center text-xs rounded border border-border overflow-hidden font-medium">
+            <button
+              onClick={() => { if (!runRunning && debugMode) toggleDebugMode() }}
+              disabled={runRunning}
+              className={`px-3 py-1.5 flex items-center gap-1 transition-colors ${
+                !debugMode
+                  ? 'bg-green-600/20 text-green-400'
+                  : 'text-muted-foreground hover:text-foreground'
+              } ${runRunning ? 'opacity-50 cursor-not-allowed' : ''}`}
+              title="Run mode — execute the workflow without breakpoints"
+            >
+              <Terminal className="h-3 w-3" /> Run
+            </button>
+            <button
+              onClick={() => { if (!runRunning && !debugMode) toggleDebugMode() }}
+              disabled={runRunning}
+              className={`px-3 py-1.5 flex items-center gap-1 border-l border-border transition-colors ${
+                debugMode
+                  ? 'bg-red-600/20 text-red-400'
+                  : 'text-muted-foreground hover:text-foreground'
+              } ${runRunning ? 'opacity-50 cursor-not-allowed' : ''}`}
+              title="Debug mode — set breakpoints, step through agent loop"
+            >
+              <Bug className="h-3 w-3" /> Debug
+            </button>
+          </div>
           {hasWSTrigger && !debugMode && (
             <button
               onClick={() => setWSPreviewOpen((v) => !v)}
@@ -539,14 +647,84 @@ function WorkflowCanvasInner({ workflow, onSave, onRun, onClearRun, lastRun, run
               {wsPreviewOpen ? 'Close Preview' : 'Live Preview'}
             </button>
           )}
-          {debugMode && breakpointId && (
+          {/* Primary run action — single slot, label switches by mode +
+              run state. Always sits on the LEFT of Save so the eye finds
+              the green action button in the same place across modes. */}
+          {runRunning && hasLivePause && onContinue && (
             <button
-              onClick={() => { updateActiveGraph(nodes, edges, params); onRun(breakpointId) }}
-              className="rounded-md bg-orange-600 text-white px-3 py-1.5 text-sm font-medium hover:bg-orange-700 transition-colors"
+              onClick={onContinue}
+              className="flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium text-white bg-green-600 hover:bg-green-700 transition-colors"
+              title="Release the pre-exec breakpoint and let the next node fire"
             >
-              Run ↓
+              <Play className="h-3.5 w-3.5" /> Continue
             </button>
           )}
+          {runRunning && onCancel && (
+            <button
+              onClick={onCancel}
+              className="flex items-center gap-1.5 rounded-md bg-red-700 text-white px-3 py-1.5 text-sm font-medium hover:bg-red-800 transition-colors"
+              title="Cancel the in-flight run (closes the WS connection; server cancels via context propagation)"
+            >
+              <Square className="h-3.5 w-3.5" /> Cancel
+            </button>
+          )}
+          {!runRunning && pausedRunID && (
+            <>
+              <button
+                onClick={() => { updateActiveGraph(nodes, edges, params); onRun() }}
+                className="flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium text-white bg-green-600 hover:bg-green-700 transition-colors"
+                title={`Resume paused run ${pausedRunID.slice(0, 8)}…`}
+              >
+                <Play className="h-3.5 w-3.5" /> Continue
+              </button>
+              <button
+                onClick={onClearRun}
+                className="flex items-center gap-1.5 rounded-md bg-red-700 text-white px-3 py-1.5 text-sm font-medium hover:bg-red-800 transition-colors"
+                title="Discard the paused run; next click of Run starts fresh from the trigger"
+              >
+                <Square className="h-3.5 w-3.5" /> Cancel
+              </button>
+            </>
+          )}
+          {debugMode && !runRunning && !pausedRunID && (
+            <button
+              onClick={() => {
+                updateActiveGraph(nodes, edges, params)
+                const ids = Array.from(breakpointIds)
+                onRun(ids.length > 0 ? ids : undefined)
+              }}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-green-600 hover:bg-green-700 text-white text-xs font-medium transition-colors"
+              title={breakpointIds.size > 0 ? 'Run to first breakpoint' : 'Debug run'}
+            >
+              <Play className="h-3.5 w-3.5" /> {breakpointIds.size > 0 ? 'Debug ↓' : 'Debug'}
+            </button>
+          )}
+          {!debugMode && !runRunning && !pausedRunID && (
+            <button
+              onClick={() => { updateActiveGraph(nodes, edges, params); onRun() }}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-green-600 hover:bg-green-700 text-white text-xs font-medium transition-colors"
+              title="Run workflow"
+            >
+              <Play className="h-3.5 w-3.5" /> Run
+            </button>
+          )}
+          {/* Status dot strip — mirrors the SandboxDebugDialog convention so
+              users see a single visual language across the workflow canvas
+              and the Monaco debug dialog. */}
+          <div className="flex items-center gap-1.5">
+            <span
+              className={`inline-block h-2 w-2 rounded-full ${
+                pausedRunID || hasLivePause
+                  ? 'bg-yellow-400'
+                  : runRunning
+                  ? 'bg-green-400 animate-pulse'
+                  : 'bg-gray-500'
+              }`}
+            />
+            <span className="text-xs text-muted-foreground">
+              {pausedRunID || hasLivePause ? 'paused' : runRunning ? 'running' : 'idle'}
+            </span>
+          </div>
           {lastRun && Object.keys(lastRun).length > 0 && (
             <button
               onClick={() => navigator.clipboard.writeText(JSON.stringify(lastRun, null, 2))}
@@ -555,20 +733,14 @@ function WorkflowCanvasInner({ workflow, onSave, onRun, onClearRun, lastRun, run
               Copy Run
             </button>
           )}
+          <RunCostTotal agentRuns={agentRuns} />
+
           <button
             onClick={handleSave}
             className="rounded-md bg-primary text-primary-foreground px-3 py-1.5 text-sm font-medium hover:bg-primary/90 transition-colors"
           >
             Save
           </button>
-          {!debugMode && (
-            <button
-              onClick={() => { updateActiveGraph(nodes, edges, params); onRun() }}
-              className="rounded-md bg-green-700 text-white px-3 py-1.5 text-sm font-medium hover:bg-green-800 transition-colors"
-            >
-              Run
-            </button>
-          )}
         </div>
         {/* edge right-click context menu */}
         {edgeMenu && (
@@ -597,16 +769,49 @@ function WorkflowCanvasInner({ workflow, onSave, onRun, onClearRun, lastRun, run
       {wsPreviewOpen && (
         <WSPreviewPanel
           workflowId={workflow.id}
-          onRunWithInput={async (input) => onRun(
-            debugMode && breakpointId ? breakpointId : undefined,
-            input,
-          )}
+          onRunWithInput={async (input) => {
+            const ids = debugMode ? Array.from(breakpointIds) : []
+            onRun(ids.length > 0 ? ids : undefined, input)
+          }}
           onClose={() => setWSPreviewOpen(false)}
         />
       )}
       </div>
     </RunResultsContext.Provider>
+    </ToolApprovalContext.Provider>
+    </AgentRunContext.Provider>
     </RunStatusContext.Provider>
     </DebugContext.Provider>
+  )
+}
+
+// RunCostTotal sums tokens + cost across every agent node's iters and
+// renders a compact toolbar badge. Hidden when no agent has emitted a
+// usage event yet (idle / non-agent runs). Useful as a quick "is this
+// run affordable" signal next to the Run/Cancel button.
+function RunCostTotal({ agentRuns }: { agentRuns?: Record<string, AgentIterSummary[]> }) {
+  if (!agentRuns) return null
+  let inTok = 0
+  let outTok = 0
+  let cost = 0
+  for (const id of Object.keys(agentRuns)) {
+    for (const iter of agentRuns[id]!) {
+      inTok += iter.llm?.usage?.input_tokens ?? 0
+      outTok += iter.llm?.usage?.output_tokens ?? 0
+      cost += iter.llm?.usage?.cost_usd ?? 0
+    }
+  }
+  if (inTok === 0 && outTok === 0 && cost === 0) return null
+  return (
+    <div className="flex items-center gap-2 px-3 py-1.5 rounded-md bg-muted/40 text-[11px] text-muted-foreground tabular-nums">
+      <span title="input → output tokens (sum across all agent nodes)">
+        {inTok.toLocaleString()}/{outTok.toLocaleString()} tok
+      </span>
+      {cost > 0 && (
+        <span className="text-foreground font-medium" title="run cost estimate (provider pricing table)">
+          ${cost.toFixed(4)}
+        </span>
+      )}
+    </div>
   )
 }
