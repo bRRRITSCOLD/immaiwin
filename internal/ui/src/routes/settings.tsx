@@ -7,7 +7,7 @@
 //
 // Auth: AuthGate redirects unauth → /login. Page assumes me is set.
 
-import { createFileRoute, Link } from '@tanstack/react-router'
+import { createFileRoute } from '@tanstack/react-router'
 import { useEffect, useState } from 'react'
 import { useForm } from '@tanstack/react-form'
 import { z } from 'zod'
@@ -17,9 +17,7 @@ import { Button } from '~/components/ui/button'
 import { Input } from '~/components/ui/input'
 import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from '~/components/ui/field'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '~/components/ui/card'
-import { Separator } from '~/components/ui/separator'
 import { Badge } from '~/components/ui/badge'
-import { TenantSwitcher } from '~/components/TenantSwitcher'
 import { api, ApiError, API_BASE } from '~/lib/api'
 import { useAuthStore } from '~/lib/auth-store'
 
@@ -42,22 +40,7 @@ function SettingsPage() {
   if (!me) return null
 
   return (
-    <div className="min-h-screen bg-background text-foreground">
-      <header className="sticky top-0 z-10 border-b bg-background/90 backdrop-blur-sm px-6 py-3 flex items-center gap-4 shrink-0">
-        <h1 className="text-lg font-semibold tracking-tight">immaiwin</h1>
-        <Separator orientation="vertical" className="h-5" />
-        <nav className="flex items-center gap-3 text-sm">
-          <Link to="/" className="text-muted-foreground hover:text-foreground transition-colors">Polymarket</Link>
-          <Link to="/workflows" className="text-muted-foreground hover:text-foreground transition-colors">Workflows</Link>
-          <Link to="/runs" className="text-muted-foreground hover:text-foreground transition-colors">Runs</Link>
-          <Link to="/evals" className="text-muted-foreground hover:text-foreground transition-colors">Evals</Link>
-          <Link to="/skills" className="text-muted-foreground hover:text-foreground transition-colors">Skills</Link>
-          <Link to="/settings" className="text-foreground font-medium">Settings</Link>
-        </nav>
-        <div className="ml-auto"><TenantSwitcher /></div>
-      </header>
-
-      <main className="max-w-3xl mx-auto p-6 space-y-6">
+      <main className="flex-1 min-h-0 overflow-y-auto max-w-3xl w-full mx-auto p-6 space-y-6">
         <h2 className="text-2xl font-semibold">Account settings</h2>
 
         <AccountSection email={me.user.email} hasPassword={(me.user as { password_hash?: string }).password_hash !== ''} />
@@ -73,7 +56,6 @@ function SettingsPage() {
           onUpdate={() => void loadMe()}
         />
       </main>
-    </div>
   )
 }
 

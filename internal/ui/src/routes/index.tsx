@@ -1,27 +1,10 @@
-import { createFileRoute, Link } from '@tanstack/react-router'
-import { Separator } from '~/components/ui/separator'
-import { PolymarketTradesFeed } from '~/components/feeds/PolymarketTradesFeed'
-import { TenantSwitcher } from '~/components/TenantSwitcher'
+// Root path redirects to /workflows. The standalone Polymarket
+// dashboard that previously lived here was removed — Polymarket now
+// only exists as a workflow integration (trigger nodes + connections).
+import { createFileRoute, redirect } from '@tanstack/react-router'
 
 export const Route = createFileRoute('/')({
-  component: TradesPage,
+  beforeLoad: () => {
+    throw redirect({ to: '/workflows' })
+  },
 })
-
-function TradesPage() {
-  return (
-    <div className="h-screen overflow-hidden bg-background text-foreground flex flex-col">
-      <header className="sticky top-0 z-10 border-b bg-background/90 backdrop-blur-sm px-6 py-3 flex items-center gap-4 shrink-0">
-        <h1 className="text-lg font-semibold tracking-tight">immaiwin</h1>
-        <Separator orientation="vertical" className="h-5" />
-        <nav className="flex items-center gap-3 text-sm">
-          <Link to="/" className="text-foreground font-medium">Polymarket</Link>
-          <Link to="/workflows" className="text-muted-foreground hover:text-foreground transition-colors">Workflows</Link>
-        </nav>
-        <div className="ml-auto"><TenantSwitcher /></div>
-      </header>
-      <main className="max-w-3xl mx-auto w-full px-4 py-6 flex-1 min-h-0">
-        <PolymarketTradesFeed />
-      </main>
-    </div>
-  )
-}

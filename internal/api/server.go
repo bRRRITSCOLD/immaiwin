@@ -54,19 +54,10 @@ type Server struct {
 	server             *http.Server
 }
 
-type marketsClient interface {
-	handler.MarketsGetter
-	handler.MarketsSearcher
-	handler.EventsGetter
-	handler.EventsSearcher
-}
-
 func NewServer(
 	cfg config.APIConfig,
 	authCfg config.AuthConfig,
 	rc *rediss.Client,
-	pm marketsClient,
-	wl handler.WatchlistStore,
 	tr handler.TradesLister,
 	nr handler.NewsLister,
 	schwabAuth handler.SchwabAuthorizer,
@@ -364,17 +355,6 @@ func NewServer(
 	r.GET("/auth/connections/:id/callback", handler.ConnectionOAuthCallback(connStore, db))
 	r.GET("/api/v1/connections/:id/oauth/url", requireAuth, handler.ConnectionOAuthURL(connStore, db, cfg.BaseURL))
 	r.GET("/api/v1/connections/:id/oauth/status", requireAuth, handler.ConnectionOAuthStatus(connStore, db))
-
-	// Polymarket markets
-	r.GET("/api/v1/markets", handler.GetMarkets(pm))
-	r.GET("/api/v1/markets/search", handler.SearchMarkets(pm))
-	r.GET("/api/v1/events", handler.GetEvents(pm))
-	r.GET("/api/v1/events/search", handler.SearchEvents(pm))
-
-	// Polymarket watchlist
-	r.GET("/api/v1/watchlist", handler.GetWatchlist(wl))
-	r.PUT("/api/v1/watchlist", handler.SyncWatchlist(wl))
-	r.PATCH("/api/v1/watchlist/:market_id/config", handler.UpdateWatchlistConfig(wl))
 
 	// Options watchlist + stream
 	r.GET("/api/v1/options/watchlist", handler.GetOptionsWatchlist(owl))

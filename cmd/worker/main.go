@@ -26,7 +26,6 @@ func main() {
 	wr := worker.NewWorkerRegistry()
 
 	wr.RegisterWorker(worker.MongoDBWriterWorker)
-	wr.RegisterWorker(worker.PolymarketWatcherWorker)
 	wr.RegisterWorker(worker.NewsScraperWorker)
 	wr.RegisterWorker(worker.SchwabWatcherWorker)
 	wr.RegisterWorker(worker.SchwabFuturesWatcherWorker)
