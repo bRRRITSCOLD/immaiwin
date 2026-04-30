@@ -109,7 +109,7 @@ func (f *fakeWorker) Run(ctx context.Context) error {
 	return nil
 }
 
-// TestHeartbeatTickerAdvancesAndStops runs the registry for ~1s with a
+// TestHeartbeat_TickerOver1s_AdvancesAndCleanlyStops runs the registry for ~1s with a
 // 100ms heartbeat interval, then cancels ctx and waits for clean exit.
 // Asserts:
 //
@@ -119,7 +119,7 @@ func (f *fakeWorker) Run(ctx context.Context) error {
 //   - status is "stopped" (clean exit went through MarkStopped)
 //   - started_at is populated and recent
 //   - last_heartbeat advanced beyond started_at
-func (s *HeartbeatIntegrationSuite) TestHeartbeatTickerAdvancesAndStops() {
+func (s *HeartbeatIntegrationSuite) TestHeartbeat_TickerOver1s_AdvancesAndCleanlyStops() {
 	wr := NewWorkerRegistry().WithHealth(s.health).WithHeartbeatInterval(100 * time.Millisecond)
 	wr.RegisterWorker(&fakeWorker{name: "test-fake"})
 
@@ -153,10 +153,10 @@ func (s *HeartbeatIntegrationSuite) TestHeartbeatTickerAdvancesAndStops() {
 	s.NotNil(row.StoppedAt, "stopped_at should be populated after clean exit")
 }
 
-// TestHeartbeatNotStartedWithoutHealthRepo asserts the registry stays
-// usable with a nil health repo — important because cmd-line tooling
-// sometimes constructs the registry without Mongo wired.
-func (s *HeartbeatIntegrationSuite) TestHeartbeatNotStartedWithoutHealthRepo() {
+// TestHeartbeat_NilHealthRepo_RegistryStillUsable asserts the registry
+// stays usable with a nil health repo — important because cmd-line
+// tooling sometimes constructs the registry without Mongo wired.
+func (s *HeartbeatIntegrationSuite) TestHeartbeat_NilHealthRepo_RegistryStillUsable() {
 	wr := NewWorkerRegistry().WithHeartbeatInterval(50 * time.Millisecond)
 	wr.RegisterWorker(&fakeWorker{name: "test-no-health"})
 

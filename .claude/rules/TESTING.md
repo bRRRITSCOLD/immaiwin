@@ -2,11 +2,22 @@
 
 Below are guidelines around all things testing in this repo. It will layout theory, commands, and more.
 
+## Naming + descriptors (project-wide invariant)
+
+**Every** test function — unit, integration, or e2e — must follow these conventions so the test surface stays self-describing as it grows:
+
+1. **Name format**: `TestSubject_Scenario_Expectation` (xUnit-style per Roy Osherove). The function name alone should make the failing case obvious in a CI log.
+2. **One-line doc comment** above each test func: `// TestSubject_Scenario_Expectation verifies that <thing>.` `go doc` and `go test -v` surface it; failing tests in CI then carry the intent without anyone opening the source.
+3. **Update the catalog**: every PR that adds, removes, or substantially changes a test must update [`/TESTING.md`](../../TESTING.md) — the root coverage catalog. Failing to update the catalog means future contributors don't know what's covered. (We have no tooling enforcing this; the rule is the enforcement.)
+
+This naming + comment + catalog combo is intentionally low-tech. Heavier tools (cucumber/godog, BDD frameworks, custom runners) were considered and rejected — the catalog gives us "what's covered" at a glance and the test names give us "why it failed" without buying into another DSL.
+
 ## Guidlines
 
 ### Unit Testing
 Unit testing verifies the smallest testable parts of an application—such as a single function, method, or class—in complete isolation.
 * All unit tests are suffixed with `_test.go` and lives in the same directory as the file/package it tests
+* **Descriptor requirement**: name `TestSubject_Scenario_Expectation` + one-line doc comment + add the suite to [`/TESTING.md`](../../TESTING.md) under the **Unit tests** section in the same PR. Don't ship a test that isn't catalogued.
 * All unit tests always include the below, even if they aren't used (`SetupSuite` - runs before all tests in the suite, `SetupTest` - runs before each test in the suite, `TearDownTest` - runs after each test in the suite, `TearDownSuite` - runs after all tests in the suite). We follow this pattern just in case we need them and to keep patterns familiar with developers.
   ```go  
   func (s *UniqueNameOfTestSuite) SetupSuite() {}
@@ -21,6 +32,8 @@ Unit testing verifies the smallest testable parts of an application—such as a 
 ### Integration Testing
 Integration testing focuses on the "seams" between components, ensuring that two or more units or services work together correctly. Usin isolated DBs, test APIs or mocked APIs or HTTP Interceptors, etc.
 * All integration tests are suffixed with `_integration_test.go` and lives in the same directory as the file/package it tests
+* **Descriptor requirement**: name `TestSubject_Scenario_Expectation` + one-line doc comment + add the suite to [`/TESTING.md`](../../TESTING.md) under the **Integration tests** section in the same PR. Don't ship a test that isn't catalogued.
+* **Self-skip on missing services**: every integration suite probes its required services (`MONGO_URI`, `REDIS_URL`, etc.) and calls `t.Skipf` when unreachable, so `go test ./...` outside the compose stack stays green. CI brings up the compose stack before `go test` so the suites actually run there.
 * All integration tests always include the below, even if they aren't used (`SetupSuite` - runs before all tests in the suite, `SetupTest` - runs before each test in the suite, `TearDownTest` - runs after each test in the suite, `TearDownSuite` - runs after all tests in the suite). We follow this pattern just in case we need them and to keep patterns familiar with developers.
   ```go  
   func (s *UniqueNameOfTestSuite) SetupSuite() {}
@@ -37,6 +50,7 @@ Integration testing focuses on the "seams" between components, ensuring that two
 E2E (End-to-End) Testing
 Validates entire user workflows from start to finish in an environment that mimics production.pre
 * All e2e tests are suffixed with `_e2e_test.go` and lives in the same directory as the file/package it tests
+* **Descriptor requirement**: name `TestSubject_Scenario_Expectation` + one-line doc comment + add the suite to [`/TESTING.md`](../../TESTING.md) under the **E2E tests** section in the same PR. Don't ship a test that isn't catalogued.
 * All e2e tests always include the below, even if they aren't used (`SetupSuite` - runs before all tests in the suite, `SetupTest` - runs before each test in the suite, `TearDownTest` - runs after each test in the suite, `TearDownSuite` - runs after all tests in the suite). We follow this pattern just in case we need them and to keep patterns familiar with developers.
   ```go  
   func (s *UniqueNameOfTestSuite) SetupSuite() {}
