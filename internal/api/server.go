@@ -11,6 +11,7 @@ import (
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/api/handler"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/api/middleware"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/config"
+	"github.com/bRRRITSCOLD/immaiwin-go/internal/email"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/mongodb"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/rediss"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/sandbox"
@@ -141,10 +142,41 @@ func NewServer(
 
 	r.GET("/health", handler.Health)
 
+	// Per-IP rate limits on auth surfaces. Redis-backed; fails open
+	// when Redis is down so an outage doesn't take auth offline.
+	// Tuned for human flow: a typo-retry burst of 5 fits inside the
+	// minute window, but a brute-force loop hits 429 inside a second.
+	loginLimit := middleware.RateLimit(rc, middleware.RateLimitConfig{
+		Name: "login", Max: 10, Window: time.Minute,
+	})
+	registerLimit := middleware.RateLimit(rc, middleware.RateLimitConfig{
+		Name: "register", Max: 5, Window: time.Minute,
+	})
+	oauthStartLimit := middleware.RateLimit(rc, middleware.RateLimitConfig{
+		Name: "oauth_start", Max: 20, Window: time.Minute,
+	})
+	pwResetLimit := middleware.RateLimit(rc, middleware.RateLimitConfig{
+		Name: "password_reset", Max: 5, Window: time.Minute,
+	})
+
 	// User auth — public except /me which requires a valid token.
-	r.POST("/api/v1/auth/register", handler.Register(authDeps))
-	r.POST("/api/v1/auth/login", handler.Login(authDeps))
+	r.POST("/api/v1/auth/register", registerLimit, handler.Register(authDeps))
+	r.POST("/api/v1/auth/login", loginLimit, handler.Login(authDeps))
 	r.POST("/api/v1/auth/logout", handler.Logout(authDeps))
+
+	// Password reset — public; rate-limited so an attacker can't
+	// enumerate emails or burn through tokens by spamming Confirm.
+	if users != nil && len(authDeps.JWTBytes) > 0 {
+		pwDeps := handler.PasswordResetDeps{
+			Users:     users,
+			JWTBytes:  authDeps.JWTBytes,
+			UIBaseURL: authCfg.UIBaseURL,
+			Email:     email.NewLogSender(), // dev default; swap for SMTP later
+			Redis:     rc,
+		}
+		r.POST("/api/v1/auth/password_reset/request", pwResetLimit, handler.PasswordResetRequest(pwDeps))
+		r.POST("/api/v1/auth/password_reset/confirm", pwResetLimit, handler.PasswordResetConfirm(pwDeps))
+	}
 
 	// OAuth (Google + GitHub). Public — no auth needed since the
 	// flow IS the auth. Disabled providers return 404 from handlers.
@@ -164,7 +196,7 @@ func NewServer(
 			Users:    users,
 			Tenants:  tenants,
 		}
-		r.GET("/auth/oauth/:provider/start", handler.OAuthStart(oauthDeps))
+		r.GET("/auth/oauth/:provider/start", oauthStartLimit, handler.OAuthStart(oauthDeps))
 		r.GET("/auth/oauth/:provider/callback", handler.OAuthCallback(oauthDeps))
 	}
 	if users != nil && len(authDeps.JWTBytes) > 0 {
@@ -174,6 +206,12 @@ func NewServer(
 		r.POST("/api/v1/auth/switch_tenant",
 			middleware.RequireAuth(authDeps.JWTBytes, users, apiKeys),
 			handler.SwitchTenant(authDeps))
+		r.POST("/api/v1/auth/change_password",
+			middleware.RequireAuth(authDeps.JWTBytes, users, apiKeys),
+			handler.ChangePassword(authDeps))
+		r.DELETE("/api/v1/auth/oauth/:provider/unlink",
+			middleware.RequireAuth(authDeps.JWTBytes, users, apiKeys),
+			handler.UnlinkOAuth(authDeps))
 		// WS-token mint — short-lived JWT used as ?token= on WebSocket
 		// upgrades (browser WS API can't set headers, cookies don't
 		// always travel cross-origin on upgrade).

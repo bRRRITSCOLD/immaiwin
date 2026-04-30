@@ -127,11 +127,18 @@ function LoginPage() {
                 )}
               </form.Subscribe>
 
-              <FieldDescription className="text-center">
-                No account?{' '}
-                <Link to="/register" className="underline hover:text-foreground">
-                  Register
-                </Link>
+              <FieldDescription className="text-center space-y-1">
+                <div>
+                  <Link to="/forgot" className="underline hover:text-foreground">
+                    Forgot password?
+                  </Link>
+                </div>
+                <div>
+                  No account?{' '}
+                  <Link to="/register" className="underline hover:text-foreground">
+                    Register
+                  </Link>
+                </div>
               </FieldDescription>
             </FieldGroup>
           </form>

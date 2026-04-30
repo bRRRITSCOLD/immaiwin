@@ -103,6 +103,13 @@ func RequireAuth(jwtSecret []byte, users *mongodb.UserRepository, keys *mongodb.
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid token: " + err.Error()})
 			return
 		}
+		// Special-purpose tokens (password_reset, invite, etc) MUST NOT
+		// authenticate a session — otherwise a leaked reset link
+		// becomes a permanent session.
+		if claims.Purpose != "" {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "token not valid for session use"})
+			return
+		}
 		u, err := users.GetByID(c.Request.Context(), claims.UserID)
 		if err != nil {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "user not found"})
@@ -136,6 +143,11 @@ func OptionalAuth(jwtSecret []byte, users *mongodb.UserRepository, keys *mongodb
 		}
 		claims, err := auth.ParseJWT(jwtSecret, raw)
 		if err != nil {
+			c.Next()
+			return
+		}
+		if claims.Purpose != "" {
+			// Purpose-bound tokens never count as a session; pass through unauth.
 			c.Next()
 			return
 		}

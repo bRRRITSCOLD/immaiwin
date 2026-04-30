@@ -140,3 +140,73 @@ func (r *UserRepository) TouchLastLogin(ctx context.Context, id string) error {
 	)
 	return err
 }
+
+// LinkOAuth appends a (provider, subject, email) tuple to the user's
+// OAuthProviders slice IFF that pair isn't already linked. Idempotent —
+// re-linking the same Google account from a second sign-in is a no-op.
+//
+// Why $addToSet over $push: $addToSet dedupes against equal documents,
+// but our OAuthLink carries a LinkedAt timestamp that makes "equal"
+// brittle. Match-then-update via two-stage filter is more reliable:
+// "update only when this provider+subject pair is NOT already in the
+// array". A single failed FindOne+InsertOne race could double-link;
+// the unique-index-style guarantee here is "at most one link per
+// (provider, subject) per user".
+func (r *UserRepository) LinkOAuth(ctx context.Context, userID, provider, subject, email string) error {
+	if userID == "" || provider == "" || subject == "" {
+		return errors.New("LinkOAuth: userID/provider/subject required")
+	}
+	link := OAuthLink{
+		Provider: provider,
+		Subject:  subject,
+		Email:    email,
+		LinkedAt: time.Now().UTC(),
+	}
+	// Filter requires the user exists AND the (provider, subject) pair
+	// does NOT already exist in oauth_providers. Mongo's $not + $elemMatch
+	// scopes the negation to the array element rather than top-level.
+	filter := bson.M{
+		"_id": userID,
+		"oauth_providers": bson.M{
+			"$not": bson.M{
+				"$elemMatch": bson.M{"provider": provider, "subject": subject},
+			},
+		},
+	}
+	_, err := r.col.UpdateOne(ctx, filter, bson.M{
+		"$push": bson.M{"oauth_providers": link},
+		"$set":  bson.M{"updated_at": link.LinkedAt},
+	})
+	return err
+}
+
+// UnlinkOAuth removes a (provider, subject) pair from the user's
+// OAuthProviders. No-op when the pair isn't present. Used by the user-
+// settings page to revoke a provider connection.
+func (r *UserRepository) UnlinkOAuth(ctx context.Context, userID, provider string) error {
+	now := time.Now().UTC()
+	_, err := r.col.UpdateOne(ctx,
+		bson.M{"_id": userID},
+		bson.M{
+			"$pull": bson.M{"oauth_providers": bson.M{"provider": provider}},
+			"$set":  bson.M{"updated_at": now},
+		},
+	)
+	return err
+}
+
+// UpdatePasswordHash replaces the user's bcrypt hash. Used by the
+// password-change + password-reset paths. Both paths must verify
+// caller authority before invoking this — repo-level write doesn't
+// re-check.
+func (r *UserRepository) UpdatePasswordHash(ctx context.Context, userID, newHash string) error {
+	if userID == "" || newHash == "" {
+		return errors.New("UpdatePasswordHash: userID + newHash required")
+	}
+	now := time.Now().UTC()
+	_, err := r.col.UpdateOne(ctx,
+		bson.M{"_id": userID},
+		bson.M{"$set": bson.M{"password_hash": newHash, "updated_at": now}},
+	)
+	return err
+}

@@ -260,6 +260,100 @@ func WSToken(deps AuthDeps) gin.HandlerFunc {
 	}
 }
 
+// ChangePassword swaps the current user's bcrypt hash. Requires the
+// current password as proof-of-identity even though the request is
+// already authenticated — defense against session hijack + lost
+// device. Mirrors GitHub/Stripe's "re-auth on sensitive action".
+func ChangePassword(deps AuthDeps) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		uctx, ok := auth.UserFromCtx(c.Request.Context())
+		if !ok {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "not authenticated"})
+			return
+		}
+		var req struct {
+			CurrentPassword string `json:"current_password"`
+			NewPassword     string `json:"new_password"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		// Pull full user to verify current password against the stored
+		// hash — the ctx user only carries id/email.
+		full, err := deps.Users.GetByID(c.Request.Context(), uctx.ID)
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "user not found"})
+			return
+		}
+		// Users created via OAuth-only have no password_hash. Allow
+		// "set initial password" by skipping the verify step in that
+		// case — surfaced clearly in the response so the UI can label
+		// the form differently.
+		isInitialSet := full.PasswordHash == ""
+		if !isInitialSet {
+			if !auth.PasswordVerify(req.CurrentPassword, full.PasswordHash) {
+				c.JSON(http.StatusUnauthorized, gin.H{"error": "current password incorrect"})
+				return
+			}
+		}
+		newHash, err := auth.PasswordHash(req.NewPassword)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		if err := deps.Users.UpdatePasswordHash(c.Request.Context(), uctx.ID, newHash); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"ok": true, "initial_set": isInitialSet})
+	}
+}
+
+// UnlinkOAuth removes a provider link from the current user. Refuses
+// when removing it would orphan the account (no password set + no
+// other OAuth providers) — preventing accidental lockout.
+func UnlinkOAuth(deps AuthDeps) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		uctx, ok := auth.UserFromCtx(c.Request.Context())
+		if !ok {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "not authenticated"})
+			return
+		}
+		provider := c.Param("provider")
+		if provider == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "provider required"})
+			return
+		}
+		full, err := deps.Users.GetByID(c.Request.Context(), uctx.ID)
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "user not found"})
+			return
+		}
+		// Lockout guard: if user has no password AND only this one
+		// provider linked, removing it leaves no way back in.
+		hasPassword := full.PasswordHash != ""
+		linkedCount := 0
+		for _, link := range full.OAuthProviders {
+			if link.Provider != "" {
+				linkedCount++
+			}
+		}
+		isOnlyProvider := linkedCount == 1 && len(full.OAuthProviders) > 0 && full.OAuthProviders[0].Provider == provider
+		if !hasPassword && isOnlyProvider {
+			c.JSON(http.StatusConflict, gin.H{
+				"error": "cannot unlink the only sign-in method — set a password first",
+			})
+			return
+		}
+		if err := deps.Users.UnlinkOAuth(c.Request.Context(), uctx.ID, provider); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+	}
+}
+
 // SwitchTenant re-issues the JWT with a different active tenant.
 // Verifies the user is a member before issuing.
 func SwitchTenant(deps AuthDeps) gin.HandlerFunc {

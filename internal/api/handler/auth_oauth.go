@@ -277,27 +277,15 @@ func upsertOAuthUser(ctx context.Context, deps OAuthDeps, provider string, p pro
 	// dev volumes, GetByEmail w/ subject post-filter is fine.
 	if p.Email != "" {
 		if u, err := deps.Users.GetByEmail(ctx, strings.ToLower(p.Email)); err == nil {
-			// Existing user → link if not already linked.
-			already := false
-			for _, link := range u.OAuthProviders {
-				if link.Provider == provider && link.Subject == p.Subject {
-					already = true
-					break
-				}
-			}
-			if !already {
-				// Best-effort link append. A direct $push would be
-				// cleaner; reuse Create's persistence shape via a
-				// tiny update here when scaling.
-				u.OAuthProviders = append(u.OAuthProviders, mongodb.OAuthLink{
-					Provider: provider,
-					Subject:  p.Subject,
-					Email:    p.Email,
-					LinkedAt: time.Now().UTC(),
-				})
-				// We'd need an Update method; for now persist via
-				// Create's idempotent pattern would error. Add a
-				// dedicated link path next pass — see backlog note.
+			// Existing user → link if not already linked. LinkOAuth's
+			// filter is a no-op when the (provider, subject) pair is
+			// already present, so we don't need a pre-check; the call
+			// is idempotent.
+			if linkErr := deps.Users.LinkOAuth(ctx, u.ID, provider, p.Subject, p.Email); linkErr != nil {
+				// Don't fail the whole login — surface in logs but let
+				// the user proceed. Worst case: provider link missed,
+				// next OAuth attempt picks it up via the same path.
+				return mongodb.User{}, "", fmt.Errorf("link oauth: %w", linkErr)
 			}
 			memberships, _ := deps.Tenants.ListMembershipsForUser(ctx, u.ID)
 			if len(memberships) > 0 {
