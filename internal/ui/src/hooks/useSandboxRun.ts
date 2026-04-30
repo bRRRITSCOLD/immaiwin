@@ -1,4 +1,5 @@
 import { useCallback, useRef, useState } from 'react'
+import { buildWSURL } from '~/lib/api'
 
 export type RunStatus = 'idle' | 'connecting' | 'running' | 'done' | 'error'
 
@@ -76,38 +77,46 @@ export function useSandboxRun(): SandboxRunSession {
         wsRef.current.close()
       }
 
-      const apiBase = import.meta.env['VITE_API_URL'] ?? 'http://localhost:8080'
-      const wsUrl = apiBase.replace(/^http/, 'ws') + '/api/v1/sandbox/run'
+      void (async () => {
+        let wsUrl: string
+        try {
+          wsUrl = await buildWSURL('/api/v1/sandbox/run')
+        } catch {
+          setError('failed to mint ws token (auth required)')
+          setStatus('error')
+          return
+        }
 
-      const ws = new WebSocket(wsUrl)
-      wsRef.current = ws
+        const ws = new WebSocket(wsUrl)
+        wsRef.current = ws
 
-      ws.onopen = () => {
-        setStatus('running')
-        ws.send(
-          JSON.stringify({
-            type: 'run',
-            language,
-            code,
-            input,
-            context,
-            ...(image ? { image } : {}),
-            ...(packages ? { packages } : {}),
-            ...(network ? { network: true } : {}),
-          }),
-        )
-      }
+        ws.onopen = () => {
+          setStatus('running')
+          ws.send(
+            JSON.stringify({
+              type: 'run',
+              language,
+              code,
+              input,
+              context,
+              ...(image ? { image } : {}),
+              ...(packages ? { packages } : {}),
+              ...(network ? { network: true } : {}),
+            }),
+          )
+        }
 
-      ws.onmessage = handleMessage
+        ws.onmessage = handleMessage
 
-      ws.onerror = () => {
-        setError('WebSocket connection error')
-        setStatus('error')
-      }
+        ws.onerror = () => {
+          setError('WebSocket connection error')
+          setStatus('error')
+        }
 
-      ws.onclose = () => {
-        wsRef.current = null
-      }
+        ws.onclose = () => {
+          wsRef.current = null
+        }
+      })()
     },
     [handleMessage],
   )

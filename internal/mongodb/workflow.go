@@ -18,8 +18,9 @@ type WorkflowRepository struct {
 
 func NewWorkflowRepository(ctx context.Context, db *mongo.Database) (*WorkflowRepository, error) {
 	col := db.Collection("workflows")
-	_, err := col.Indexes().CreateOne(ctx, mongo.IndexModel{
-		Keys: bson.D{{Key: "name", Value: 1}},
+	_, err := col.Indexes().CreateMany(ctx, []mongo.IndexModel{
+		{Keys: bson.D{{Key: "name", Value: 1}}},
+		{Keys: bson.D{{Key: "tenant_id", Value: 1}}},
 	})
 	if err != nil {
 		return nil, err
@@ -27,7 +28,24 @@ func NewWorkflowRepository(ctx context.Context, db *mongo.Database) (*WorkflowRe
 	return &WorkflowRepository{col: col}, nil
 }
 
-// List returns all stored workflows.
+// scopedFilter folds a tenant scope into a Mongo filter. Empty tenant
+// (e.g. trusted internal callers like cron worker which scans every
+// workflow) returns the filter unchanged.
+func scopedFilter(base bson.M, tenantID string) bson.M {
+	if tenantID == "" {
+		return base
+	}
+	out := bson.M{}
+	for k, v := range base {
+		out[k] = v
+	}
+	out["tenant_id"] = tenantID
+	return out
+}
+
+// List returns every workflow without tenant filter. Used by workers
+// that scan across the whole platform (cron, webhook lookup, ws-client
+// dispatch, etc.). Tenant-scoped UI requests use ListForTenant.
 func (r *WorkflowRepository) List(ctx context.Context) ([]workflow.Workflow, error) {
 	cur, err := r.col.Find(ctx, bson.M{})
 	if err != nil {
@@ -41,10 +59,42 @@ func (r *WorkflowRepository) List(ctx context.Context) ([]workflow.Workflow, err
 	return results, nil
 }
 
-// GetByID returns the workflow with the given string ID.
+// ListForTenant scopes List to a single tenant. Empty tenantID
+// returns no rows (defensive — caller must explicitly pass an empty
+// string only when they intended unscoped, which is what List is
+// for).
+func (r *WorkflowRepository) ListForTenant(ctx context.Context, tenantID string) ([]workflow.Workflow, error) {
+	cur, err := r.col.Find(ctx, scopedFilter(bson.M{}, tenantID))
+	if err != nil {
+		return nil, err
+	}
+	defer cur.Close(ctx) //nolint:errcheck
+	var results []workflow.Workflow
+	if err := cur.All(ctx, &results); err != nil {
+		return nil, err
+	}
+	return results, nil
+}
+
+// GetByID returns the workflow with the given string ID, no scope.
+// Used by workers + the executor's connection resolver for cross-
+// tenant tools (skill catalogs, etc.). UI / per-user requests use
+// GetByIDForTenant.
 func (r *WorkflowRepository) GetByID(ctx context.Context, id string) (workflow.Workflow, error) {
 	var wf workflow.Workflow
 	err := r.col.FindOne(ctx, bson.M{"_id": id}).Decode(&wf)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return workflow.Workflow{}, mongo.ErrNoDocuments
+	}
+	return wf, err
+}
+
+// GetByIDForTenant returns the workflow only when its tenant matches.
+// Foreign-tenant lookups return ErrNoDocuments (same shape as missing
+// — callers can't probe existence cross-tenant).
+func (r *WorkflowRepository) GetByIDForTenant(ctx context.Context, id, tenantID string) (workflow.Workflow, error) {
+	var wf workflow.Workflow
+	err := r.col.FindOne(ctx, scopedFilter(bson.M{"_id": id}, tenantID)).Decode(&wf)
 	if errors.Is(err, mongo.ErrNoDocuments) {
 		return workflow.Workflow{}, mongo.ErrNoDocuments
 	}
@@ -65,6 +115,7 @@ func (r *WorkflowRepository) Upsert(ctx context.Context, wf workflow.Workflow) (
 	// trip via Upsert, add it here too — silent-drop bugs from this
 	// list have bitten us twice.
 	setFields := bson.M{
+		"tenant_id":  wf.TenantID,
 		"name":       wf.Name,
 		"params":     wf.Params,
 		"nodes":      wf.Nodes,

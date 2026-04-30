@@ -7,7 +7,14 @@ import {
 } from '@tanstack/react-router'
 import { Toaster } from '~/components/ui/sonner'
 import { TooltipProvider } from '~/components/ui/tooltip'
+import { AuthGate } from '~/components/AuthGate'
+import { installCredentialsDefault } from '~/lib/api'
 import '../styles.css'
+
+// Patch the global fetch so every request sends cookies. Without this
+// the auth cookie is dropped on cross-origin requests and every
+// protected route 401s. Side-effect import is intentional.
+installCredentialsDefault()
 
 export const Route = createRootRoute({
   head: () => ({
@@ -28,7 +35,9 @@ function RootComponent() {
       </head>
       <body>
         <TooltipProvider>
-          <Outlet />
+          <AuthGate>
+            <Outlet />
+          </AuthGate>
         </TooltipProvider>
         <Toaster />
         <ScrollRestoration />

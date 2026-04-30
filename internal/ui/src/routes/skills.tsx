@@ -18,6 +18,7 @@ import { ChevronDown, ChevronRight, Package, RefreshCw } from 'lucide-react'
 import { Badge } from '~/components/ui/badge'
 import { Button } from '~/components/ui/button'
 import { Separator } from '~/components/ui/separator'
+import { TenantSwitcher } from '~/components/TenantSwitcher'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '~/components/ui/table'
 
 export const Route = createFileRoute('/skills')({
@@ -161,6 +162,7 @@ function SkillsPage() {
           <Link to="/runs" className="text-muted-foreground hover:text-foreground transition-colors">Runs</Link>
           <Link to="/evals" className="text-muted-foreground hover:text-foreground transition-colors">Evals</Link>
           <Link to="/skills" className="text-foreground font-medium">Skills</Link>
+          <div className="ml-auto"><TenantSwitcher /></div>
         </nav>
       </div>
 

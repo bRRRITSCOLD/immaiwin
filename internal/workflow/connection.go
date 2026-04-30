@@ -23,6 +23,7 @@ const (
 // Nodes can reference a connection by ID; missing ID falls back to the default env-var connection.
 type Connection struct {
 	ID        string            `bson:"_id,omitempty" json:"id"`
+	TenantID  string            `bson:"tenant_id"     json:"tenant_id"`
 	Name      string            `bson:"name"          json:"name"`
 	Type      ConnectionType    `bson:"type"          json:"type"`
 	Config    map[string]string `bson:"config"        json:"config"`

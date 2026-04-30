@@ -248,18 +248,33 @@ func main() {
 		}
 	}
 
-	// User repo for auth. Best-effort init — failures degrade auth
-	// (login/register return 503) without taking down the rest of the API.
+	// User + tenant repos for auth + multi-tenancy. Best-effort init
+	// — failures degrade auth without taking down the rest of the API.
 	userRepo, uerr := mongodb.NewUserRepository(ctx, mc.DB())
 	if uerr != nil {
 		slog.Warn("user repo init failed (auth disabled)", "err", uerr)
 		userRepo = nil
 	}
+	tenantRepo, terr := mongodb.NewTenantRepository(ctx, mc.DB())
+	if terr != nil {
+		slog.Warn("tenant repo init failed (multi-tenancy disabled)", "err", terr)
+		tenantRepo = nil
+	}
+	apiKeyRepo, kerr := mongodb.NewAPIKeyRepository(ctx, mc.DB())
+	if kerr != nil {
+		slog.Warn("api key repo init failed (programmatic auth disabled)", "err", kerr)
+		apiKeyRepo = nil
+	}
+	workerHealthRepo, herr := mongodb.NewWorkerHealthRepository(ctx, mc.DB())
+	if herr != nil {
+		slog.Warn("worker health repo init failed (worker observability disabled)", "err", herr)
+		workerHealthRepo = nil
+	}
 	if cfg.Auth.JWTSecret == "" {
 		slog.Warn("AUTH_JWT_SECRET not configured — auth endpoints will refuse requests; set a 32+ byte hex value in .env to enable")
 	}
 
-	srv := api.NewServer(cfg.API, cfg.Auth, rc, pm, wl, tr, nr, tokens, owl, fwl, sc, wfRepo, runStore, wfExec, connRepo, connResolver, skillBackend, evalDeps, userRepo, mc.DB(), sandboxRT)
+	srv := api.NewServer(cfg.API, cfg.Auth, rc, pm, wl, tr, nr, tokens, owl, fwl, sc, wfRepo, runStore, wfExec, connRepo, connResolver, skillBackend, evalDeps, userRepo, tenantRepo, apiKeyRepo, workerHealthRepo, mc.DB(), sandboxRT)
 
 	go func() {
 		slog.Info("api server listening", "addr", srv.Addr())

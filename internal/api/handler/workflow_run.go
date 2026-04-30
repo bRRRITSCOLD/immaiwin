@@ -22,6 +22,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/bRRRITSCOLD/immaiwin-go/internal/auth"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/workflow"
 	"github.com/gin-gonic/gin"
 )
@@ -36,6 +37,9 @@ func ListWorkflowRuns(store workflow.WorkflowRunStore) gin.HandlerFunc {
 		filter := workflow.RunFilter{
 			WorkflowID: c.Query("workflow_id"),
 			Status:     workflow.RunStatus(c.Query("status")),
+		}
+		if tenantID, ok := auth.TenantFromCtx(c.Request.Context()); ok {
+			filter.TenantID = tenantID
 		}
 		if v := c.Query("started_after"); v != "" {
 			if t, err := time.Parse(time.RFC3339, v); err == nil {
@@ -222,6 +226,14 @@ func GetWorkflowRun(store workflow.WorkflowRunStore, wfStore WorkflowStore) gin.
 		if err != nil {
 			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 			return
+		}
+		// Tenant ownership check — foreign-tenant runs return 404 to
+		// avoid existence-probing.
+		if tenantID, ok := auth.TenantFromCtx(c.Request.Context()); ok {
+			if run.TenantID != tenantID {
+				c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+				return
+			}
 		}
 		var workflowDoc *workflow.Workflow
 		if wfStore != nil && run.WorkflowID != "" {

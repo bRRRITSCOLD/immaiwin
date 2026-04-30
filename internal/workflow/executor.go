@@ -663,7 +663,7 @@ func (e *WorkflowExecutor) RunResumable(ctx context.Context, wf Workflow, opts R
 			rec := WorkflowRun{
 				ID:           rejectedID,
 				WorkflowID:   wf.ID,
-				TenantID:     "default",
+				TenantID:     wf.TenantID,
 				StartedAt:    now,
 				FinishedAt:   &now,
 				Status:       RunStatusError,
@@ -697,7 +697,7 @@ func (e *WorkflowExecutor) RunResumable(ctx context.Context, wf Workflow, opts R
 		runRec := WorkflowRun{
 			ID:         id,
 			WorkflowID: wf.ID,
-			TenantID:   "default",
+			TenantID:   wf.TenantID,
 			StartedAt:  time.Now().UTC(),
 			Status:     RunStatusRunning,
 			Params:     wf.Params,
@@ -844,7 +844,7 @@ func (e *WorkflowExecutor) RunWithEvents(ctx context.Context, wf Workflow, stopA
 		wf:        &wf,
 		byID:      byID,
 		adj:       adj,
-		tenantID:  "default",
+		tenantID:  wf.TenantID,
 		toolSteps: &toolStepCollector{},
 		events:    emitter,
 		stopAtSet: stopAtSet,

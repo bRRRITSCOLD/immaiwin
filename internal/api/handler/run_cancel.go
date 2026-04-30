@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/bRRRITSCOLD/immaiwin-go/internal/auth"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/workflow"
 	"github.com/gin-gonic/gin"
 )
@@ -37,6 +38,14 @@ func CancelRun(exec *workflow.WorkflowExecutor, runStore workflow.WorkflowRunSto
 		if err != nil {
 			c.JSON(http.StatusNotFound, gin.H{"error": "run not found"})
 			return
+		}
+		// Tenant ownership: 404 on cross-tenant access to avoid leaking
+		// run-id existence.
+		if tenantID, ok := auth.TenantFromCtx(c.Request.Context()); ok {
+			if rec.TenantID != tenantID {
+				c.JSON(http.StatusNotFound, gin.H{"error": "run not found"})
+				return
+			}
 		}
 		switch rec.Status {
 		case workflow.RunStatusSuccess,

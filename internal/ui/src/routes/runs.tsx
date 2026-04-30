@@ -16,6 +16,7 @@ import { ChevronLeft, ChevronRight, RefreshCw } from 'lucide-react'
 import { Badge } from '~/components/ui/badge'
 import { Button } from '~/components/ui/button'
 import { Separator } from '~/components/ui/separator'
+import { TenantSwitcher } from '~/components/TenantSwitcher'
 import {
   Select,
   SelectContent,
@@ -316,6 +317,7 @@ function RunsPage() {
           <Link to="/evals" className="text-muted-foreground hover:text-foreground transition-colors">Evals</Link>
           <Link to="/skills" className="text-muted-foreground hover:text-foreground transition-colors">Skills</Link>
         </nav>
+        <div className="ml-auto"><TenantSwitcher /></div>
       </header>
 
       <main className="flex-1 overflow-auto p-6">

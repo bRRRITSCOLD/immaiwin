@@ -73,6 +73,7 @@ type Edge struct {
 //   - In JS transform scripts:  params.key  (available as a global)
 type Workflow struct {
 	ID        string            `bson:"_id,omitempty" json:"id"`
+	TenantID  string            `bson:"tenant_id"     json:"tenant_id"` // multi-tenant scoping
 	Name      string            `bson:"name"          json:"name"`
 	Params    map[string]string `bson:"params"        json:"params"`
 	Nodes     []Node            `bson:"nodes"         json:"nodes"`

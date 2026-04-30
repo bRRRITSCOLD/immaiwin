@@ -25,9 +25,10 @@ import (
 )
 
 // AuthDeps bundles everything the auth handlers need so the wiring at
-// the server level is one struct, not five separate args.
+// the server level is one struct, not many separate args.
 type AuthDeps struct {
 	Users    *mongodb.UserRepository
+	Tenants  *mongodb.TenantRepository
 	Cfg      config.AuthConfig
 	JWTBytes []byte
 	TTL      time.Duration
@@ -98,18 +99,33 @@ func Register(deps AuthDeps) gin.HandlerFunc {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
-		// Phase B: also create a personal tenant + add as owner here,
-		// then issue JWT with tenant_id populated. For now, JWT carries
-		// only user_id.
-		tok, err := auth.IssueJWT(deps.JWTBytes, u.ID, "", deps.TTL)
+		// Mint a personal tenant + add the user as owner. Every user
+		// gets at least one tenant on signup so the JWT can always
+		// carry an active tenant_id. Additional tenants come via
+		// invite (post-launch backlog).
+		var tenantID string
+		if deps.Tenants != nil {
+			t, terr := deps.Tenants.CreateWithOwner(c.Request.Context(), mongodb.Tenant{
+				ID:      ulid.Make().String(),
+				Name:    req.Email + "'s workspace",
+				OwnerID: u.ID,
+			})
+			if terr != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "create tenant: " + terr.Error()})
+				return
+			}
+			tenantID = t.ID
+		}
+		tok, err := auth.IssueJWT(deps.JWTBytes, u.ID, tenantID, deps.TTL)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
 		setAuthCookie(c, deps, tok)
 		c.JSON(http.StatusOK, gin.H{
-			"user":  u,
-			"token": tok,
+			"user":      u,
+			"tenant_id": tenantID,
+			"token":     tok,
 		})
 	}
 }
@@ -145,15 +161,38 @@ func Login(deps AuthDeps) gin.HandlerFunc {
 			return
 		}
 		_ = deps.Users.TouchLastLogin(c.Request.Context(), u.ID)
-		tok, err := auth.IssueJWT(deps.JWTBytes, u.ID, "", deps.TTL)
+		// Pick the user's first membership as the active tenant. UI's
+		// tenant switcher (Phase F) sends a refresh request to
+		// re-issue the JWT with a different active tenant.
+		var tenantID string
+		if deps.Tenants != nil {
+			memberships, _ := deps.Tenants.ListMembershipsForUser(c.Request.Context(), u.ID)
+			if len(memberships) > 0 {
+				tenantID = memberships[0].Tenant.ID
+			} else {
+				// Edge case: user has no tenant (shouldn't happen post-
+				// register, but defensive). Mint one on first login so
+				// downstream features don't crash on empty tenant_id.
+				t, terr := deps.Tenants.CreateWithOwner(c.Request.Context(), mongodb.Tenant{
+					ID:      ulid.Make().String(),
+					Name:    u.Email + "'s workspace",
+					OwnerID: u.ID,
+				})
+				if terr == nil {
+					tenantID = t.ID
+				}
+			}
+		}
+		tok, err := auth.IssueJWT(deps.JWTBytes, u.ID, tenantID, deps.TTL)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
 		setAuthCookie(c, deps, tok)
 		c.JSON(http.StatusOK, gin.H{
-			"user":  u,
-			"token": tok,
+			"user":      u,
+			"tenant_id": tenantID,
+			"token":     tok,
 		})
 	}
 }
@@ -184,9 +223,73 @@ func Me(deps AuthDeps) gin.HandlerFunc {
 			return
 		}
 		tenantID, _ := auth.TenantFromCtx(c.Request.Context())
+		var memberships []mongodb.Membership
+		if deps.Tenants != nil {
+			memberships, _ = deps.Tenants.ListMembershipsForUser(c.Request.Context(), u.ID)
+		}
 		c.JSON(http.StatusOK, gin.H{
-			"user":      full,
-			"tenant_id": tenantID,
+			"user":        full,
+			"tenant_id":   tenantID,
+			"memberships": memberships,
 		})
+	}
+}
+
+// WSToken mints a short-lived JWT for use as a `?token=` query
+// parameter on WebSocket upgrades. Browser WebSocket API can't set
+// request headers and the auth cookie doesn't always travel cross-
+// origin on the upgrade handshake, so the UI calls this just before
+// opening the socket and appends the returned token to the WS URL.
+//
+// 60-second TTL keeps the leakage window tight if the URL ends up in
+// a server log or proxy cache.
+func WSToken(deps AuthDeps) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		uctx, ok := auth.UserFromCtx(c.Request.Context())
+		if !ok {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "not authenticated"})
+			return
+		}
+		tenantID, _ := auth.TenantFromCtx(c.Request.Context())
+		tok, err := auth.IssueJWT(deps.JWTBytes, uctx.ID, tenantID, 60*time.Second)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"token": tok, "expires_in": 60})
+	}
+}
+
+// SwitchTenant re-issues the JWT with a different active tenant.
+// Verifies the user is a member before issuing.
+func SwitchTenant(deps AuthDeps) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		uctx, ok := auth.UserFromCtx(c.Request.Context())
+		if !ok {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "not authenticated"})
+			return
+		}
+		if deps.Tenants == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "tenants not configured"})
+			return
+		}
+		var req struct {
+			TenantID string `json:"tenant_id"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		if err := deps.Tenants.IsMember(c.Request.Context(), req.TenantID, uctx.ID); err != nil {
+			c.JSON(http.StatusForbidden, gin.H{"error": "not a member of that tenant"})
+			return
+		}
+		tok, err := auth.IssueJWT(deps.JWTBytes, uctx.ID, req.TenantID, deps.TTL)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		setAuthCookie(c, deps, tok)
+		c.JSON(http.StatusOK, gin.H{"tenant_id": req.TenantID, "token": tok})
 	}
 }

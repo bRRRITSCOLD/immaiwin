@@ -3,7 +3,9 @@ package api
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/api/handler"
@@ -17,6 +19,30 @@ import (
 	"github.com/gin-gonic/gin"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 )
+
+// warnRedirectHostMismatch flags the silent OAuth-cookie-loss footgun:
+// the post-callback Set-Cookie binds to the REDIRECT_URL host, but the
+// UI talks to the API at API_BASE_URL host. If those don't match
+// (classic localhost vs localhost), the cookie travels nowhere useful
+// and the user bounces back to /login.
+func warnRedirectHostMismatch(apiBaseURL, provider string, p config.OAuthProviderConfig) {
+	if p.ClientID == "" || p.RedirectURL == "" || apiBaseURL == "" {
+		return
+	}
+	api, err1 := url.Parse(apiBaseURL)
+	red, err2 := url.Parse(p.RedirectURL)
+	if err1 != nil || err2 != nil {
+		return
+	}
+	if api.Hostname() != red.Hostname() {
+		slog.Warn("oauth: REDIRECT_URL host differs from API_BASE_URL host — auth cookie won't travel on /auth/me from UI",
+			"provider", provider,
+			"api_host", api.Hostname(),
+			"redirect_host", red.Hostname(),
+			"fix", "set AUTH_OAUTH_"+provider+"_REDIRECT_URL host to match API_BASE_URL host",
+		)
+	}
+}
 
 type Server struct {
 	cfg                config.APIConfig
@@ -54,6 +80,9 @@ func NewServer(
 	skillBackend *handler.SkillBackend,
 	evalDeps handler.EvalDeps,
 	users *mongodb.UserRepository,
+	tenants *mongodb.TenantRepository,
+	apiKeys *mongodb.APIKeyRepository,
+	workerHealth *mongodb.WorkerHealthRepository,
 	db *mongo.Database,
 	sandboxRT sandbox.Runtime,
 ) *Server {
@@ -87,16 +116,27 @@ func NewServer(
 	}
 	authDeps := handler.AuthDeps{
 		Users:    users,
+		Tenants:  tenants,
 		Cfg:      authCfg,
 		JWTBytes: []byte(authCfg.JWTSecret),
 		TTL:      authTTL,
 	}
 	// OptionalAuth on every request so handlers can read the user
-	// from ctx when present (Phase B will swap to RequireAuth on
-	// data routes once tenant scoping is in). Skipped during Phase A
-	// when users repo is nil (degraded boot).
+	// from ctx when present. Skipped during degraded boot when users
+	// repo is nil.
 	if users != nil && len(authDeps.JWTBytes) > 0 {
-		r.Use(middleware.OptionalAuth(authDeps.JWTBytes, users))
+		r.Use(middleware.OptionalAuth(authDeps.JWTBytes, users, apiKeys))
+	}
+
+	// requireAuth is the gate we attach to tenant-scoped data routes.
+	// In degraded boot (no users repo / no JWT secret) it falls back
+	// to a no-op so the API still serves — useful for local hacking
+	// without configuring auth, and matches the "skip OptionalAuth"
+	// behaviour above. In any non-dev deployment AUTH_JWT_SECRET is
+	// required so this branch is always live.
+	requireAuth := gin.HandlerFunc(func(c *gin.Context) { c.Next() })
+	if users != nil && len(authDeps.JWTBytes) > 0 {
+		requireAuth = middleware.RequireAuth(authDeps.JWTBytes, users, apiKeys)
 	}
 
 	r.GET("/health", handler.Health)
@@ -105,10 +145,54 @@ func NewServer(
 	r.POST("/api/v1/auth/register", handler.Register(authDeps))
 	r.POST("/api/v1/auth/login", handler.Login(authDeps))
 	r.POST("/api/v1/auth/logout", handler.Logout(authDeps))
+
+	// OAuth (Google + GitHub). Public — no auth needed since the
+	// flow IS the auth. Disabled providers return 404 from handlers.
+	if users != nil && tenants != nil && len(authDeps.JWTBytes) > 0 {
+		// Cookie-host sanity check: if OAuth REDIRECT_URL host differs
+		// from API_BASE_URL host (e.g. localhost vs localhost), the
+		// browser stores the post-callback auth cookie on the redirect
+		// host and won't send it on UI's /auth/me calls. The OAuth
+		// flow looks broken (back to /login) even though the user got
+		// created. Loud warning at boot beats a silent bounce loop.
+		warnRedirectHostMismatch(cfg.BaseURL, "google", authCfg.OAuthGoogle)
+		warnRedirectHostMismatch(cfg.BaseURL, "github", authCfg.OAuthGithub)
+		oauthDeps := handler.OAuthDeps{
+			Cfg:      authCfg,
+			JWTBytes: authDeps.JWTBytes,
+			TTL:      authDeps.TTL,
+			Users:    users,
+			Tenants:  tenants,
+		}
+		r.GET("/auth/oauth/:provider/start", handler.OAuthStart(oauthDeps))
+		r.GET("/auth/oauth/:provider/callback", handler.OAuthCallback(oauthDeps))
+	}
 	if users != nil && len(authDeps.JWTBytes) > 0 {
 		r.GET("/api/v1/auth/me",
-			middleware.RequireAuth(authDeps.JWTBytes, users),
+			middleware.RequireAuth(authDeps.JWTBytes, users, apiKeys),
 			handler.Me(authDeps))
+		r.POST("/api/v1/auth/switch_tenant",
+			middleware.RequireAuth(authDeps.JWTBytes, users, apiKeys),
+			handler.SwitchTenant(authDeps))
+		// WS-token mint — short-lived JWT used as ?token= on WebSocket
+		// upgrades (browser WS API can't set headers, cookies don't
+		// always travel cross-origin on upgrade).
+		r.POST("/api/v1/auth/ws_token",
+			middleware.RequireAuth(authDeps.JWTBytes, users, apiKeys),
+			handler.WSToken(authDeps))
+		// API keys (programmatic access). All routes require auth via
+		// JWT cookie OR existing API key. Listing/revoking from an
+		// API-key context is allowed so a CLI can manage its own keys.
+		apiKeyDeps := handler.APIKeyDeps{Keys: apiKeys}
+		r.GET("/api/v1/api_keys",
+			middleware.RequireAuth(authDeps.JWTBytes, users, apiKeys),
+			handler.ListAPIKeys(apiKeyDeps))
+		r.POST("/api/v1/api_keys",
+			middleware.RequireAuth(authDeps.JWTBytes, users, apiKeys),
+			handler.CreateAPIKey(apiKeyDeps))
+		r.DELETE("/api/v1/api_keys/:id",
+			middleware.RequireAuth(authDeps.JWTBytes, users, apiKeys),
+			handler.RevokeAPIKey(apiKeyDeps))
 	}
 
 	// Schwab OAuth (legacy — predates user auth)
@@ -124,30 +208,31 @@ func NewServer(
 	// News
 	r.GET("/api/v1/news", handler.GetNews(nr))
 	r.GET("/api/v1/news/stream", handler.StreamNews(nb))
-	r.GET("/api/v1/news/scrapers", handler.ListScraperConfigs(sc))
-	r.PATCH("/api/v1/news/scrapers/:source", handler.PatchScraperConfig(sc))
-	r.DELETE("/api/v1/news/scrapers/:source", handler.DeleteScraperConfig(sc))
-	r.DELETE("/api/v1/news/scrapers/:source/script", handler.DeleteScraperScript(sc))
-	r.POST("/api/v1/news/scrapers/validate", handler.ValidateScript())
+	r.GET("/api/v1/news/scrapers", requireAuth, handler.ListScraperConfigs(sc))
+	r.PATCH("/api/v1/news/scrapers/:source", requireAuth, handler.PatchScraperConfig(sc))
+	r.DELETE("/api/v1/news/scrapers/:source", requireAuth, handler.DeleteScraperConfig(sc))
+	r.DELETE("/api/v1/news/scrapers/:source/script", requireAuth, handler.DeleteScraperScript(sc))
+	r.POST("/api/v1/news/scrapers/validate", requireAuth, handler.ValidateScript())
 
-	// Workflows
-	r.GET("/api/v1/workflows", handler.ListWorkflows(wfStore))
-	r.GET("/api/v1/workflows/:id", handler.GetWorkflow(wfStore))
-	r.PUT("/api/v1/workflows/:id", handler.UpsertWorkflow(wfStore))
-	r.DELETE("/api/v1/workflows/:id", handler.DeleteWorkflow(wfStore))
-	r.POST("/api/v1/workflows/:id/run", handler.RunWorkflow(wfStore, wfExec))
-	r.GET("/api/v1/workflows/:id/run/stream", handler.RunWorkflowWS(wfStore, wfExec))
-	r.GET("/api/v1/workflows/:id/ws-preview", handler.PreviewWorkflowWS(wfStore, connStore, db))
+	// Workflows — tenant-scoped CRUD + run-time. WS routes accept
+	// ?token=<short-lived JWT> via the middleware's query fallback.
+	r.GET("/api/v1/workflows", requireAuth, handler.ListWorkflows(wfStore))
+	r.GET("/api/v1/workflows/:id", requireAuth, handler.GetWorkflow(wfStore))
+	r.PUT("/api/v1/workflows/:id", requireAuth, handler.UpsertWorkflow(wfStore))
+	r.DELETE("/api/v1/workflows/:id", requireAuth, handler.DeleteWorkflow(wfStore))
+	r.POST("/api/v1/workflows/:id/run", requireAuth, handler.RunWorkflow(wfStore, wfExec))
+	r.GET("/api/v1/workflows/:id/run/stream", requireAuth, handler.RunWorkflowWS(wfStore, wfExec))
+	r.GET("/api/v1/workflows/:id/ws-preview", requireAuth, handler.PreviewWorkflowWS(wfStore, connStore, db))
 
 	// Workflow runs (history page). Register the static `daily_total`
 	// route BEFORE `:id` so gin's radix tree doesn't route the literal
 	// segment through the wildcard handler.
-	r.GET("/api/v1/workflow_runs", handler.ListWorkflowRuns(wfRunStore))
-	r.GET("/api/v1/workflow_runs/daily_total", handler.DailyTotal(wfRunStore, wfStore))
-	r.GET("/api/v1/workflow_runs/daily_totals", handler.DailyTotals(wfRunStore, wfStore))
-	r.GET("/api/v1/workflow_runs/:id", handler.GetWorkflowRun(wfRunStore, wfStore))
-	r.POST("/api/v1/workflow_runs/:id/approval", handler.SubmitRunApproval(wfExec, wfRunStore))
-	r.POST("/api/v1/workflow_runs/:id/cancel", handler.CancelRun(wfExec, wfRunStore))
+	r.GET("/api/v1/workflow_runs", requireAuth, handler.ListWorkflowRuns(wfRunStore))
+	r.GET("/api/v1/workflow_runs/daily_total", requireAuth, handler.DailyTotal(wfRunStore, wfStore))
+	r.GET("/api/v1/workflow_runs/daily_totals", requireAuth, handler.DailyTotals(wfRunStore, wfStore))
+	r.GET("/api/v1/workflow_runs/:id", requireAuth, handler.GetWorkflowRun(wfRunStore, wfStore))
+	r.POST("/api/v1/workflow_runs/:id/approval", requireAuth, handler.SubmitRunApproval(wfExec, wfRunStore))
+	r.POST("/api/v1/workflow_runs/:id/cancel", requireAuth, handler.CancelRun(wfExec, wfRunStore))
 
 	// Webhook trigger — POST /api/v1/webhooks/:slug runs the workflow
 	// whose trigger node has matching webhook_slug. Body becomes the
@@ -157,32 +242,39 @@ func NewServer(
 	// Workflow templates — bundled at compile time, served read-only.
 	r.GET("/api/v1/workflow_templates", handler.ListWorkflowTemplates())
 
-	// Connections
-	r.GET("/api/v1/connections", handler.ListConnections(connStore))
-	r.PUT("/api/v1/connections/:id", handler.UpsertConnection(connStore, connInvalidator))
-	r.DELETE("/api/v1/connections/:id", handler.DeleteConnection(connStore, connInvalidator))
-	r.POST("/api/v1/connections/test", handler.TestConnection(db))
+	// Connections — tenant-scoped.
+	r.GET("/api/v1/connections", requireAuth, handler.ListConnections(connStore))
+	r.PUT("/api/v1/connections/:id", requireAuth, handler.UpsertConnection(connStore, connInvalidator))
+	r.DELETE("/api/v1/connections/:id", requireAuth, handler.DeleteConnection(connStore, connInvalidator))
+	r.POST("/api/v1/connections/test", requireAuth, handler.TestConnection(db))
 
 	// Skills (P1.10/P1.12). When skills are disabled at boot the backend is
 	// nil and the handlers respond with empty/disabled responses; the routes
 	// are still registered so the UI can call them unconditionally.
-	r.GET("/api/v1/skills", handler.ListSkills(skillBackend))
-	r.POST("/api/v1/skills/refresh", handler.RefreshSkills(skillBackend))
+	r.GET("/api/v1/skills", requireAuth, handler.ListSkills(skillBackend))
+	r.POST("/api/v1/skills/refresh", requireAuth, handler.RefreshSkills(skillBackend))
+
+	// Worker observability — dashboards/alerts read live worker
+	// heartbeats. Auth-gated; worker names + last_error strings can
+	// leak internal architecture.
+	r.GET("/api/v1/workers/health", requireAuth, handler.ListWorkerHealth(handler.WorkerHealthDeps{Health: workerHealth}))
 
 	// Evals (P-eval). Disabled when EvalDeps is empty; handlers respond
 	// with 503 so the UI can fail open.
-	r.GET("/api/v1/evals", handler.ListEvals(evalDeps))
-	r.PUT("/api/v1/evals/:id", handler.UpsertEval(evalDeps))
-	r.GET("/api/v1/evals/:id", handler.GetEval(evalDeps))
-	r.DELETE("/api/v1/evals/:id", handler.DeleteEval(evalDeps))
-	r.POST("/api/v1/evals/:id/run", handler.RunEval(evalDeps))
-	r.GET("/api/v1/eval_runs", handler.ListEvalRuns(evalDeps))
-	r.GET("/api/v1/eval_runs/:id", handler.GetEvalRun(evalDeps))
+	r.GET("/api/v1/evals", requireAuth, handler.ListEvals(evalDeps))
+	r.PUT("/api/v1/evals/:id", requireAuth, handler.UpsertEval(evalDeps))
+	r.GET("/api/v1/evals/:id", requireAuth, handler.GetEval(evalDeps))
+	r.DELETE("/api/v1/evals/:id", requireAuth, handler.DeleteEval(evalDeps))
+	r.POST("/api/v1/evals/:id/run", requireAuth, handler.RunEval(evalDeps))
+	r.GET("/api/v1/eval_runs", requireAuth, handler.ListEvalRuns(evalDeps))
+	r.GET("/api/v1/eval_runs/:id", requireAuth, handler.GetEvalRun(evalDeps))
 
-	// Connection OAuth (generic)
+	// Connection OAuth (generic). The provider callback stays public
+	// (it's invoked by the provider, not the user). The url/status
+	// helpers are tenant-scoped reads on the user's own connections.
 	r.GET("/auth/connections/:id/callback", handler.ConnectionOAuthCallback(connStore, db))
-	r.GET("/api/v1/connections/:id/oauth/url", handler.ConnectionOAuthURL(connStore, db, cfg.BaseURL))
-	r.GET("/api/v1/connections/:id/oauth/status", handler.ConnectionOAuthStatus(connStore, db))
+	r.GET("/api/v1/connections/:id/oauth/url", requireAuth, handler.ConnectionOAuthURL(connStore, db, cfg.BaseURL))
+	r.GET("/api/v1/connections/:id/oauth/status", requireAuth, handler.ConnectionOAuthStatus(connStore, db))
 
 	// Polymarket markets
 	r.GET("/api/v1/markets", handler.GetMarkets(pm))
@@ -205,9 +297,11 @@ func NewServer(
 	r.PUT("/api/v1/futures/watchlist", handler.SyncFuturesWatchlist(fwl))
 	r.GET("/api/v1/futures/stream", handler.StreamFutures(fb))
 
-	// Sandbox (WebSocket)
-	r.GET("/api/v1/sandbox/debug", handler.DebugSandbox(sandboxRT))
-	r.GET("/api/v1/sandbox/run", handler.RunSandbox(sandboxRT))
+	// Sandbox (WebSocket) — executes user code; must be auth-gated.
+	// WS upgrades pass a short-lived ?token= via the middleware's
+	// query-string fallback (browser WS API can't set headers).
+	r.GET("/api/v1/sandbox/debug", requireAuth, handler.DebugSandbox(sandboxRT))
+	r.GET("/api/v1/sandbox/run", requireAuth, handler.RunSandbox(sandboxRT))
 
 	return &Server{
 		cfg:                cfg,

@@ -1,6 +1,7 @@
 import { createFileRoute, Link } from '@tanstack/react-router'
 import { Separator } from '~/components/ui/separator'
 import { PolymarketTradesFeed } from '~/components/feeds/PolymarketTradesFeed'
+import { TenantSwitcher } from '~/components/TenantSwitcher'
 
 export const Route = createFileRoute('/')({
   component: TradesPage,
@@ -16,6 +17,7 @@ function TradesPage() {
           <Link to="/" className="text-foreground font-medium">Polymarket</Link>
           <Link to="/workflows" className="text-muted-foreground hover:text-foreground transition-colors">Workflows</Link>
         </nav>
+        <div className="ml-auto"><TenantSwitcher /></div>
       </header>
       <main className="max-w-3xl mx-auto w-full px-4 py-6 flex-1 min-h-0">
         <PolymarketTradesFeed />

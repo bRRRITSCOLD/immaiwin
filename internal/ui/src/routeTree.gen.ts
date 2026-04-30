@@ -12,6 +12,8 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as WorkflowsRouteImport } from './routes/workflows'
 import { Route as SkillsRouteImport } from './routes/skills'
 import { Route as RunsRouteImport } from './routes/runs'
+import { Route as RegisterRouteImport } from './routes/register'
+import { Route as LoginRouteImport } from './routes/login'
 import { Route as EvalsRouteImport } from './routes/evals'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as RunsRunIdRouteImport } from './routes/runs_.$runId'
@@ -30,6 +32,16 @@ const SkillsRoute = SkillsRouteImport.update({
 const RunsRoute = RunsRouteImport.update({
   id: '/runs',
   path: '/runs',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const RegisterRoute = RegisterRouteImport.update({
+  id: '/register',
+  path: '/register',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const LoginRoute = LoginRouteImport.update({
+  id: '/login',
+  path: '/login',
   getParentRoute: () => rootRouteImport,
 } as any)
 const EvalsRoute = EvalsRouteImport.update({
@@ -56,6 +68,8 @@ const DocsCustomImagesRoute = DocsCustomImagesRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/evals': typeof EvalsRoute
+  '/login': typeof LoginRoute
+  '/register': typeof RegisterRoute
   '/runs': typeof RunsRoute
   '/skills': typeof SkillsRoute
   '/workflows': typeof WorkflowsRoute
@@ -65,6 +79,8 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/evals': typeof EvalsRoute
+  '/login': typeof LoginRoute
+  '/register': typeof RegisterRoute
   '/runs': typeof RunsRoute
   '/skills': typeof SkillsRoute
   '/workflows': typeof WorkflowsRoute
@@ -75,6 +91,8 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/evals': typeof EvalsRoute
+  '/login': typeof LoginRoute
+  '/register': typeof RegisterRoute
   '/runs': typeof RunsRoute
   '/skills': typeof SkillsRoute
   '/workflows': typeof WorkflowsRoute
@@ -86,6 +104,8 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/evals'
+    | '/login'
+    | '/register'
     | '/runs'
     | '/skills'
     | '/workflows'
@@ -95,6 +115,8 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/evals'
+    | '/login'
+    | '/register'
     | '/runs'
     | '/skills'
     | '/workflows'
@@ -104,6 +126,8 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/evals'
+    | '/login'
+    | '/register'
     | '/runs'
     | '/skills'
     | '/workflows'
@@ -114,6 +138,8 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   EvalsRoute: typeof EvalsRoute
+  LoginRoute: typeof LoginRoute
+  RegisterRoute: typeof RegisterRoute
   RunsRoute: typeof RunsRoute
   SkillsRoute: typeof SkillsRoute
   WorkflowsRoute: typeof WorkflowsRoute
@@ -142,6 +168,20 @@ declare module '@tanstack/react-router' {
       path: '/runs'
       fullPath: '/runs'
       preLoaderRoute: typeof RunsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/register': {
+      id: '/register'
+      path: '/register'
+      fullPath: '/register'
+      preLoaderRoute: typeof RegisterRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/login': {
+      id: '/login'
+      path: '/login'
+      fullPath: '/login'
+      preLoaderRoute: typeof LoginRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/evals': {
@@ -178,6 +218,8 @@ declare module '@tanstack/react-router' {
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   EvalsRoute: EvalsRoute,
+  LoginRoute: LoginRoute,
+  RegisterRoute: RegisterRoute,
   RunsRoute: RunsRoute,
   SkillsRoute: SkillsRoute,
   WorkflowsRoute: WorkflowsRoute,

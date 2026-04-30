@@ -14,6 +14,7 @@ import (
 	_ "github.com/bRRRITSCOLD/immaiwin-go/internal/llm/openai"    // register OpenAI provider
 
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/config"
+	"github.com/bRRRITSCOLD/immaiwin-go/internal/mongodb"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/worker"
 )
 
@@ -33,6 +34,7 @@ func main() {
 	wr.RegisterWorker(worker.WorkflowRabbitMQWorker)
 	wr.RegisterWorker(worker.WorkflowRedisSubscribeWorker)
 	wr.RegisterWorker(worker.WorkflowWebSocketClientWorker)
+	wr.RegisterWorker(worker.ReaperWorker)
 
 	if *list {
 		slog.Info("available workers", "names", strings.Join(wr.RegisteredWorkerNames(), ", "))
@@ -53,6 +55,25 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// Wire heartbeat repo if Mongo is reachable. Best-effort — if the
+	// connection fails, the worker still runs but won't surface in
+	// /api/v1/workers/health. Surfaces a warn log so the operator
+	// knows observability is degraded.
+	if mc, err := mongodb.New(ctx, cfg.MongoDB); err == nil {
+		defer func() {
+			if err := mc.Disconnect(context.Background()); err != nil {
+				slog.Error("disconnect mongodb (health)", "err", err)
+			}
+		}()
+		if hr, err := mongodb.NewWorkerHealthRepository(ctx, mc.DB()); err == nil {
+			wr = wr.WithHealth(hr)
+		} else {
+			slog.Warn("worker: health repo init failed (continuing without observability)", "err", err)
+		}
+	} else {
+		slog.Warn("worker: mongo connect failed for health repo (continuing without observability)", "err", err)
+	}
 
 	slog.Info("running worker", "name", *name, "concurrency", cfg.Worker.Concurrency)
 
