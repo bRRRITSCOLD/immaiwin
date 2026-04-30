@@ -1,8 +1,11 @@
+//go:build integration
+
 // Auth + multi-tenancy integration tests — exercises the full
 // register → login → /me → switch_tenant → logout flow against a
 // wired-up Server.Handler() with real Mongo + Redis. Replaces the
 // shell-driven verification that lived in the local-only smoke
-// scripts; this is what other contributors run.
+// scripts; this is what other contributors run. Compiled only under
+// `-tags=integration`.
 
 package handler_test
 
@@ -47,12 +50,12 @@ func TestAuthIntegrationSuite(t *testing.T) {
 
 	mc, err := mongo.Connect(driveroptions.Client().ApplyURI(mongoURI))
 	if err != nil {
-		t.Skipf("mongo connect failed (skipping integration suite): %v", err)
+		t.Fatalf("mongo connect failed (compose stack required): %v", err)
 		return
 	}
 	if err := mc.Ping(probeCtx, nil); err != nil {
 		_ = mc.Disconnect(context.Background())
-		t.Skipf("mongo unreachable at %s (skipping integration suite): %v", mongoURI, err)
+		t.Fatalf("mongo unreachable at %s (compose stack required): %v", mongoURI, err)
 		return
 	}
 	_ = mc.Disconnect(context.Background())

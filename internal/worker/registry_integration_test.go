@@ -1,3 +1,5 @@
+//go:build integration
+
 // Heartbeat ticker integration test. Spins up a real Mongo, registers
 // a fake worker that blocks until ctx cancel, runs the registry with
 // a 100ms heartbeat interval, asserts tick_count advances + status
@@ -5,7 +7,7 @@
 //
 // Real Mongo (per .claude/rules/TESTING.md — no mocks). Uses a uniquely-
 // named test database so concurrent test runs don't collide; dropped
-// in TearDownSuite.
+// in TearDownSuite. Compiled only under `-tags=integration`.
 
 package worker
 
@@ -35,20 +37,18 @@ func TestHeartbeatIntegrationSuite(t *testing.T) {
 	if uri == "" {
 		uri = "mongodb://localhost:27017"
 	}
-	// Cheap reachability probe — skip the suite when Mongo isn't up
-	// so the test doesn't fail in environments without local Mongo
-	// (CI's `go` job has no Mongo service yet).
+	// Reachability probe — fail loud (no skip) so a missing service
+	// is never silently green. Compose stack must be up for the
+	// `-tags=integration` test build to pass.
 	probeCtx, probeCancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer probeCancel()
 	c, err := mongo.Connect(driveroptions.Client().ApplyURI(uri))
 	if err != nil {
-		t.Skipf("mongo connect failed (skipping integration test): %v", err)
-		return
+		t.Fatalf("mongo connect failed (compose stack required): %v", err)
 	}
 	if err := c.Ping(probeCtx, nil); err != nil {
 		_ = c.Disconnect(context.Background())
-		t.Skipf("mongo unreachable at %s (skipping integration test): %v", uri, err)
-		return
+		t.Fatalf("mongo unreachable at %s (compose stack required): %v", uri, err)
 	}
 	_ = c.Disconnect(context.Background())
 	suite.Run(t, new(HeartbeatIntegrationSuite))

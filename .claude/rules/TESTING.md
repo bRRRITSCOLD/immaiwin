@@ -32,8 +32,14 @@ Unit testing verifies the smallest testable parts of an application—such as a 
 ### Integration Testing
 Integration testing focuses on the "seams" between components, ensuring that two or more units or services work together correctly. Usin isolated DBs, test APIs or mocked APIs or HTTP Interceptors, etc.
 * All integration tests are suffixed with `_integration_test.go` and lives in the same directory as the file/package it tests
+* **Build tag required**: every integration test file MUST start with `//go:build integration` followed by a blank line, before the package declaration. This isolates the tier from default `go test ./...`.
 * **Descriptor requirement**: name `TestSubject_Scenario_Expectation` + one-line doc comment + add the suite to [`/TESTING.md`](../../TESTING.md) under the **Integration tests** section in the same PR. Don't ship a test that isn't catalogued.
-* **Self-skip on missing services**: every integration suite probes its required services (`MONGO_URI`, `REDIS_URL`, etc.) and calls `t.Skipf` when unreachable, so `go test ./...` outside the compose stack stays green. CI brings up the compose stack before `go test` so the suites actually run there.
+* **No skip path**: integration suites must `t.Fatalf` (NOT `t.Skipf`) when their service deps are unreachable. We do not allow opt-out skipping anywhere — local or CI. A dev who pushes red because compose wasn't up will find out from the next `make test-integration` they run, not from a CI failure days later. Run `make docker-compose-up` before `make test-integration`.
+* **How to run**:
+  - `make test-unit` — fast, no service deps (default for iteration)
+  - `make test-integration` — requires the compose stack up (`make docker-compose-up`)
+  - `make test` — every tier in sequence (run before pushing)
+  - CI runs unit + integration on every push/PR via `.github/workflows/ci.yml`.
 * All integration tests always include the below, even if they aren't used (`SetupSuite` - runs before all tests in the suite, `SetupTest` - runs before each test in the suite, `TearDownTest` - runs after each test in the suite, `TearDownSuite` - runs after all tests in the suite). We follow this pattern just in case we need them and to keep patterns familiar with developers.
   ```go  
   func (s *UniqueNameOfTestSuite) SetupSuite() {}
@@ -50,7 +56,9 @@ Integration testing focuses on the "seams" between components, ensuring that two
 E2E (End-to-End) Testing
 Validates entire user workflows from start to finish in an environment that mimics production.pre
 * All e2e tests are suffixed with `_e2e_test.go` and lives in the same directory as the file/package it tests
+* **Build tag required**: every e2e test file MUST start with `//go:build e2e` followed by a blank line, before the package declaration.
 * **Descriptor requirement**: name `TestSubject_Scenario_Expectation` + one-line doc comment + add the suite to [`/TESTING.md`](../../TESTING.md) under the **E2E tests** section in the same PR. Don't ship a test that isn't catalogued.
+* **No skip path**: same rule as integration — `t.Fatalf` on missing dependencies; never `t.Skipf`. Run via `make test-e2e`.
 * All e2e tests always include the below, even if they aren't used (`SetupSuite` - runs before all tests in the suite, `SetupTest` - runs before each test in the suite, `TearDownTest` - runs after each test in the suite, `TearDownSuite` - runs after all tests in the suite). We follow this pattern just in case we need them and to keep patterns familiar with developers.
   ```go  
   func (s *UniqueNameOfTestSuite) SetupSuite() {}
@@ -63,29 +71,25 @@ Validates entire user workflows from start to finish in an environment that mimi
   ```
 
 ## Commands
-### Linux/Unix
+
+### Tiered targets (preferred)
+
 ```bash
-go run ./scripts/test/main.go
-
-# or
-make test
-
-# or
-
-go test -v -race -count=1 ./...
+make test-unit         # fast, no service deps
+make test-integration  # requires `make docker-compose-up` first
+make test-e2e          # requires full stack
+make test              # every tier in sequence (run before pushing)
 ```
 
+### Direct go invocations
 
-### Windows
 ```bash
-go run ./scripts/test/main.go
-
-# or
-make test
-
-# or
-go test -v -count=1 ./...
+go test -race -count=1 ./...                       # unit tier
+go test -tags=integration -race -count=1 ./...     # integration tier
+go test -tags=e2e -race -count=1 ./...             # e2e tier
 ```
+
+`scripts/test/main.go` accepts `-tier=unit|integration|e2e|all` and delegates the same way; equivalent to the Makefile targets above.
 
 ### Local-only smoke shells (not part of the official test surface)
 

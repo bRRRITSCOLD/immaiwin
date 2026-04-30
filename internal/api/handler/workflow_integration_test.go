@@ -1,4 +1,6 @@
-// Workflow CRUD + tenant-isolation integration tests.
+//go:build integration
+
+// Workflow CRUD + tenant-isolation integration tests. Compiled only under `-tags=integration`.
 //
 // Real Mongo + Redis (per .claude/rules/TESTING.md — no mocks). Mounts
 // the wired-up `*api.Server` behind an httptest.NewServer so requests
@@ -56,12 +58,12 @@ func TestWorkflowCRUDIntegrationSuite(t *testing.T) {
 
 	mc, err := mongo.Connect(driveroptions.Client().ApplyURI(mongoURI))
 	if err != nil {
-		t.Skipf("mongo connect failed (skipping integration suite): %v", err)
+		t.Fatalf("mongo connect failed (compose stack required): %v", err)
 		return
 	}
 	if err := mc.Ping(probeCtx, nil); err != nil {
 		_ = mc.Disconnect(context.Background())
-		t.Skipf("mongo unreachable at %s (skipping integration suite): %v", mongoURI, err)
+		t.Fatalf("mongo unreachable at %s (compose stack required): %v", mongoURI, err)
 		return
 	}
 	_ = mc.Disconnect(context.Background())

@@ -1,3 +1,5 @@
+//go:build integration
+
 // Workflow run integration tests — exercises POST /workflows/:id/run
 // end-to-end against a wired-up WorkflowExecutor + real Mongo for run
 // persistence. Trivial trigger-only workflow round-trips success in
@@ -8,7 +10,8 @@
 // /run path needs an actual WorkflowExecutor wired up — the CRUD suite
 // passes nil for that dep. Sandbox + AI-agent paths stay nil here too:
 // a trigger-only workflow doesn't touch them, and adding them would
-// drag in Docker/k3s + LLM credentials.
+// drag in Docker/k3s + LLM credentials. Compiled only under
+// `-tags=integration`.
 
 package handler_test
 
@@ -55,12 +58,12 @@ func TestWorkflowRunIntegrationSuite(t *testing.T) {
 
 	mc, err := mongo.Connect(driveroptions.Client().ApplyURI(mongoURI))
 	if err != nil {
-		t.Skipf("mongo connect failed (skipping integration suite): %v", err)
+		t.Fatalf("mongo connect failed (compose stack required): %v", err)
 		return
 	}
 	if err := mc.Ping(probeCtx, nil); err != nil {
 		_ = mc.Disconnect(context.Background())
-		t.Skipf("mongo unreachable at %s (skipping integration suite): %v", mongoURI, err)
+		t.Fatalf("mongo unreachable at %s (compose stack required): %v", mongoURI, err)
 		return
 	}
 	_ = mc.Disconnect(context.Background())
