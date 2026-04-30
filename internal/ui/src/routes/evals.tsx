@@ -25,12 +25,12 @@ import {
 } from '~/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '~/components/ui/table'
 import type { Workflow } from '~/components/workflow/useWorkflowStore'
+import { api, ApiError } from '~/lib/api'
 
 export const Route = createFileRoute('/evals')({
   component: EvalsPage,
 })
 
-const API_BASE = import.meta.env['VITE_API_URL'] ?? 'http://localhost:8080'
 
 interface Assertion {
   target?: 'agent_output' | 'step'
@@ -144,8 +144,7 @@ function EvalsPage() {
 
   const loadWorkflows = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/v1/workflows`)
-      const wfs: Workflow[] = await res.json()
+      const wfs = await api.get<Workflow[]>('/api/v1/workflows')
       setWorkflows(wfs)
     } catch {
       toast.error('Failed to load workflows')
@@ -154,16 +153,10 @@ function EvalsPage() {
 
   const loadEvals = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/v1/evals`)
-      if (!res.ok) {
-        const data = await res.json()
-        toast.error(data.error ?? 'Failed to load evals')
-        return
-      }
-      const data: Eval[] = await res.json()
+      const data = await api.get<Eval[]>('/api/v1/evals')
       setEvals(data ?? [])
-    } catch {
-      toast.error('Network error loading evals')
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : 'Network error loading evals')
     }
   }, [])
 
@@ -198,9 +191,7 @@ function EvalsPage() {
 
   const loadHistory = useCallback(async (evalID: string) => {
     try {
-      const res = await fetch(`${API_BASE}/api/v1/eval_runs?eval_id=${encodeURIComponent(evalID)}&limit=50`)
-      if (!res.ok) return
-      const data: EvalRun[] = await res.json()
+      const data = await api.get<EvalRun[]>(`/api/v1/eval_runs?eval_id=${encodeURIComponent(evalID)}&limit=50`)
       setHistory(data ?? [])
     } catch {
       // silent — history is informational
@@ -227,21 +218,12 @@ function EvalsPage() {
       }],
     }
     try {
-      const res = await fetch(`${API_BASE}/api/v1/evals/${id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      })
-      if (!res.ok) {
-        const data = await res.json()
-        toast.error(data.error ?? 'Create failed')
-        return
-      }
+      await api.put(`/api/v1/evals/${id}`, body)
       toast.success('Eval created')
       await loadEvals()
       setSelectedID(id)
-    } catch {
-      toast.error('Network error creating eval')
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : 'Network error creating eval')
     }
   }
 
@@ -255,27 +237,18 @@ function EvalsPage() {
       return
     }
     try {
-      const res = await fetch(`${API_BASE}/api/v1/evals/${selected.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...parsed, id: selected.id }),
-      })
-      if (!res.ok) {
-        const data = await res.json()
-        toast.error(data.error ?? 'Save failed')
-        return
-      }
+      await api.put(`/api/v1/evals/${selected.id}`, { ...parsed, id: selected.id })
       toast.success('Eval saved')
       await loadEvals()
-    } catch {
-      toast.error('Network error saving eval')
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : 'Network error saving eval')
     }
   }
 
   async function handleDelete(id: string) {
     if (!confirm('Delete this eval? Past runs are kept.')) return
     try {
-      await fetch(`${API_BASE}/api/v1/evals/${id}`, { method: 'DELETE' })
+      await api.delete(`/api/v1/evals/${id}`)
       toast.success('Eval deleted')
       if (selectedID === id) setSelectedID(null)
       await loadEvals()
@@ -289,16 +262,28 @@ function EvalsPage() {
     setRunning(true)
     setLastRun(null)
     try {
-      const res = await fetch(`${API_BASE}/api/v1/evals/${selected.id}/run`, { method: 'POST' })
-      const data = await res.json()
-      if (!res.ok) {
-        toast.error(data.error ?? 'Run failed')
+      // Eval-run is unusual: a 500 still returns a (partial) run record
+      // alongside the error so the UI can show whatever did execute.
+      // Catch ApiError + read err.body for that fallback path. `ok`
+      // gates the success toast so partial-failure runs only render in
+      // the panel without claiming pass.
+      let data: unknown
+      let ok = true
+      try {
+        data = await api.post(`/api/v1/evals/${selected.id}/run`)
+      } catch (err) {
+        if (err instanceof ApiError) {
+          ok = false
+          toast.error(err.message ?? 'Run failed')
+          data = err.body
+        } else {
+          throw err
+        }
       }
-      // Whether 200 or 500, the backend echoes a (partial) run record so
-      // we can render whatever we got.
-      const run: EvalRun = (data?.run ?? data) as EvalRun
+      const obj = data as { run?: EvalRun } | EvalRun | null
+      const run: EvalRun = ((obj as { run?: EvalRun })?.run ?? obj) as EvalRun
       setLastRun(run)
-      if (res.ok) {
+      if (ok && run) {
         toast.success(`${run.pass_count}/${run.cases.length} pass · ${formatCost(run.total_cost_usd)}`, { duration: 6000 })
       }
       // Refresh history so the just-completed run shows up at the top

@@ -7,8 +7,7 @@ import { Badge } from '~/components/ui/badge'
 import { useWorkflowStore, type Workflow, type Connection, type EdgePaletteType } from './useWorkflowStore'
 import { ConnectionDialog } from './ConnectionDialog'
 import { AddWorkflowDialog } from './AddWorkflowDialog'
-
-const API_BASE = import.meta.env['VITE_API_URL'] ?? 'http://localhost:8080'
+import { api } from '~/lib/api'
 
 interface Props {
   onSelect(id: string): void
@@ -34,8 +33,7 @@ export function WorkflowSidebar({ onSelect, onReload }: Props) {
 
   async function reloadConnections() {
     try {
-      const res = await fetch(`${API_BASE}/api/v1/connections`)
-      const conns: Connection[] = await res.json()
+      const conns = await api.get<Connection[]>('/api/v1/connections')
       setConnections(conns)
     } catch {
       toast.error('Failed to reload connections')
@@ -45,7 +43,7 @@ export function WorkflowSidebar({ onSelect, onReload }: Props) {
   async function handleDeleteWorkflow(e: React.MouseEvent, id: string) {
     e.stopPropagation()
     try {
-      await fetch(`${API_BASE}/api/v1/workflows/${id}`, { method: 'DELETE' })
+      await api.delete(`/api/v1/workflows/${id}`)
       toast.success('Workflow deleted')
       if (activeId === id) setActive(null)
       onReload()
@@ -69,7 +67,7 @@ export function WorkflowSidebar({ onSelect, onReload }: Props) {
 
   async function handleDeleteConn(id: string) {
     try {
-      await fetch(`${API_BASE}/api/v1/connections/${id}`, { method: 'DELETE' })
+      await api.delete(`/api/v1/connections/${id}`)
       toast.success('Connection deleted')
       reloadConnections()
     } catch {
