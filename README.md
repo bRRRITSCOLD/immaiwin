@@ -8,7 +8,56 @@ The long game: add AI agents that can write and execute code as part of their re
 
 ---
 
-## What Makes This Different
+## Table of contents
+
+- [What makes this different](#what-makes-this-different)
+- [Architecture](#architecture)
+- [Core features](#core-features)
+  - [Visual workflow builder](#visual-workflow-builder)
+  - [Multi-language sandbox execution](#multi-language-sandbox-execution)
+  - [Interactive debugging (DAP/CDP)](#interactive-debugging-dapcdp)
+  - [Security model](#security-model)
+  - [Workflow triggers](#workflow-triggers)
+  - [Multi-tenancy + auth](#multi-tenancy--auth)
+  - [Admin dashboard](#admin-dashboard)
+- [Tech stack](#tech-stack)
+- [Prerequisites](#prerequisites)
+- [Quick start](#quick-start)
+  - [1. Clone and configure](#1-clone-and-configure)
+  - [2. Start infrastructure](#2-start-infrastructure)
+  - [3. Build sandbox images](#3-build-sandbox-images)
+  - [3b. (Optional) k3s + gVisor backend](#3b-optional-k3s--gvisor-backend)
+  - [4. Setup and run](#4-setup-and-run)
+  - [5. Start workers (optional)](#5-start-workers-optional)
+  - [6. Start / tear down a session](#6-start--tear-down-a-session)
+- [Project structure](#project-structure)
+- [API endpoints](#api-endpoints)
+  - [Workflows](#workflows)
+  - [Sandbox](#sandbox)
+  - [Connections](#connections-data-sources-llm-providers)
+  - [Auth + multi-tenancy](#auth--multi-tenancy)
+  - [Admin](#admin)
+  - [Workflow runs](#workflow-runs)
+  - [Webhooks](#webhooks)
+- [Roadmap](#roadmap)
+- [Development](#development)
+- [License](#license)
+
+### Other docs
+
+| Doc | What |
+|---|---|
+| [TESTING.md](TESTING.md) | Coverage catalog — every unit / integration / e2e test in the repo, plus open coverage gaps. Updated on every test-touching PR. |
+| [.claude/CLAUDE.md](.claude/CLAUDE.md) | Project rules entry point for the Claude AI agent. Links to coding + testing rules. |
+| [.claude/rules/CODING.md](.claude/rules/CODING.md) | Coding standards (DRY, UI library, env-var loading, audit-logging vigilance). |
+| [.claude/rules/TESTING.md](.claude/rules/TESTING.md) | Test authoring rules — naming convention, descriptor requirement, suite-template snippets per tier. |
+| [examples/k3s/README.md](examples/k3s/README.md) | Single-node k3s + gVisor reference deployment for the sandbox runtime. |
+| [examples/k3s/MIGRATION.md](examples/k3s/MIGRATION.md) | Porting the k3s deployment to upstream Kubernetes (kubeadm / EKS / GKE / AKS). |
+| [internal/ui/README.md](internal/ui/README.md) | Frontend package readme (placeholder; defers to root for instructions). |
+
+---
+
+## What makes this different
 
 | Feature | n8n | Zapier | Make.com | **immaiwin** |
 |---------|-----|--------|----------|-------------|
