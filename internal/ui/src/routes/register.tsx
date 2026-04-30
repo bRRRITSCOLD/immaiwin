@@ -10,8 +10,15 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '~/com
 import { useAuthStore } from '~/lib/auth-store'
 import { ApiError } from '~/lib/api'
 
+interface RegisterSearch {
+  next?: string
+}
+
 export const Route = createFileRoute('/register')({
   component: RegisterPage,
+  validateSearch: (raw: Record<string, unknown>): RegisterSearch => ({
+    next: typeof raw['next'] === 'string' ? (raw['next'] as string) : undefined,
+  }),
 })
 
 const emailSchema = z.string().min(1, 'Required').email('Invalid email')
@@ -19,12 +26,19 @@ const passwordSchema = z.string().min(8, 'Must be at least 8 characters')
 
 function RegisterPage() {
   const navigate = useNavigate()
+  const search = Route.useSearch()
   const me = useAuthStore((s) => s.me)
   const register = useAuthStore((s) => s.register)
 
+  // After register, honour ?next= so flows like /invite/:token →
+  // register-with-matching-email → back-to-invite work without manual
+  // re-navigation. Default lands on /workflows.
   useEffect(() => {
-    if (me) void navigate({ to: '/workflows', replace: true })
-  }, [me, navigate])
+    if (me) {
+      const next = search.next ? decodeURIComponent(search.next) : '/workflows'
+      void navigate({ to: next as never, replace: true })
+    }
+  }, [me, search.next, navigate])
 
   const form = useForm({
     defaultValues: { email: '', password: '', confirm: '' },

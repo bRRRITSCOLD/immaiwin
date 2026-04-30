@@ -20,6 +20,7 @@ import { Route as ForgotRouteImport } from './routes/forgot'
 import { Route as EvalsRouteImport } from './routes/evals'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as RunsRunIdRouteImport } from './routes/runs_.$runId'
+import { Route as InviteTokenRouteImport } from './routes/invite_.$token'
 import { Route as DocsCustomImagesRouteImport } from './routes/docs.custom-images'
 
 const WorkflowsRoute = WorkflowsRouteImport.update({
@@ -77,6 +78,11 @@ const RunsRunIdRoute = RunsRunIdRouteImport.update({
   path: '/runs/$runId',
   getParentRoute: () => rootRouteImport,
 } as any)
+const InviteTokenRoute = InviteTokenRouteImport.update({
+  id: '/invite_/$token',
+  path: '/invite/$token',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const DocsCustomImagesRoute = DocsCustomImagesRouteImport.update({
   id: '/docs/custom-images',
   path: '/docs/custom-images',
@@ -95,6 +101,7 @@ export interface FileRoutesByFullPath {
   '/skills': typeof SkillsRoute
   '/workflows': typeof WorkflowsRoute
   '/docs/custom-images': typeof DocsCustomImagesRoute
+  '/invite/$token': typeof InviteTokenRoute
   '/runs/$runId': typeof RunsRunIdRoute
 }
 export interface FileRoutesByTo {
@@ -109,6 +116,7 @@ export interface FileRoutesByTo {
   '/skills': typeof SkillsRoute
   '/workflows': typeof WorkflowsRoute
   '/docs/custom-images': typeof DocsCustomImagesRoute
+  '/invite/$token': typeof InviteTokenRoute
   '/runs/$runId': typeof RunsRunIdRoute
 }
 export interface FileRoutesById {
@@ -124,6 +132,7 @@ export interface FileRoutesById {
   '/skills': typeof SkillsRoute
   '/workflows': typeof WorkflowsRoute
   '/docs/custom-images': typeof DocsCustomImagesRoute
+  '/invite_/$token': typeof InviteTokenRoute
   '/runs_/$runId': typeof RunsRunIdRoute
 }
 export interface FileRouteTypes {
@@ -140,6 +149,7 @@ export interface FileRouteTypes {
     | '/skills'
     | '/workflows'
     | '/docs/custom-images'
+    | '/invite/$token'
     | '/runs/$runId'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -154,6 +164,7 @@ export interface FileRouteTypes {
     | '/skills'
     | '/workflows'
     | '/docs/custom-images'
+    | '/invite/$token'
     | '/runs/$runId'
   id:
     | '__root__'
@@ -168,6 +179,7 @@ export interface FileRouteTypes {
     | '/skills'
     | '/workflows'
     | '/docs/custom-images'
+    | '/invite_/$token'
     | '/runs_/$runId'
   fileRoutesById: FileRoutesById
 }
@@ -183,6 +195,7 @@ export interface RootRouteChildren {
   SkillsRoute: typeof SkillsRoute
   WorkflowsRoute: typeof WorkflowsRoute
   DocsCustomImagesRoute: typeof DocsCustomImagesRoute
+  InviteTokenRoute: typeof InviteTokenRoute
   RunsRunIdRoute: typeof RunsRunIdRoute
 }
 
@@ -265,6 +278,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof RunsRunIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/invite_/$token': {
+      id: '/invite_/$token'
+      path: '/invite/$token'
+      fullPath: '/invite/$token'
+      preLoaderRoute: typeof InviteTokenRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/docs/custom-images': {
       id: '/docs/custom-images'
       path: '/docs/custom-images'
@@ -287,6 +307,7 @@ const rootRouteChildren: RootRouteChildren = {
   SkillsRoute: SkillsRoute,
   WorkflowsRoute: WorkflowsRoute,
   DocsCustomImagesRoute: DocsCustomImagesRoute,
+  InviteTokenRoute: InviteTokenRoute,
   RunsRunIdRoute: RunsRunIdRoute,
 }
 export const routeTree = rootRouteImport

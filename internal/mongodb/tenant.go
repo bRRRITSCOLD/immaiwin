@@ -183,3 +183,82 @@ func (r *TenantRepository) AddMember(ctx context.Context, m TenantMember) error 
 	}
 	return err
 }
+
+// MemberWithUser is a hydrated member row — used by the settings page
+// to show "alice@example.com (admin, joined 2026-04-29)" without the
+// caller doing a second user lookup per row.
+type MemberWithUser struct {
+	UserID   string     `json:"user_id"`
+	Email    string     `json:"email"`
+	Role     TenantRole `json:"role"`
+	JoinedAt time.Time  `json:"joined_at"`
+}
+
+// ListMembersForTenant returns all members + their email, sorted by
+// joined_at ascending so the owner shows first. N+1 lookup against
+// users by id; fine at small team scale (<100). Move to $lookup
+// aggregate when membership lists grow.
+func (r *TenantRepository) ListMembersForTenant(ctx context.Context, tenantID string, users *UserRepository) ([]MemberWithUser, error) {
+	cur, err := r.members.Find(ctx, bson.M{"tenant_id": tenantID},
+		options.Find().SetSort(bson.D{{Key: "joined_at", Value: 1}}),
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = cur.Close(ctx) }()
+	var rows []TenantMember
+	if err := cur.All(ctx, &rows); err != nil {
+		return nil, err
+	}
+	out := make([]MemberWithUser, 0, len(rows))
+	for _, m := range rows {
+		mwu := MemberWithUser{
+			UserID:   m.UserID,
+			Role:     m.Role,
+			JoinedAt: m.JoinedAt,
+		}
+		if users != nil {
+			if u, err := users.GetByID(ctx, m.UserID); err == nil {
+				mwu.Email = u.Email
+			}
+		}
+		out = append(out, mwu)
+	}
+	return out, nil
+}
+
+// RemoveMember deletes a (tenant, user) row. Returns ErrNotMember when
+// no row matched (idempotent for the caller; the UI may double-click).
+// Does NOT enforce role guards — handler must verify the caller's
+// authority + that they're not removing the owner.
+func (r *TenantRepository) RemoveMember(ctx context.Context, tenantID, userID string) error {
+	res, err := r.members.DeleteOne(ctx, bson.M{
+		"tenant_id": tenantID,
+		"user_id":   userID,
+	})
+	if err != nil {
+		return err
+	}
+	if res.DeletedCount == 0 {
+		return ErrNotMember
+	}
+	return nil
+}
+
+// GetMemberRole returns the role of a (tenant, user) pair. Useful for
+// "is this caller an admin/owner?" checks before privileged ops like
+// invite + member-removal.
+func (r *TenantRepository) GetMemberRole(ctx context.Context, tenantID, userID string) (TenantRole, error) {
+	var m TenantMember
+	err := r.members.FindOne(ctx, bson.M{
+		"tenant_id": tenantID,
+		"user_id":   userID,
+	}).Decode(&m)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return "", ErrNotMember
+	}
+	if err != nil {
+		return "", err
+	}
+	return m.Role, nil
+}

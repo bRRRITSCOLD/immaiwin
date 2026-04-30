@@ -84,6 +84,7 @@ func NewServer(
 	tenants *mongodb.TenantRepository,
 	apiKeys *mongodb.APIKeyRepository,
 	workerHealth *mongodb.WorkerHealthRepository,
+	invites *mongodb.InviteRepository,
 	db *mongo.Database,
 	sandboxRT sandbox.Runtime,
 ) *Server {
@@ -296,6 +297,28 @@ func NewServer(
 	// heartbeats. Auth-gated; worker names + last_error strings can
 	// leak internal architecture.
 	r.GET("/api/v1/workers/health", requireAuth, handler.ListWorkerHealth(handler.WorkerHealthDeps{Health: workerHealth}))
+
+	// Tenant invites + member management. All require auth + tenant
+	// context; specific endpoints additionally enforce owner/admin via
+	// requireTenantAdmin in the handler.
+	if invites != nil && tenants != nil && users != nil {
+		inviteDeps := handler.InviteDeps{
+			Invites:   invites,
+			Tenants:   tenants,
+			Users:     users,
+			Email:     email.NewLogSender(),
+			UIBaseURL: authCfg.UIBaseURL,
+		}
+		r.POST("/api/v1/tenants/invites", requireAuth, handler.CreateInvite(inviteDeps))
+		r.GET("/api/v1/tenants/invites", requireAuth, handler.ListInvites(inviteDeps))
+		r.DELETE("/api/v1/tenants/invites/:id", requireAuth, handler.RevokeInvite(inviteDeps))
+		r.GET("/api/v1/tenants/members", requireAuth, handler.ListMembers(inviteDeps))
+		r.DELETE("/api/v1/tenants/members/:user_id", requireAuth, handler.RemoveMember(inviteDeps))
+		// Public preview (no auth) — UI uses this to show invite
+		// metadata before signup; accept requires auth.
+		r.GET("/api/v1/invites/:token/preview", handler.PreviewInvite(inviteDeps))
+		r.POST("/api/v1/invites/:token/accept", requireAuth, handler.AcceptInvite(inviteDeps))
+	}
 
 	// Evals (P-eval). Disabled when EvalDeps is empty; handlers respond
 	// with 503 so the UI can fail open.

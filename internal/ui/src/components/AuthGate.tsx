@@ -14,13 +14,21 @@ import { useLocation, useNavigate } from '@tanstack/react-router'
 import { useAuthStore } from '~/lib/auth-store'
 
 const PUBLIC_PATHS = new Set<string>(['/login', '/register', '/forgot', '/reset'])
+// Prefixes that are also public — used for path-param routes like
+// /invite/:token where the preview endpoint serves unauth.
+const PUBLIC_PREFIXES = ['/invite/']
+
+function isPublicPath(pathname: string): boolean {
+  if (PUBLIC_PATHS.has(pathname)) return true
+  return PUBLIC_PREFIXES.some((p) => pathname.startsWith(p))
+}
 
 export function AuthGate({ children }: { children: React.ReactNode }) {
   const me = useAuthStore((s) => s.me)
   const loadMe = useAuthStore((s) => s.loadMe)
   const location = useLocation()
   const navigate = useNavigate()
-  const isPublic = PUBLIC_PATHS.has(location.pathname)
+  const isPublic = isPublicPath(location.pathname)
 
   // Hydrate once on mount.
   useEffect(() => {
