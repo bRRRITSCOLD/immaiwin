@@ -311,6 +311,7 @@ func NewServer(
 		r.DELETE("/api/v1/tenants/invites/:id", requireAuth, handler.RevokeInvite(inviteDeps))
 		r.GET("/api/v1/tenants/members", requireAuth, handler.ListMembers(inviteDeps))
 		r.DELETE("/api/v1/tenants/members/:user_id", requireAuth, handler.RemoveMember(inviteDeps))
+		r.POST("/api/v1/tenants/transfer", requireAuth, handler.TransferOwnership(inviteDeps))
 		// Public preview (no auth) — UI uses this to show invite
 		// metadata before signup; accept requires auth.
 		r.GET("/api/v1/invites/:token/preview", handler.PreviewInvite(inviteDeps))

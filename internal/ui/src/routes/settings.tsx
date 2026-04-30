@@ -12,7 +12,7 @@ import { useEffect, useState } from 'react'
 import { useForm } from '@tanstack/react-form'
 import { z } from 'zod'
 import { toast } from 'sonner'
-import { Trash2, Plus, ExternalLink, Copy, Check, AlertTriangle, UserMinus, Users, ScrollText } from 'lucide-react'
+import { Trash2, Plus, ExternalLink, Copy, Check, AlertTriangle, UserMinus, Users, ScrollText, Crown } from 'lucide-react'
 import { Button } from '~/components/ui/button'
 import { Input } from '~/components/ui/input'
 import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from '~/components/ui/field'
@@ -89,6 +89,7 @@ const ACTION_FILTERS = [
   { value: 'invite_revoked', label: 'Invite revoked' },
   { value: 'invite_accepted', label: 'Invite accepted' },
   { value: 'member_removed', label: 'Member removed' },
+  { value: 'tenant_ownership_transferred', label: 'Ownership transferred' },
 ]
 
 function AuditLogSection() {
@@ -278,6 +279,25 @@ function MembersSection({ currentUserId }: { currentUserId: string }) {
     }
   }
 
+  async function transferOwnership(userID: string, email: string) {
+    if (!confirm(
+      `Transfer ownership of this tenant to ${email}?\n\n` +
+      `You will be demoted to admin. ${email} will gain owner privileges, ` +
+      `including the ability to transfer ownership again or remove other admins.`,
+    )) return
+    try {
+      await api.post('/api/v1/tenants/transfer', { to_user_id: userID })
+      toast.success(`Ownership transferred to ${email}`)
+      await load()
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : 'Transfer failed')
+    }
+  }
+
+  // Caller is the owner iff their own row in `members` carries the
+  // owner role. Drives whether per-row Transfer buttons render.
+  const isOwner = members.find((m) => m.user_id === currentUserId)?.role === 'owner'
+
   return (
     <Card>
       <CardHeader>
@@ -344,6 +364,16 @@ function MembersSection({ currentUserId }: { currentUserId: string }) {
                   </div>
                 </div>
                 <Badge variant="outline">{m.role}</Badge>
+                {isOwner && m.user_id !== currentUserId && m.role === 'admin' && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => void transferOwnership(m.user_id, m.email)}
+                    title="Transfer ownership to this admin"
+                  >
+                    <Crown className="size-4 text-amber-400" />
+                  </Button>
+                )}
                 {m.user_id !== currentUserId && m.role !== 'owner' && (
                   <Button size="sm" variant="ghost" onClick={() => void removeMember(m.user_id)}>
                     <UserMinus className="size-4 text-destructive" />

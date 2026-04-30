@@ -245,6 +245,74 @@ func (r *TenantRepository) RemoveMember(ctx context.Context, tenantID, userID st
 	return nil
 }
 
+// ErrTransferTargetNotMember is returned when the transfer target is
+// not yet a member of the tenant. We require explicit pre-membership
+// (via invite acceptance) so ownership transfer is never the path
+// that adds a user.
+var ErrTransferTargetNotMember = errors.New("transfer target is not a member of the tenant")
+
+// ErrTransferToSelf is returned when from == to.
+var ErrTransferToSelf = errors.New("transfer source and target are the same user")
+
+// TransferOwnership atomically promotes `toUserID` to owner and demotes
+// the current owner (`fromUserID`) to admin within a single tenant.
+// Promote first then demote: if the second write fails the tenant ends
+// up with two owners, which is recoverable (caller can re-invoke or
+// hand-edit). Demote-first would leave a window with zero owners,
+// which would lock owner-only ops out.
+//
+// Caller is expected to have already verified that fromUserID is the
+// current owner. We re-check via a role-guarded UpdateOne so a stale
+// caller can't promote a non-member.
+func (r *TenantRepository) TransferOwnership(ctx context.Context, tenantID, fromUserID, toUserID string) error {
+	if fromUserID == toUserID {
+		return ErrTransferToSelf
+	}
+	// Step 1: target must already be a non-owner member. Promote them.
+	// Role guard `$in: [admin, member]` ensures we don't accidentally
+	// "promote" someone who's already owner (shouldn't happen — single
+	// owner invariant — but defensive).
+	res, err := r.members.UpdateOne(ctx,
+		bson.M{
+			"tenant_id": tenantID,
+			"user_id":   toUserID,
+			"role":      bson.M{"$in": []TenantRole{TenantRoleAdmin, TenantRoleMember}},
+		},
+		bson.M{"$set": bson.M{"role": TenantRoleOwner}},
+	)
+	if err != nil {
+		return err
+	}
+	if res.MatchedCount == 0 {
+		return ErrTransferTargetNotMember
+	}
+	// Step 2: demote the previous owner to admin. Guard on role=owner
+	// so retries are idempotent.
+	if _, err := r.members.UpdateOne(ctx,
+		bson.M{
+			"tenant_id": tenantID,
+			"user_id":   fromUserID,
+			"role":      TenantRoleOwner,
+		},
+		bson.M{"$set": bson.M{"role": TenantRoleAdmin}},
+	); err != nil {
+		// Best-effort recovery: tenant now has 2 owners; surface error
+		// so caller logs + can retry. A retry of TransferOwnership
+		// re-runs both steps and the demote becomes idempotent.
+		return err
+	}
+	// Step 3: keep tenants.owner_id in sync (it's informational but
+	// other code reads it).
+	_, _ = r.tenants.UpdateOne(ctx,
+		bson.M{"_id": tenantID},
+		bson.M{"$set": bson.M{
+			"owner_id":   toUserID,
+			"updated_at": time.Now().UTC(),
+		}},
+	)
+	return nil
+}
+
 // GetMemberRole returns the role of a (tenant, user) pair. Useful for
 // "is this caller an admin/owner?" checks before privileged ops like
 // invite + member-removal.

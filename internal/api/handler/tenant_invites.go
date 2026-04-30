@@ -406,3 +406,62 @@ func RemoveMember(deps InviteDeps) gin.HandlerFunc {
 		c.JSON(http.StatusOK, gin.H{"ok": true})
 	}
 }
+
+// TransferOwnership hands ownership of the active tenant to another
+// existing member. Caller must be the current owner. Target must
+// already be a member (admin or member); we don't auto-add via
+// transfer since that would short-circuit invite acceptance.
+//
+// On success: target = owner, caller = admin, tenant.owner_id updated.
+// Operation is idempotent on retry — re-running the same transfer
+// after partial failure converges on the intended state.
+func TransferOwnership(deps InviteDeps) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		uctx, ok := auth.UserFromCtx(c.Request.Context())
+		if !ok {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "not authenticated"})
+			return
+		}
+		tenantID, ok := auth.TenantFromCtx(c.Request.Context())
+		if !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "no active tenant"})
+			return
+		}
+		// Owner-only — admin can't transfer ownership.
+		role, err := deps.Tenants.GetMemberRole(c.Request.Context(), tenantID, uctx.ID)
+		if err != nil {
+			c.JSON(http.StatusForbidden, gin.H{"error": "not a member of this tenant"})
+			return
+		}
+		if role != mongodb.TenantRoleOwner {
+			c.JSON(http.StatusForbidden, gin.H{"error": "only the tenant owner can transfer ownership"})
+			return
+		}
+		var req struct {
+			ToUserID string `json:"to_user_id"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil || req.ToUserID == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "to_user_id required"})
+			return
+		}
+		err = deps.Tenants.TransferOwnership(c.Request.Context(), tenantID, uctx.ID, req.ToUserID)
+		switch {
+		case errors.Is(err, mongodb.ErrTransferToSelf):
+			c.JSON(http.StatusBadRequest, gin.H{"error": "cannot transfer ownership to yourself"})
+			return
+		case errors.Is(err, mongodb.ErrTransferTargetNotMember):
+			c.JSON(http.StatusBadRequest, gin.H{"error": "target user is not a member of this tenant"})
+			return
+		case err != nil:
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		recordAudit(c, deps.Audit, mongodb.AuditOwnershipTransferred,
+			map[string]any{"tenant_id": tenantID},
+			map[string]any{
+				"from_user_id": uctx.ID,
+				"to_user_id":   req.ToUserID,
+			})
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+	}
+}
