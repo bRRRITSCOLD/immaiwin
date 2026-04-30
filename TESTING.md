@@ -59,6 +59,7 @@ Real Mongo + Redis (per `.claude/rules/TESTING.md` — no mocks). Each suite use
 | `internal/api/handler` | `password_reset_integration_test.go` | Password reset flow | `TestPasswordReset_HappyPath_NewPasswordWorks_OldPasswordRejected`, `TestPasswordReset_TokenReuse_Returns401`, `TestPasswordReset_BogusToken_Returns401`, `TestPasswordReset_NonexistentEmail_Returns200_NoEmail`, `TestPasswordReset_ConfirmMissingFields_Returns400` |
 | `internal/api/handler` | `workflow_http_node_integration_test.go` | Workflow `http_request` node | `TestHTTPNode_GetWithJSON_DecodesIntoOutput`, `TestHTTPNode_4xx_PropagatesError`, `TestHTTPNode_AcceptAnyStatus_TreatsNon2xxAsSuccess`, `TestHTTPNode_RawBody_NoJSONParseOnFalse`, `TestHTTPNode_PostJSONBody_ServerSeesPayload` |
 | `internal/api/handler` | `workflow_mongo_redis_node_integration_test.go` | Workflow `mongo_request` + `redis_request` nodes | `TestMongoNode_InsertOne_PersistsDoc`, `TestMongoNode_CountDocuments_AfterInserts`, `TestMongoNode_UnknownOp_FailsRun`, `TestRedisNode_SetThenGet_RoundTrips`, `TestRedisNode_Incr_PersistsCounter`, `TestRedisNode_UnknownOp_FailsRun` |
+| `internal/api/handler` | `skills_integration_test.go` | Skill registry HTTP surface | `TestSkills_FreshDB_ListReturnsEmptyArray`, `TestSkills_RefreshFromBundledDir_ImportsAllManifests`, `TestSkills_RefreshTwice_IsIdempotent`, `TestSkills_NoCookie_ListReturns401`, `TestSkills_NoCookie_RefreshReturns401` |
 
 ### Setup conventions
 
@@ -84,7 +85,7 @@ Slot reserved here for the future catalog:
 ## Coverage gaps (open backlog)
 
 - **Workflow run with executable nodes** — `http_request`, `mongo_request`, `redis_request` covered. `sandbox_script` / `ai_agent` paths still uncovered.
-- **Skill registry CRUD** — install/refresh/uninstall + drift detection at the HTTP boundary.
+- **Skill registry uninstall + drift detection** — list + refresh covered (`skills_integration_test.go`); uninstall endpoint not yet shipped, drift detection (Verify) only runs as part of refresh today.
 - **Sandbox WS run** — `/api/v1/sandbox/run` WebSocket path has no automated test.
 - **Agent loop end-to-end** — burns LLM tokens; defer to record-and-replay or VCR-style harness.
 - **OAuth login** — Google + GitHub provider-callback paths have no integration test (manual only).
