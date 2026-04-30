@@ -11,9 +11,12 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as WorkflowsRouteImport } from './routes/workflows'
 import { Route as SkillsRouteImport } from './routes/skills'
+import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as RunsRouteImport } from './routes/runs'
+import { Route as ResetRouteImport } from './routes/reset'
 import { Route as RegisterRouteImport } from './routes/register'
 import { Route as LoginRouteImport } from './routes/login'
+import { Route as ForgotRouteImport } from './routes/forgot'
 import { Route as EvalsRouteImport } from './routes/evals'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as RunsRunIdRouteImport } from './routes/runs_.$runId'
@@ -29,9 +32,19 @@ const SkillsRoute = SkillsRouteImport.update({
   path: '/skills',
   getParentRoute: () => rootRouteImport,
 } as any)
+const SettingsRoute = SettingsRouteImport.update({
+  id: '/settings',
+  path: '/settings',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const RunsRoute = RunsRouteImport.update({
   id: '/runs',
   path: '/runs',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ResetRoute = ResetRouteImport.update({
+  id: '/reset',
+  path: '/reset',
   getParentRoute: () => rootRouteImport,
 } as any)
 const RegisterRoute = RegisterRouteImport.update({
@@ -42,6 +55,11 @@ const RegisterRoute = RegisterRouteImport.update({
 const LoginRoute = LoginRouteImport.update({
   id: '/login',
   path: '/login',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ForgotRoute = ForgotRouteImport.update({
+  id: '/forgot',
+  path: '/forgot',
   getParentRoute: () => rootRouteImport,
 } as any)
 const EvalsRoute = EvalsRouteImport.update({
@@ -68,9 +86,12 @@ const DocsCustomImagesRoute = DocsCustomImagesRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/evals': typeof EvalsRoute
+  '/forgot': typeof ForgotRoute
   '/login': typeof LoginRoute
   '/register': typeof RegisterRoute
+  '/reset': typeof ResetRoute
   '/runs': typeof RunsRoute
+  '/settings': typeof SettingsRoute
   '/skills': typeof SkillsRoute
   '/workflows': typeof WorkflowsRoute
   '/docs/custom-images': typeof DocsCustomImagesRoute
@@ -79,9 +100,12 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/evals': typeof EvalsRoute
+  '/forgot': typeof ForgotRoute
   '/login': typeof LoginRoute
   '/register': typeof RegisterRoute
+  '/reset': typeof ResetRoute
   '/runs': typeof RunsRoute
+  '/settings': typeof SettingsRoute
   '/skills': typeof SkillsRoute
   '/workflows': typeof WorkflowsRoute
   '/docs/custom-images': typeof DocsCustomImagesRoute
@@ -91,9 +115,12 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/evals': typeof EvalsRoute
+  '/forgot': typeof ForgotRoute
   '/login': typeof LoginRoute
   '/register': typeof RegisterRoute
+  '/reset': typeof ResetRoute
   '/runs': typeof RunsRoute
+  '/settings': typeof SettingsRoute
   '/skills': typeof SkillsRoute
   '/workflows': typeof WorkflowsRoute
   '/docs/custom-images': typeof DocsCustomImagesRoute
@@ -104,9 +131,12 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/evals'
+    | '/forgot'
     | '/login'
     | '/register'
+    | '/reset'
     | '/runs'
+    | '/settings'
     | '/skills'
     | '/workflows'
     | '/docs/custom-images'
@@ -115,9 +145,12 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/evals'
+    | '/forgot'
     | '/login'
     | '/register'
+    | '/reset'
     | '/runs'
+    | '/settings'
     | '/skills'
     | '/workflows'
     | '/docs/custom-images'
@@ -126,9 +159,12 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/evals'
+    | '/forgot'
     | '/login'
     | '/register'
+    | '/reset'
     | '/runs'
+    | '/settings'
     | '/skills'
     | '/workflows'
     | '/docs/custom-images'
@@ -138,9 +174,12 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   EvalsRoute: typeof EvalsRoute
+  ForgotRoute: typeof ForgotRoute
   LoginRoute: typeof LoginRoute
   RegisterRoute: typeof RegisterRoute
+  ResetRoute: typeof ResetRoute
   RunsRoute: typeof RunsRoute
+  SettingsRoute: typeof SettingsRoute
   SkillsRoute: typeof SkillsRoute
   WorkflowsRoute: typeof WorkflowsRoute
   DocsCustomImagesRoute: typeof DocsCustomImagesRoute
@@ -163,11 +202,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SkillsRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/settings': {
+      id: '/settings'
+      path: '/settings'
+      fullPath: '/settings'
+      preLoaderRoute: typeof SettingsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/runs': {
       id: '/runs'
       path: '/runs'
       fullPath: '/runs'
       preLoaderRoute: typeof RunsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/reset': {
+      id: '/reset'
+      path: '/reset'
+      fullPath: '/reset'
+      preLoaderRoute: typeof ResetRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/register': {
@@ -182,6 +235,13 @@ declare module '@tanstack/react-router' {
       path: '/login'
       fullPath: '/login'
       preLoaderRoute: typeof LoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/forgot': {
+      id: '/forgot'
+      path: '/forgot'
+      fullPath: '/forgot'
+      preLoaderRoute: typeof ForgotRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/evals': {
@@ -218,9 +278,12 @@ declare module '@tanstack/react-router' {
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   EvalsRoute: EvalsRoute,
+  ForgotRoute: ForgotRoute,
   LoginRoute: LoginRoute,
   RegisterRoute: RegisterRoute,
+  ResetRoute: ResetRoute,
   RunsRoute: RunsRoute,
+  SettingsRoute: SettingsRoute,
   SkillsRoute: SkillsRoute,
   WorkflowsRoute: WorkflowsRoute,
   DocsCustomImagesRoute: DocsCustomImagesRoute,

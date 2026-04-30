@@ -58,11 +58,47 @@ func PasswordVerify(plaintext, hash string) bool {
 
 // Claims is the JWT payload. Tenant ID is mandatory once Phase B
 // lands; this struct carries it from the start so the cookie shape
-// doesn't change between phases.
+// doesn't change between phases. Purpose disambiguates session JWTs
+// from special-purpose tokens (password reset, invite links). Empty
+// purpose = session JWT (the default issued by /auth/login etc).
 type Claims struct {
 	jwt.RegisteredClaims
 	UserID   string `json:"sub,omitempty"`
 	TenantID string `json:"tenant_id,omitempty"`
+	Purpose  string `json:"purpose,omitempty"` // "" | "password_reset" | future
+}
+
+// Purpose constants used in special-purpose tokens. A session-cookie
+// JWT must have empty Purpose; a password-reset link must verify
+// Purpose==PurposePasswordReset before honouring the new password.
+const (
+	PurposePasswordReset = "password_reset"
+)
+
+// IssuePurposeJWT signs a token with a non-empty Purpose. Use for
+// password-reset / invite links — anything that must NOT double as a
+// session token. The session middleware rejects tokens with non-empty
+// Purpose so an attacker can't paste a reset link's token into a
+// cookie and impersonate.
+func IssuePurposeJWT(secret []byte, userID, purpose string, ttl time.Duration) (string, error) {
+	if len(secret) == 0 {
+		return "", errors.New("auth: JWT secret not configured")
+	}
+	if userID == "" || purpose == "" {
+		return "", errors.New("auth: user_id + purpose required")
+	}
+	now := time.Now().UTC()
+	claims := &Claims{
+		RegisteredClaims: jwt.RegisteredClaims{
+			Subject:   userID,
+			IssuedAt:  jwt.NewNumericDate(now),
+			ExpiresAt: jwt.NewNumericDate(now.Add(ttl)),
+		},
+		UserID:  userID,
+		Purpose: purpose,
+	}
+	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	return tok.SignedString(secret)
 }
 
 // IssueJWT signs a Claims payload with the configured HS256 secret.

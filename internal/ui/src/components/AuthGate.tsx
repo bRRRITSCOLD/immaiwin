@@ -13,7 +13,7 @@ import { useEffect } from 'react'
 import { useLocation, useNavigate } from '@tanstack/react-router'
 import { useAuthStore } from '~/lib/auth-store'
 
-const PUBLIC_PATHS = new Set<string>(['/login', '/register'])
+const PUBLIC_PATHS = new Set<string>(['/login', '/register', '/forgot', '/reset'])
 
 export function AuthGate({ children }: { children: React.ReactNode }) {
   const me = useAuthStore((s) => s.me)
