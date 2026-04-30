@@ -61,29 +61,6 @@ Slot reserved here for the future catalog:
 
 ---
 
-## Smoke shells (gitignored, `.private/ai-automation/*.sh`)
-
-Out-of-band shell-driven smoke tests for in-progress / pre-CI verification. Not enforced by CI; complementary to the integration suites above. Each script targets the locally-running api at `https://localhost:8080`.
-
-| Script | Subject |
-|---|---|
-| `auth-01-phase-a-b.sh` | Email/password register + login |
-| `auth-02-phase-c-smoke.sh` | Tenant scoping on workflows |
-| `auth-03-phase-d-smoke.sh` | Connection encryption |
-| `auth-04-phase-d-smoke.sh` | Bundled assets bootstrap |
-| `auth-05-phase-f-smoke.sh` | API keys |
-| `auth-06-phase-g-smoke.sh` | OAuth (google, github) |
-| `auth-07-hardening-smoke.sh` | Rate limit, password reset, OAuth state CSRF |
-| `auth-08-invites-smoke.sh` | Invites + members |
-| `audit-01-smoke.sh` | Audit log ledger |
-| `smtp-01-smoke.sh` | SMTP via Mailpit |
-| `reaper-01-smoke.sh` | Stuck-run reaper sweep |
-| `run-metrics-01-smoke.sh` | `/admin` run metrics |
-| `worker-health-01-smoke.sh` | Heartbeat persistence |
-| `ownership-transfer-01-smoke.sh` | Owner role transfer |
-
----
-
 ## Coverage gaps (open backlog)
 
 - **Workflow run with executable nodes** — current run suite covers trigger-only. http_request / mongo_request / redis_request / sandbox_script / ai_agent paths uncovered.

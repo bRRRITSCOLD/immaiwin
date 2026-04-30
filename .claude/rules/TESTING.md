@@ -87,19 +87,10 @@ make test
 go test -v -count=1 ./...
 ```
 
-### Smoke shells (`.private/ai-automation/*.sh`)
-* If a smoke spawns a background process via `go run ./cmd/<x> -name <name> &`, **`kill $PID` is not enough**. `go run` compiles to `/tmp/go-build*/.../exe/<x>` and execs the child; killing the wrapper PID leaves the child orphaned (re-parented to init, still writing heartbeats / holding ports). Always include a `pkill -TERM -f "<x> -name <name>"` in the trap cleanup so the compiled child also dies.
-* Example trap pattern (see `reaper-01-smoke.sh`):
-  ```bash
-  PID=""
-  cleanup() {
-    if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
-      kill "$PID" 2>/dev/null || true
-      wait "$PID" 2>/dev/null || true
-    fi
-    pkill -TERM -f "<x> -name <name>" 2>/dev/null || true
-    # … other resource cleanup …
-  }
-  trap cleanup EXIT
-  ```
-* Without this, `/admin` accumulates stale "running" worker_health rows from prior smoke runs and downstream sweeps race on them.
+### Local-only smoke shells (not part of the official test surface)
+
+Integration tests (above) are the canonical coverage that other contributors run. If you write throwaway shell smokes locally for in-progress verification — for example, when iterating on a new endpoint before the matching integration test exists — keep them out of the tracked tree (any gitignored path works).
+
+These do not replace integration / e2e tests and they don't get listed in [`/TESTING.md`](../../TESTING.md). Once the feature is real, the matching integration test (per the rules above) is the deliverable, and the local shell can be deleted.
+
+If you do write one and it spawns a worker via `go run ./cmd/<x> -name <name> &`, note that `kill $PID` only kills the `go run` wrapper; the compiled child binary in `/tmp/go-build*/.../exe/<x>` is re-parented to init and keeps running. Use `pkill -TERM -f "<x> -name <name>"` in the trap cleanup so the child also dies. Without this the child keeps writing heartbeats and downstream sweeps race on stale `worker_health` rows.
