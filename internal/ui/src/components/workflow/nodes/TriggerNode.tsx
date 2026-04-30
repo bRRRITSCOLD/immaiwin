@@ -21,8 +21,6 @@ const triggerTypes = [
   { value: 'webhook', label: 'Webhook (HTTP)' },
   { value: 'rabbitmq', label: 'RabbitMQ' },
   { value: 'redis_subscribe', label: 'Redis Subscribe' },
-  { value: 'polymarket_ws', label: 'Polymarket WS' },
-  { value: 'schwab_ws', label: 'Schwab WS' },
 ] as const
 
 type TriggerType = (typeof triggerTypes)[number]['value']
@@ -90,8 +88,6 @@ export function TriggerNode({ id, data, selected }: NodeProps) {
   const isWebhook = triggerType === 'webhook'
   const isRabbitMQ = triggerType === 'rabbitmq'
   const isRedisSubscribe = triggerType === 'redis_subscribe'
-  const isPolymarketWS = triggerType === 'polymarket_ws'
-  const isSchwabWS = triggerType === 'schwab_ws'
 
   // Sync individual fields from legacy `cron` string on first render
   const hasFields = cronFields.some((f) => data[f.key] != null)
@@ -122,16 +118,6 @@ export function TriggerNode({ id, data, selected }: NodeProps) {
           {isRedisSubscribe && (
             <div className="ml-auto">
               <ConnectionPicker nodeId={id} connectionType="redis" data={data as Record<string, unknown>} activeColor="text-blue-500" />
-            </div>
-          )}
-          {isPolymarketWS && (
-            <div className="ml-auto">
-              <ConnectionPicker nodeId={id} connectionType="polymarket" data={data as Record<string, unknown>} activeColor="text-blue-500" />
-            </div>
-          )}
-          {isSchwabWS && (
-            <div className="ml-auto">
-              <ConnectionPicker nodeId={id} connectionType="schwab" data={data as Record<string, unknown>} activeColor="text-blue-500" />
             </div>
           )}
         </div>
@@ -244,53 +230,6 @@ export function TriggerNode({ id, data, selected }: NodeProps) {
                 <p className="text-[10px] text-muted-foreground">
                   Optional glob patterns (Redis PSUBSCRIBE). Mix freely with channels above.
                 </p>
-              </div>
-            </div>
-          )}
-          {isPolymarketWS && (
-            <div className="space-y-2">
-              <div className="space-y-0.5">
-                <label className="text-xs text-muted-foreground">Asset IDs</label>
-                <Textarea
-                  className="nodrag font-mono text-xs min-h-[60px]"
-                  placeholder="One CLOB token ID per line"
-                  value={(data.asset_ids as string) ?? ''}
-                  onChange={(e) => updateNodeData(id, { asset_ids: e.target.value })}
-                />
-                <p className="text-[10px] text-muted-foreground">One CLOB token ID per line. Each trade event triggers a workflow run.</p>
-              </div>
-            </div>
-          )}
-          {isSchwabWS && (
-            <div className="space-y-2">
-              <div className="space-y-1">
-                <label className="text-xs text-muted-foreground">Stream Type</label>
-                <Select
-                  value={(data.stream_type as string) || 'options'}
-                  onValueChange={(v) => updateNodeData(id, { stream_type: v })}
-                >
-                  <SelectTrigger className="w-full">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="options">Options</SelectItem>
-                    <SelectItem value="futures">Futures</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-0.5">
-                <label className="text-xs text-muted-foreground">Symbols</label>
-                <Textarea
-                  className="nodrag font-mono text-xs min-h-[60px]"
-                  placeholder={
-                    (data.stream_type as string) === 'futures'
-                      ? 'One contract per line\ne.g. /CLM25'
-                      : 'One option key per line\ne.g. SPY_020725C400'
-                  }
-                  value={(data.symbols as string) ?? ''}
-                  onChange={(e) => updateNodeData(id, { symbols: e.target.value })}
-                />
-                <p className="text-[10px] text-muted-foreground">One symbol per line. Each trade event triggers a workflow run.</p>
               </div>
             </div>
           )}

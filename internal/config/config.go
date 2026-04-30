@@ -10,7 +10,6 @@ type Config struct {
 	Worker        WorkerConfig  `envPrefix:"WORKER_"`
 	Redis         RedisConfig   `envPrefix:"REDIS_"`
 	MongoDB       MongoDBConfig `envPrefix:"MONGODB_"`
-	Schwab        SchwabConfig  `envPrefix:"SCHWAB_"`
 	Sandbox       SandboxConfig `envPrefix:"SANDBOX_"`
 	Skills        SkillsConfig  `envPrefix:"SKILLS_"`
 	Auth          AuthConfig    `envPrefix:"AUTH_"`
@@ -144,12 +143,6 @@ type RedisConfig struct {
 type MongoDBConfig struct {
 	URI      string `env:"URI" envDefault:"mongodb://localhost:27017"`
 	Database string `env:"DATABASE" envDefault:"immaiwin"`
-}
-
-type SchwabConfig struct {
-	ClientID     string `env:"CLIENT_ID"     envDefault:""`
-	ClientSecret string `env:"CLIENT_SECRET" envDefault:""`
-	CallbackURL  string `env:"CALLBACK_URL"  envDefault:"https://localhost:8080/auth/schwab/callback"`
 }
 
 type SandboxConfig struct {

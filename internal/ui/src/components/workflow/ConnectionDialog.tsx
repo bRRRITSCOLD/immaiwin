@@ -79,10 +79,7 @@ export function ConnectionDialog({ open, onOpenChange, connection, onSaved }: Pr
         toast.success('Connection saved')
         setSaved(true)
         if (!connection) setJustCreated(true)
-        // Keep dialog open for Schwab OAuth flow; close for others
-        if (value.type !== 'schwab') {
-          onOpenChange(false)
-        }
+        onOpenChange(false)
         onSaved()
       } catch {
         toast.error('Network error')
@@ -173,8 +170,6 @@ export function ConnectionDialog({ open, onOpenChange, connection, onSaved }: Pr
                       <SelectItem value="mongodb">MongoDB</SelectItem>
                       <SelectItem value="redis">Redis</SelectItem>
                       <SelectItem value="rabbitmq">RabbitMQ</SelectItem>
-                      <SelectItem value="polymarket">Polymarket</SelectItem>
-                      <SelectItem value="schwab">Schwab</SelectItem>
                       <SelectItem value="anthropic">Anthropic</SelectItem>
                       <SelectItem value="openai">OpenAI</SelectItem>
                       <SelectItem value="ollama">Ollama</SelectItem>
@@ -201,42 +196,28 @@ export function ConnectionDialog({ open, onOpenChange, connection, onSaved }: Pr
                     if (type === 'mongodb') return <MongoFields config={config} setField={setField} />
                     if (type === 'redis') return <RedisFields config={config} setField={setField} />
                     if (type === 'rabbitmq') return <RabbitMQFields config={config} setField={setField} />
-                    if (type === 'schwab') return <SchwabFields config={config} setField={setField} connectionId={id} isSaved={saved} disabled={justCreated} />
                     if (type === 'anthropic') return <AnthropicFields config={config} setField={setField} />
                     if (type === 'openai') return <OpenAIFields config={config} setField={setField} />
-                    if (type === 'ollama') return <OllamaFields config={config} setField={setField} />
-                    return <PolymarketFields config={config} setField={setField} />
+                    return <OllamaFields config={config} setField={setField} />
+
                   }}
                 </form.Field>
               )}
             </form.Subscribe>
           </FieldGroup>
 
-          <form.Subscribe selector={(s) => s.values.type}>
-            {(type) => {
-              const showClose = type === 'schwab' && justCreated
-              return (
-                <DialogFooter className="pt-4">
-                  {showClose ? (
-                    <Button type="button" onClick={() => onOpenChange(false)}>Close</Button>
-                  ) : (
-                    <>
-                      <Button type="button" variant="outline" onClick={handleTest} disabled={testing}>
-                        {testing ? 'Testing…' : 'Test'}
-                      </Button>
-                      <form.Subscribe selector={(s) => s.isSubmitting}>
-                        {(submitting) => (
-                          <Button type="submit" disabled={submitting}>
-                            {submitting ? 'Saving…' : 'Save'}
-                          </Button>
-                        )}
-                      </form.Subscribe>
-                    </>
-                  )}
-                </DialogFooter>
-              )
-            }}
-          </form.Subscribe>
+          <DialogFooter className="pt-4">
+            <Button type="button" variant="outline" onClick={handleTest} disabled={testing}>
+              {testing ? 'Testing…' : 'Test'}
+            </Button>
+            <form.Subscribe selector={(s) => s.isSubmitting}>
+              {(submitting) => (
+                <Button type="submit" disabled={submitting}>
+                  {submitting ? 'Saving…' : 'Save'}
+                </Button>
+              )}
+            </form.Subscribe>
+          </DialogFooter>
         </form>
       </DialogContent>
     </Dialog>
@@ -425,35 +406,6 @@ function OllamaFields({ config, setField }: { config: Record<string, string>; se
   )
 }
 
-// ── Polymarket fields ────────────────────────────────────────────────────────
-
-function PolymarketFields({ config, setField }: { config: Record<string, string>; setField: (k: string, v: string) => void }) {
-  return (
-    <FieldGroup>
-      <ConfigInput label="API Key" configKey="api_key" config={config} setField={setField} placeholder="(optional — falls back to env POLYMARKET_API_KEY)" />
-      <ConfigInput label="API Secret" configKey="api_secret" config={config} setField={setField} placeholder="(optional — falls back to env POLYMARKET_API_SECRET)" type="password" />
-      <ConfigInput label="API Passphrase" configKey="api_passphrase" config={config} setField={setField} placeholder="(optional — falls back to env POLYMARKET_API_PASSPHRASE)" type="password" />
-      <ConfigInput label="Private Key" configKey="private_key" config={config} setField={setField} placeholder="(optional — falls back to env POLYMARKET_PK)" type="password" />
-
-      <Section title="WebSocket Tuning">
-        <ConfigCheckbox label="Enable Reconnect" configKey="ws_reconnect" config={config} setField={setField} />
-        <ConfigInput label="Reconnect Delay (ms)" configKey="ws_reconnect_delay_ms" config={config} setField={setField} placeholder="2000" />
-        <ConfigInput label="Max Reconnect Delay (ms)" configKey="ws_reconnect_max_delay_ms" config={config} setField={setField} placeholder="30000" />
-        <ConfigInput label="Backoff Multiplier" configKey="ws_backoff_multiplier" config={config} setField={setField} placeholder="2.0" />
-        <ConfigInput label="Max Reconnect Attempts" configKey="ws_reconnect_max" config={config} setField={setField} placeholder="5" />
-        <ConfigInput label="Heartbeat Interval (ms)" configKey="ws_heartbeat_interval_ms" config={config} setField={setField} placeholder="10000" />
-        <ConfigCheckbox label="Debug Logging" configKey="ws_debug" config={config} setField={setField} />
-      </Section>
-
-      <Section title="URL Overrides">
-        <ConfigInput label="CLOB WS URL" configKey="clob_ws_url" config={config} setField={setField} placeholder="wss://ws-subscriptions-clob.polymarket.com" />
-        <ConfigInput label="CLOB REST URL" configKey="clob_url" config={config} setField={setField} placeholder="https://clob.polymarket.com" />
-        <ConfigInput label="Gamma API URL" configKey="gamma_url" config={config} setField={setField} placeholder="https://gamma-api.polymarket.com" />
-      </Section>
-    </FieldGroup>
-  )
-}
-
 // ── RabbitMQ fields ──────────────────────────────────────────────────────────
 
 function RabbitMQFields({ config, setField }: { config: Record<string, string>; setField: (k: string, v: string) => void }) {
@@ -475,117 +427,6 @@ function RabbitMQFields({ config, setField }: { config: Record<string, string>; 
         <ConfigCheckbox label="Enable TLS" configKey="tls" config={config} setField={setField} />
         <ConfigCheckbox label="Insecure (skip cert verify)" configKey="tls_insecure" config={config} setField={setField} />
       </Section>
-    </FieldGroup>
-  )
-}
-
-// ── Schwab fields ─────────────────────────────────────────────────────────────
-
-function SchwabFields({ config, setField, connectionId, isSaved, disabled }: {
-  config: Record<string, string>; setField: (k: string, v: string) => void
-  connectionId: string; isSaved: boolean; disabled?: boolean
-}) {
-  const [oauthStatus, setOauthStatus] = useState<'unknown' | 'authorized' | 'not_authorized'>('unknown')
-  const [oauthUrls, setOauthUrls] = useState<{ authorize_url: string; callback_url: string } | null>(null)
-  const pollRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined)
-
-  const fetchOAuthStatus = useCallback(async () => {
-    try {
-      const res = await fetch(`${API_BASE}/api/v1/connections/${connectionId}/oauth/status`)
-      if (!res.ok) return
-      const data = await res.json()
-      setOauthStatus(data.authorized ? 'authorized' : 'not_authorized')
-      if (data.authorized && pollRef.current) {
-        clearInterval(pollRef.current)
-        pollRef.current = undefined
-      }
-    } catch { /* ignore */ }
-  }, [connectionId])
-
-  const fetchOAuthUrl = useCallback(async () => {
-    try {
-      const res = await fetch(`${API_BASE}/api/v1/connections/${connectionId}/oauth/url`)
-      if (!res.ok) return
-      const data = await res.json()
-      setOauthUrls(data)
-    } catch { /* ignore */ }
-  }, [connectionId])
-
-  // Load OAuth info when connection is saved
-  useEffect(() => {
-    if (!isSaved) return
-    fetchOAuthStatus()
-    fetchOAuthUrl()
-  }, [isSaved, fetchOAuthStatus, fetchOAuthUrl])
-
-  // Cleanup polling on unmount
-  useEffect(() => {
-    return () => {
-      if (pollRef.current) clearInterval(pollRef.current)
-    }
-  }, [])
-
-  function handleAuthorize() {
-    if (!oauthUrls) return
-    window.open(oauthUrls.authorize_url, 'schwab_oauth', 'width=600,height=700')
-    // Start polling for OAuth completion
-    if (pollRef.current) clearInterval(pollRef.current)
-    pollRef.current = setInterval(fetchOAuthStatus, 2000)
-  }
-
-  return (
-    <FieldGroup>
-      <ConfigInput label="Client ID" configKey="client_id" config={config} setField={setField} placeholder="Your Schwab app client ID" disabled={disabled} />
-      <ConfigInput label="Client Secret" configKey="client_secret" config={config} setField={setField} placeholder="Your Schwab app client secret" type="password" disabled={disabled} />
-
-      {isSaved && (
-        <>
-          <Separator />
-          <div className="space-y-3">
-            <p className="text-xs font-medium text-muted-foreground">OAuth Authorization</p>
-
-            {oauthUrls && (
-              <Field>
-                <FieldLabel className="text-xs">Callback URL</FieldLabel>
-                <div className="flex items-center gap-1.5">
-                  <Input
-                    readOnly
-                    value={oauthUrls.callback_url}
-                    className="text-xs font-mono"
-                    onClick={(e) => (e.target as HTMLInputElement).select()}
-                  />
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="shrink-0"
-                    onClick={() => { navigator.clipboard.writeText(oauthUrls.callback_url); toast.success('Copied') }}
-                  >
-                    Copy
-                  </Button>
-                </div>
-                <FieldDescription>Add this URL to your Schwab Developer Portal app callback URLs</FieldDescription>
-              </Field>
-            )}
-
-            <div className="flex items-center gap-3">
-              <Button type="button" variant="outline" size="sm" onClick={handleAuthorize} disabled={!oauthUrls}>
-                Authorize
-              </Button>
-              {oauthStatus === 'authorized' && (
-                <span className="inline-flex items-center gap-1.5 text-xs font-medium text-green-500">
-                  <span className="h-2 w-2 rounded-full bg-green-500" /> Authorized
-                </span>
-              )}
-              {oauthStatus === 'not_authorized' && (
-                <span className="inline-flex items-center gap-1.5 text-xs font-medium text-red-500">
-                  <span className="h-2 w-2 rounded-full bg-red-500" /> Not Authorized
-                </span>
-              )}
-            </div>
-          </div>
-        </>
-      )}
     </FieldGroup>
   )
 }

@@ -7,10 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/config"
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/schwab"
 	"github.com/redis/go-redis/v9"
-	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 	"go.mongodb.org/mongo-driver/v2/mongo/readpref"
 	"go.mongodb.org/mongo-driver/v2/mongo/writeconcern"
@@ -247,15 +244,6 @@ func BuildRabbitMQURL(cfg map[string]string) string {
 	}
 
 	return fmt.Sprintf("amqp://%s%s:%s/%s", userInfo, host, port, strings.TrimPrefix(vhost, "/"))
-}
-
-// BuildSchwabTokenManager creates a per-connection schwab.TokenManager from a connection config map.
-func BuildSchwabTokenManager(cfg map[string]string, db *mongo.Database, connID string) *schwab.TokenManager {
-	return schwab.NewTokenManagerWithID(config.SchwabConfig{
-		ClientID:     cfg["client_id"],
-		ClientSecret: cfg["client_secret"],
-		CallbackURL:  cfg["callback_url"],
-	}, db, "conn_tokens:"+connID)
 }
 
 func parseReadPref(s string) *readpref.ReadPref {

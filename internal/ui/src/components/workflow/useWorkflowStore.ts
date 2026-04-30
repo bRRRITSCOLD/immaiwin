@@ -27,7 +27,7 @@ export interface Workflow {
   updated_at: string
 }
 
-export type ConnectionType = 'mongodb' | 'redis' | 'rabbitmq' | 'polymarket' | 'schwab' | 'anthropic' | 'openai' | 'ollama'
+export type ConnectionType = 'mongodb' | 'redis' | 'rabbitmq' | 'anthropic' | 'openai' | 'ollama'
 
 export interface Connection {
   id: string

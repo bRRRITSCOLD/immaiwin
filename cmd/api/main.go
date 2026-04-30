@@ -17,7 +17,6 @@ import (
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/config"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/email"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/mongodb"
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/polymarket"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/rediss"
 	_ "github.com/bRRRITSCOLD/immaiwin-go/internal/llm/anthropic" // register Anthropic provider in llm.Default
 	_ "github.com/bRRRITSCOLD/immaiwin-go/internal/llm/ollama"    // register Ollama provider
@@ -25,7 +24,6 @@ import (
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/sandbox"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/sandbox/docker"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/sandbox/k3s"
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/schwab"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/skills"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/workflow"
 )
@@ -44,17 +42,6 @@ func main() {
 		}
 	}()
 
-	pm, err := polymarket.New(polymarket.ClientConfig{})
-	if err != nil {
-		slog.Error("failed to create polymarket client", "err", err)
-		os.Exit(1)
-	}
-	defer func() {
-		if err := pm.Close(); err != nil {
-			slog.Error("failed to close polymarket client", "err", err)
-		}
-	}()
-
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -68,14 +55,6 @@ func main() {
 			slog.Error("failed to disconnect mongodb", "err", err)
 		}
 	}()
-
-	tr := mongodb.NewTradeRepository(mc.DB())
-
-	tokens := schwab.NewTokenManager(cfg.Schwab, mc.DB())
-	if err := tokens.Load(ctx); err != nil {
-		slog.Warn("schwab tokens not loaded (visit /auth/schwab to authorize)", "err", err)
-	}
-	tokens.RunRefresher(ctx)
 
 	wfRepo, err := mongodb.NewWorkflowRepository(ctx, mc.DB())
 	if err != nil {
@@ -274,7 +253,7 @@ func main() {
 	if cfg.Email.Provider != "smtp" && cfg.Email.Provider != "log" && cfg.Email.Provider != "" {
 		slog.Warn("EMAIL_PROVIDER unrecognised, falling back to log-only sender", "provider", cfg.Email.Provider)
 	}
-	srv := api.NewServer(cfg.API, cfg.Auth, rc, tr, tokens, wfRepo, runStore, wfExec, connRepo, connResolver, skillBackend, evalDeps, userRepo, tenantRepo, apiKeyRepo, workerHealthRepo, inviteRepo, auditRepo, emailSender, mc.DB(), sandboxRT)
+	srv := api.NewServer(cfg.API, cfg.Auth, rc, wfRepo, runStore, wfExec, connRepo, connResolver, skillBackend, evalDeps, userRepo, tenantRepo, apiKeyRepo, workerHealthRepo, inviteRepo, auditRepo, emailSender, mc.DB(), sandboxRT)
 
 	go func() {
 		slog.Info("api server listening", "addr", srv.Addr())

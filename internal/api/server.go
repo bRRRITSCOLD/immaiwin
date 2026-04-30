@@ -58,8 +58,6 @@ func NewServer(
 	cfg config.APIConfig,
 	authCfg config.AuthConfig,
 	rc *rediss.Client,
-	tr handler.TradesLister,
-	schwabAuth handler.SchwabAuthorizer,
 	wfStore handler.WorkflowStore,
 	wfRunStore workflow.WorkflowRunStore,
 	wfExec *workflow.WorkflowExecutor,
@@ -226,16 +224,6 @@ func NewServer(
 			handler.RevokeAPIKey(apiKeyDeps))
 	}
 
-	// Schwab OAuth (legacy — predates user auth)
-	r.GET("/auth/schwab", handler.SchwabAuthorize(schwabAuth))
-	r.GET("/auth/schwab/callback", handler.SchwabCallback(schwabAuth))
-	r.GET("/api/v1/auth/schwab/status", handler.SchwabStatus(schwabAuth))
-	r.DELETE("/api/v1/auth/schwab", handler.SchwabDisconnect(schwabAuth))
-
-	// Trades (Polymarket)
-	r.GET("/api/v1/trades/stream", handler.StreamTrades(tr, b))
-	r.GET("/api/v1/trades", handler.GetTrades(tr))
-
 	// Workflows — tenant-scoped CRUD + run-time. WS routes accept
 	// ?token=<short-lived JWT> via the middleware's query fallback.
 	r.GET("/api/v1/workflows", requireAuth, handler.ListWorkflows(wfStore))
@@ -244,7 +232,6 @@ func NewServer(
 	r.DELETE("/api/v1/workflows/:id", requireAuth, handler.DeleteWorkflow(wfStore))
 	r.POST("/api/v1/workflows/:id/run", requireAuth, handler.RunWorkflow(wfStore, wfExec))
 	r.GET("/api/v1/workflows/:id/run/stream", requireAuth, handler.RunWorkflowWS(wfStore, wfExec))
-	r.GET("/api/v1/workflows/:id/ws-preview", requireAuth, handler.PreviewWorkflowWS(wfStore, connStore, db))
 
 	// Workflow runs (history page). Register the static `daily_total`
 	// route BEFORE `:id` so gin's radix tree doesn't route the literal
@@ -336,13 +323,6 @@ func NewServer(
 	r.POST("/api/v1/evals/:id/run", requireAuth, handler.RunEval(evalDeps))
 	r.GET("/api/v1/eval_runs", requireAuth, handler.ListEvalRuns(evalDeps))
 	r.GET("/api/v1/eval_runs/:id", requireAuth, handler.GetEvalRun(evalDeps))
-
-	// Connection OAuth (generic). The provider callback stays public
-	// (it's invoked by the provider, not the user). The url/status
-	// helpers are tenant-scoped reads on the user's own connections.
-	r.GET("/auth/connections/:id/callback", handler.ConnectionOAuthCallback(connStore, db))
-	r.GET("/api/v1/connections/:id/oauth/url", requireAuth, handler.ConnectionOAuthURL(connStore, db, cfg.BaseURL))
-	r.GET("/api/v1/connections/:id/oauth/status", requireAuth, handler.ConnectionOAuthStatus(connStore, db))
 
 	// Sandbox (WebSocket) — executes user code; must be auth-gated.
 	// WS upgrades pass a short-lived ?token= via the middleware's

@@ -25,11 +25,9 @@ func main() {
 
 	wr := worker.NewWorkerRegistry()
 
-	wr.RegisterWorker(worker.MongoDBWriterWorker)
 	wr.RegisterWorker(worker.WorkflowCronWorker)
 	wr.RegisterWorker(worker.WorkflowRabbitMQWorker)
 	wr.RegisterWorker(worker.WorkflowRedisSubscribeWorker)
-	wr.RegisterWorker(worker.WorkflowWebSocketClientWorker)
 	wr.RegisterWorker(worker.ReaperWorker)
 
 	if *list {
