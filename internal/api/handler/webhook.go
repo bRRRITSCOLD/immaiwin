@@ -25,7 +25,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/workflow"
+	"github.com/bRRRITSCOLD/burrow/internal/workflow"
 	"github.com/gin-gonic/gin"
 	"github.com/oklog/ulid/v2"
 )

@@ -61,7 +61,7 @@ function ResetPage() {
       <Card className="w-full max-w-md">
         <CardHeader>
           <CardTitle>Set a new password</CardTitle>
-          <CardDescription>Choose a new password for your immaiwin account.</CardDescription>
+          <CardDescription>Choose a new password for your burrow account.</CardDescription>
         </CardHeader>
         <CardContent>
           {!token && (

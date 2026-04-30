@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/mongodb"
+	"github.com/bRRRITSCOLD/burrow/internal/mongodb"
 )
 
 type WorkerRegistry struct {

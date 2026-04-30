@@ -9,7 +9,7 @@
 # The base image provides the entrypoint protocol (stdin JSON → code exec → stdout JSON).
 # This image pre-compiles the scraper crate so sandbox scripts can use it.
 
-FROM immaiwin/sandbox-rust:1.86
+FROM burrow/sandbox-rust:1.86
 
 # Pre-compile scraper crate into a dummy project so it's cached
 RUN mkdir -p /tmp/scraper-seed/src && \

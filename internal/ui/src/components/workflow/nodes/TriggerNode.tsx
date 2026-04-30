@@ -223,7 +223,7 @@ export function TriggerNode({ id, data, selected }: NodeProps) {
                 <label className="text-xs text-muted-foreground">Patterns</label>
                 <Textarea
                   className="nodrag font-mono text-xs min-h-[60px]"
-                  placeholder={'One glob pattern per line\ne.g. immaiwin:news:*'}
+                  placeholder={'One glob pattern per line\ne.g. burrow:news:*'}
                   value={(data.patterns as string) ?? ''}
                   onChange={(e) => updateNodeData(id, { patterns: e.target.value })}
                 />

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/skills"
+	"github.com/bRRRITSCOLD/burrow/internal/skills"
 	"github.com/oklog/ulid/v2"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"

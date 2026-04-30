@@ -9,7 +9,7 @@
 # The base image provides the entrypoint protocol (stdin JSON → code exec → stdout JSON).
 # This image just adds extra npm packages on top.
 
-FROM immaiwin/sandbox-node:20
+FROM burrow/sandbox-node:20
 
 # Install cheerio globally so require('cheerio') works in sandbox scripts
 RUN npm install -g cheerio

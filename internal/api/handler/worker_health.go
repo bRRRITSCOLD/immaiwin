@@ -19,7 +19,7 @@ package handler
 import (
 	"net/http"
 
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/mongodb"
+	"github.com/bRRRITSCOLD/burrow/internal/mongodb"
 	"github.com/gin-gonic/gin"
 )
 

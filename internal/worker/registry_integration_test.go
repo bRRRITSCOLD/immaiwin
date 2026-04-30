@@ -18,7 +18,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/mongodb"
+	"github.com/bRRRITSCOLD/burrow/internal/mongodb"
 	"github.com/stretchr/testify/suite"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	driveroptions "go.mongodb.org/mongo-driver/v2/mongo/options"
@@ -62,7 +62,7 @@ func (s *HeartbeatIntegrationSuite) SetupSuite() {
 	c, err := mongo.Connect(driveroptions.Client().ApplyURI(uri))
 	s.Require().NoError(err)
 	s.client = c
-	s.dbName = fmt.Sprintf("immaiwin_test_heartbeat_%d", time.Now().UnixNano())
+	s.dbName = fmt.Sprintf("burrow_test_heartbeat_%d", time.Now().UnixNano())
 	s.db = c.Database(s.dbName)
 	repo, err := mongodb.NewWorkerHealthRepository(context.Background(), s.db)
 	s.Require().NoError(err)

@@ -29,8 +29,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/config"
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/mongodb"
+	"github.com/bRRRITSCOLD/burrow/internal/config"
+	"github.com/bRRRITSCOLD/burrow/internal/mongodb"
 )
 
 // dropCollections lists every per-user collection that should be

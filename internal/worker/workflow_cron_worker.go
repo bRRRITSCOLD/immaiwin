@@ -10,11 +10,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/config"
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/mongodb"
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/rediss"
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/skills"
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/workflow"
+	"github.com/bRRRITSCOLD/burrow/internal/config"
+	"github.com/bRRRITSCOLD/burrow/internal/mongodb"
+	"github.com/bRRRITSCOLD/burrow/internal/rediss"
+	"github.com/bRRRITSCOLD/burrow/internal/skills"
+	"github.com/bRRRITSCOLD/burrow/internal/workflow"
 	"github.com/robfig/cron/v3"
 	mongoDriver "go.mongodb.org/mongo-driver/v2/mongo"
 )

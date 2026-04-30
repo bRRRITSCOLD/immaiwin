@@ -10,8 +10,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/llm"
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/sandbox"
+	"github.com/bRRRITSCOLD/burrow/internal/llm"
+	"github.com/bRRRITSCOLD/burrow/internal/sandbox"
 	"github.com/santhosh-tekuri/jsonschema/v6"
 )
 

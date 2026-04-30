@@ -19,14 +19,14 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/auth"
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/mongodb"
+	"github.com/bRRRITSCOLD/burrow/internal/auth"
+	"github.com/bRRRITSCOLD/burrow/internal/mongodb"
 	"github.com/gin-gonic/gin"
 )
 
 // authCookieName must match handler.authCookieName. Duplicated here
 // to avoid the middleware importing the handler package (cycle).
-const authCookieName = "immaiwin_auth"
+const authCookieName = "burrow_auth"
 
 // extractToken pulls the auth token from (in order) the auth cookie,
 // Authorization: Bearer header, or the `?token=<...>` query string.

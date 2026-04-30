@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/sandbox"
+	"github.com/bRRRITSCOLD/burrow/internal/sandbox"
 	corev1 "k8s.io/api/core/v1"
 	netv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -32,8 +32,8 @@ type CIDRs struct {
 // sandbox namespace. Idempotent (upserts on each call).
 //
 // Posture:
-//   - Pods labeled "immaiwin.sandbox/network=deny" → all ingress + egress denied.
-//   - Pods labeled "immaiwin.sandbox/network=allow" → ingress denied; egress
+//   - Pods labeled "burrow.sandbox/network=deny" → all ingress + egress denied.
+//   - Pods labeled "burrow.sandbox/network=allow" → ingress denied; egress
 //     limited to DNS (kube-system) + 0.0.0.0/0 minus pod/service/link-local CIDRs.
 func ensureNetworkPolicies(ctx context.Context, cli kubernetes.Interface, ns string, cidrs CIDRs) error {
 	deny := buildDenyAllPolicy(ns)

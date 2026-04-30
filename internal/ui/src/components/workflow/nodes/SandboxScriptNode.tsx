@@ -63,11 +63,11 @@ output(["hello" => "world", "input" => $input]);`,
 }
 
 const defaultImageMap: Record<SandboxLanguage, string> = {
-  javascript: 'immaiwin/sandbox-node:20',
-  python: 'immaiwin/sandbox-python:3.12',
-  golang: 'immaiwin/sandbox-go:1.22',
-  rust: 'immaiwin/sandbox-rust:1.86',
-  php: 'immaiwin/sandbox-php:8.3',
+  javascript: 'burrow/sandbox-node:20',
+  python: 'burrow/sandbox-python:3.12',
+  golang: 'burrow/sandbox-go:1.22',
+  rust: 'burrow/sandbox-rust:1.86',
+  php: 'burrow/sandbox-php:8.3',
 }
 
 const packagesPlaceholder: Record<SandboxLanguage, string> = {

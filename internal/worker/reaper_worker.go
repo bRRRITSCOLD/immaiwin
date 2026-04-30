@@ -6,10 +6,10 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/config"
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/mongodb"
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/rediss"
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/workflow"
+	"github.com/bRRRITSCOLD/burrow/internal/config"
+	"github.com/bRRRITSCOLD/burrow/internal/mongodb"
+	"github.com/bRRRITSCOLD/burrow/internal/rediss"
+	"github.com/bRRRITSCOLD/burrow/internal/workflow"
 )
 
 // ReaperWorker sweeps workflow runs stuck in non-terminal states past

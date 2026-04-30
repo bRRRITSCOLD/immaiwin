@@ -1,7 +1,7 @@
 services:
   redis:
     image: redis:7-alpine
-    container_name: immaiwin-redis
+    container_name: burrow-redis
     ports:
       - "6379:6379"
     volumes:
@@ -16,7 +16,7 @@ services:
 
   rabbitmq:
     image: rabbitmq:3-management-alpine
-    container_name: immaiwin-rabbitmq
+    container_name: burrow-rabbitmq
     ports:
       - "5672:5672"
       - "15672:15672"
@@ -34,13 +34,13 @@ services:
 
   mongodb:
     image: mongo:7
-    container_name: immaiwin-mongodb
+    container_name: burrow-mongodb
     ports:
       - "27017:27017"
     volumes:
       - mongodb-data:/data/db
     environment:
-      MONGO_INITDB_DATABASE: immaiwin
+      MONGO_INITDB_DATABASE: burrow
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
@@ -55,7 +55,7 @@ services:
   # in .env to wire the API into it.
   mailpit:
     image: axllent/mailpit:latest
-    container_name: immaiwin-mailpit
+    container_name: burrow-mailpit
     ports:
       - "1025:1025"  # SMTP
       - "8025:8025"  # web UI + HTTP API

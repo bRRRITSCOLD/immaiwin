@@ -61,7 +61,7 @@ function RegisterPage() {
     <div className="min-h-screen w-full flex items-center justify-center bg-background px-4">
       <Card className="w-full max-w-md">
         <CardHeader>
-          <CardTitle>Create your immaiwin account</CardTitle>
+          <CardTitle>Create your burrow account</CardTitle>
           <CardDescription>A personal workspace will be created for you automatically.</CardDescription>
         </CardHeader>
         <CardContent>

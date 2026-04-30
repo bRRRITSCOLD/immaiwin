@@ -17,9 +17,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/auth"
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/config"
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/mongodb"
+	"github.com/bRRRITSCOLD/burrow/internal/auth"
+	"github.com/bRRRITSCOLD/burrow/internal/config"
+	"github.com/bRRRITSCOLD/burrow/internal/mongodb"
 	"github.com/gin-gonic/gin"
 	"github.com/oklog/ulid/v2"
 )
@@ -38,7 +38,7 @@ type AuthDeps struct {
 // authCookieName is the cookie key the API sets/reads for browser
 // sessions. Bearer-token API clients carry the same JWT in
 // Authorization headers — both flow through the same middleware.
-const authCookieName = "immaiwin_auth"
+const authCookieName = "burrow_auth"
 
 // setAuthCookie writes the JWT to the browser as an httpOnly cookie.
 // SameSite=Lax is right for first-party UI; flip to Strict if you

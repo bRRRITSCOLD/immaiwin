@@ -57,7 +57,7 @@ function LoginPage() {
     <div className="min-h-screen w-full flex items-center justify-center bg-background px-4">
       <Card className="w-full max-w-md">
         <CardHeader>
-          <CardTitle>Sign in to immaiwin</CardTitle>
+          <CardTitle>Sign in to burrow</CardTitle>
           <CardDescription>Use your email and password, or continue with a provider.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">

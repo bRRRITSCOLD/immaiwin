@@ -1,4 +1,4 @@
-MODULE := github.com/bRRRITSCOLD/immaiwin-go
+MODULE := github.com/bRRRITSCOLD/burrow
 CMDS    := api ui worker
 BINDIR  := bin
 
@@ -77,29 +77,29 @@ REGISTRY ?= localhost:5000
 sandbox-images:
 	@for pair in $(SANDBOX_BASE_PAIRS); do \
 	  dir=$${pair%%:*}; rest=$${pair#*:}; img=$${rest%%:*}; tag=$${rest#*:}; \
-	  echo "==> building immaiwin/sandbox-$$img:$$tag (from $$dir)"; \
-	  docker build -t $(REGISTRY)/immaiwin/sandbox-$$img:$$tag internal/sandbox/runtimes/$$dir || exit $$?; \
+	  echo "==> building burrow/sandbox-$$img:$$tag (from $$dir)"; \
+	  docker build -t $(REGISTRY)/burrow/sandbox-$$img:$$tag internal/sandbox/runtimes/$$dir || exit $$?; \
 	done
 
 sandbox-images-debug:
 	@for pair in $(SANDBOX_DEBUG_PAIRS); do \
 	  dir=$${pair%%:*}; rest=$${pair#*:}; img=$${rest%%:*}; tag=$${rest#*:}; \
-	  echo "==> building immaiwin/sandbox-$$img:$$tag (from $$dir Dockerfile.debug)"; \
+	  echo "==> building burrow/sandbox-$$img:$$tag (from $$dir Dockerfile.debug)"; \
 	  docker build -f internal/sandbox/runtimes/$$dir/Dockerfile.debug \
-	    -t $(REGISTRY)/immaiwin/sandbox-$$img:$$tag internal/sandbox/runtimes/$$dir || exit $$?; \
+	    -t $(REGISTRY)/burrow/sandbox-$$img:$$tag internal/sandbox/runtimes/$$dir || exit $$?; \
 	done
 
 sandbox-images-push: sandbox-images sandbox-images-debug
 	@for pair in $(SANDBOX_BASE_PAIRS) $(SANDBOX_DEBUG_PAIRS); do \
 	  rest=$${pair#*:}; img=$${rest%%:*}; tag=$${rest#*:}; \
-	  docker push $(REGISTRY)/immaiwin/sandbox-$$img:$$tag || exit $$?; \
+	  docker push $(REGISTRY)/burrow/sandbox-$$img:$$tag || exit $$?; \
 	done
 
 # --- Dev teardown ---
 # Soft stop for the end of a session: brings down docker compose, stops k3s,
 # stops the local registry container. State is preserved — restart with
 # `systemctl start k3s`, `docker start registry`, `make docker-compose-up`.
-SANDBOX_NS ?= immaiwin-sandbox
+SANDBOX_NS ?= burrow-sandbox
 KUBECONFIG_K3S ?= /etc/rancher/k3s/k3s.yaml
 
 dev-teardown: ## stop docker compose, k3s, and the local registry (state preserved)

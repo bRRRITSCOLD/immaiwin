@@ -29,7 +29,7 @@ import (
 	"net/http"
 	"sync"
 
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/workflow"
+	"github.com/bRRRITSCOLD/burrow/internal/workflow"
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 )

@@ -199,7 +199,7 @@
           "timeout_seconds": 20,
           "tls_insecure_skip_verify": false,
           "url": "https://wttr.in/{{input.city}}?format={{params.weather_format}}&u",
-          "user_agent": "immaiwin-agent/1.0"
+          "user_agent": "burrow-agent/1.0"
         },
         "width": 416,
         "measured": {

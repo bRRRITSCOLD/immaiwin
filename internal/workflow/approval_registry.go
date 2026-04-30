@@ -25,7 +25,7 @@ type ApprovalSubscriber interface {
 // `worker` process; the HTTP `POST /runs/:id/approval` endpoint runs
 // in the `api` process. Pure in-memory channels can't bridge that, so
 // this registry uses Redis pub/sub: Register opens a subscription on
-// `immaiwin:approval:<run_id>`; Submit publishes a JSON-encoded
+// `burrow:approval:<run_id>`; Submit publishes a JSON-encoded
 // ApprovalDecision to the same channel; the registered subscriber
 // goroutine parses + forwards to the agent's local channel.
 //
@@ -58,7 +58,7 @@ func NewApprovalRegistry(sub ApprovalSubscriber) *ApprovalRegistry {
 // approvalChannel is the per-run pub/sub channel name. Centralised so
 // publish + subscribe stay in lockstep.
 func approvalChannel(runID string) string {
-	return "immaiwin:approval:" + runID
+	return "burrow:approval:" + runID
 }
 
 // Register opens a subscription on the run's approval channel and

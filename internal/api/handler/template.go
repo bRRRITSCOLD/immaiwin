@@ -9,7 +9,7 @@ package handler
 import (
 	"net/http"
 
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/api/templates"
+	"github.com/bRRRITSCOLD/burrow/internal/api/templates"
 	"github.com/gin-gonic/gin"
 )
 

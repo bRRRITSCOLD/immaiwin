@@ -9,13 +9,13 @@ import (
 	"strings"
 	"syscall"
 
-	_ "github.com/bRRRITSCOLD/immaiwin-go/internal/llm/anthropic" // register Anthropic provider in llm.Default
-	_ "github.com/bRRRITSCOLD/immaiwin-go/internal/llm/ollama"    // register Ollama provider
-	_ "github.com/bRRRITSCOLD/immaiwin-go/internal/llm/openai"    // register OpenAI provider
+	_ "github.com/bRRRITSCOLD/burrow/internal/llm/anthropic" // register Anthropic provider in llm.Default
+	_ "github.com/bRRRITSCOLD/burrow/internal/llm/ollama"    // register Ollama provider
+	_ "github.com/bRRRITSCOLD/burrow/internal/llm/openai"    // register OpenAI provider
 
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/config"
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/mongodb"
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/worker"
+	"github.com/bRRRITSCOLD/burrow/internal/config"
+	"github.com/bRRRITSCOLD/burrow/internal/mongodb"
+	"github.com/bRRRITSCOLD/burrow/internal/worker"
 )
 
 func main() {

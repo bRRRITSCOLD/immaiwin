@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/llm"
+	"github.com/bRRRITSCOLD/burrow/internal/llm"
 )
 
 // Agent run defaults — overridable via node data fields.

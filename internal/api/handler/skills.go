@@ -15,7 +15,7 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/skills"
+	"github.com/bRRRITSCOLD/burrow/internal/skills"
 	"github.com/gin-gonic/gin"
 )
 

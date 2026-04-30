@@ -27,10 +27,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/auth"
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/email"
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/mongodb"
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/rediss"
+	"github.com/bRRRITSCOLD/burrow/internal/auth"
+	"github.com/bRRRITSCOLD/burrow/internal/email"
+	"github.com/bRRRITSCOLD/burrow/internal/mongodb"
+	"github.com/bRRRITSCOLD/burrow/internal/rediss"
 	"github.com/gin-gonic/gin"
 )
 
@@ -122,14 +122,14 @@ func dispatchPasswordResetEmail(deps PasswordResetDeps, lowerEmail string) {
 	// which corrupts the JWT (3 dot-separated segments).
 	slog.Info("password_reset: link issued", "user_id", u.ID, "reset_url", resetURL, "ttl", ttl)
 	body := fmt.Sprintf(
-		"A password reset was requested for your immaiwin account.\n\n"+
+		"A password reset was requested for your burrow account.\n\n"+
 			"Click the link below to set a new password (valid for %s):\n\n%s\n\n"+
 			"If you didn't request this, ignore this email — your password is unchanged.",
 		ttl, resetURL,
 	)
 	if err := deps.Email.Send(ctx, email.Message{
 		To:      u.Email,
-		Subject: "Reset your immaiwin password",
+		Subject: "Reset your burrow password",
 		Body:    body,
 	}); err != nil {
 		slog.Warn("password_reset: email Send failed", "user_id", u.ID, "err", err)

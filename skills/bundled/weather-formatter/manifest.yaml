@@ -4,8 +4,8 @@ name: "Weather Formatter"
 description: "Turn a raw weather text line (e.g. wttr.in's `%C %t %h %w` format) into a friendly one-paragraph message tailored to the conditions. Pure logic — no network, no secrets, safe on any agent."
 
 author:
-  name: "immaiwin"
-  url: "https://github.com/bRRRITSCOLD/immaiwin"
+  name: "burrow"
+  url: "https://github.com/bRRRITSCOLD/burrow"
 
 license: MIT
 

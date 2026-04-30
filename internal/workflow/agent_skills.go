@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/llm"
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/sandbox"
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/skills"
+	"github.com/bRRRITSCOLD/burrow/internal/llm"
+	"github.com/bRRRITSCOLD/burrow/internal/sandbox"
+	"github.com/bRRRITSCOLD/burrow/internal/skills"
 )
 
 // appendSkillTools loads the skills declared on `agent.Data["skills"]`,

@@ -29,9 +29,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/auth"
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/email"
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/mongodb"
+	"github.com/bRRRITSCOLD/burrow/internal/auth"
+	"github.com/bRRRITSCOLD/burrow/internal/email"
+	"github.com/bRRRITSCOLD/burrow/internal/mongodb"
 	"github.com/gin-gonic/gin"
 	"github.com/oklog/ulid/v2"
 )
@@ -163,14 +163,14 @@ func dispatchInviteEmail(deps InviteDeps, inv mongodb.TenantInvite, rawToken, in
 	)
 
 	body := fmt.Sprintf(
-		"%s invited you to join \"%s\" on immaiwin as a %s.\n\n"+
+		"%s invited you to join \"%s\" on burrow as a %s.\n\n"+
 			"Click the link below to accept (valid for 7 days):\n\n%s\n\n"+
 			"If you didn't expect this, ignore this email.",
 		inviterEmail, tenant.Name, inv.Role, url,
 	)
 	if err := deps.Email.Send(ctx, email.Message{
 		To:      inv.Email,
-		Subject: "You've been invited to immaiwin",
+		Subject: "You've been invited to burrow",
 		Body:    body,
 	}); err != nil {
 		slog.Warn("invite: email Send failed", "invite_id", inv.ID, "err", err)

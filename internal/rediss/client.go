@@ -5,15 +5,15 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/config"
+	"github.com/bRRRITSCOLD/burrow/internal/config"
 	"github.com/redis/go-redis/v9"
 )
 
 const (
-	TradesChannel  = "immaiwin:trades:detected"
-	NewsChannel    = "immaiwin:news:articles"
-	OptionsChannel = "immaiwin:options:unusual"
-	FuturesChannel = "immaiwin:futures:trades"
+	TradesChannel  = "burrow:trades:detected"
+	NewsChannel    = "burrow:news:articles"
+	OptionsChannel = "burrow:options:unusual"
+	FuturesChannel = "burrow:futures:trades"
 )
 
 type Client struct {

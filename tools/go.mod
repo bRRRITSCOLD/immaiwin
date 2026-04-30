@@ -1,4 +1,4 @@
-module github.com/bRRRITSCOLD/immaiwin-go/tools
+module github.com/bRRRITSCOLD/burrow/tools
 
 go 1.25.0
 

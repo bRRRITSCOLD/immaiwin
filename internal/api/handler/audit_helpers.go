@@ -8,8 +8,8 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/auth"
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/mongodb"
+	"github.com/bRRRITSCOLD/burrow/internal/auth"
+	"github.com/bRRRITSCOLD/burrow/internal/mongodb"
 	"github.com/gin-gonic/gin"
 	"github.com/oklog/ulid/v2"
 )

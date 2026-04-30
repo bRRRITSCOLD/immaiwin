@@ -33,7 +33,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/llm"
+	"github.com/bRRRITSCOLD/burrow/internal/llm"
 )
 
 const (

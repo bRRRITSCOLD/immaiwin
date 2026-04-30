@@ -13,7 +13,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/sandbox"
+	"github.com/bRRRITSCOLD/burrow/internal/sandbox"
 	"github.com/docker/docker/api/types/build"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/client"
@@ -104,7 +104,7 @@ func buildTag(registry, base, baseID string, packages []string) string {
 	}
 	hash := fmt.Sprintf("%x", h.Sum(nil))[:16]
 
-	tag := fmt.Sprintf("immaiwin/sandbox-pkg:%s", hash)
+	tag := fmt.Sprintf("burrow/sandbox-pkg:%s", hash)
 	if registry != "" {
 		tag = registry + "/" + tag
 	}

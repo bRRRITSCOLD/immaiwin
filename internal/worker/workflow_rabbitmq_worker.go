@@ -10,10 +10,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/config"
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/mongodb"
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/rediss"
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/workflow"
+	"github.com/bRRRITSCOLD/burrow/internal/config"
+	"github.com/bRRRITSCOLD/burrow/internal/mongodb"
+	"github.com/bRRRITSCOLD/burrow/internal/rediss"
+	"github.com/bRRRITSCOLD/burrow/internal/workflow"
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
@@ -276,7 +276,7 @@ func consumeOnce(
 		return fmt.Errorf("qos: %w", err)
 	}
 
-	consumerTag := fmt.Sprintf("immaiwin-%s", wfID)
+	consumerTag := fmt.Sprintf("burrow-%s", wfID)
 	msgs, err := ch.Consume(
 		info.queue,
 		consumerTag,

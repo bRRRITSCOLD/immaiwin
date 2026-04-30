@@ -9,7 +9,7 @@
 # The base image provides the entrypoint protocol (stdin JSON → code exec → stdout JSON).
 # This image pre-downloads goquery so sandbox scripts can import it.
 
-FROM immaiwin/sandbox-go:1.22
+FROM burrow/sandbox-go:1.22
 
 # Pre-download goquery + cascadia into the module cache
 RUN mkdir -p /tmp/goquery-seed && \

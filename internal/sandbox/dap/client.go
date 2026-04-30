@@ -107,9 +107,9 @@ func (c *Client) SendAndWait(command string, args any, timeout time.Duration) (m
 func (c *Client) Initialize() error {
 	slog.Info("dap: initialize")
 	_, err := c.SendAndWait("initialize", InitializeRequestArgs{
-		ClientID:        "immaiwin",
-		ClientName:      "immaiwin-debugger",
-		AdapterID:       "immaiwin",
+		ClientID:        "burrow",
+		ClientName:      "burrow-debugger",
+		AdapterID:       "burrow",
 		LinesStartAt1:   true,
 		ColumnsStartAt1: true,
 		PathFormat:      "path",
