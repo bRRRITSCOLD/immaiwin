@@ -15,6 +15,7 @@ import (
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/api"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/api/handler"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/config"
+	"github.com/bRRRITSCOLD/immaiwin-go/internal/email"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/mongodb"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/polymarket"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/rediss"
@@ -279,7 +280,11 @@ func main() {
 		slog.Warn("AUTH_JWT_SECRET not configured — auth endpoints will refuse requests; set a 32+ byte hex value in .env to enable")
 	}
 
-	srv := api.NewServer(cfg.API, cfg.Auth, rc, pm, wl, tr, nr, tokens, owl, fwl, sc, wfRepo, runStore, wfExec, connRepo, connResolver, skillBackend, evalDeps, userRepo, tenantRepo, apiKeyRepo, workerHealthRepo, inviteRepo, mc.DB(), sandboxRT)
+	emailSender := email.NewFromConfig(cfg.Email)
+	if cfg.Email.Provider != "smtp" && cfg.Email.Provider != "log" && cfg.Email.Provider != "" {
+		slog.Warn("EMAIL_PROVIDER unrecognised, falling back to log-only sender", "provider", cfg.Email.Provider)
+	}
+	srv := api.NewServer(cfg.API, cfg.Auth, rc, pm, wl, tr, nr, tokens, owl, fwl, sc, wfRepo, runStore, wfExec, connRepo, connResolver, skillBackend, evalDeps, userRepo, tenantRepo, apiKeyRepo, workerHealthRepo, inviteRepo, emailSender, mc.DB(), sandboxRT)
 
 	go func() {
 		slog.Info("api server listening", "addr", srv.Addr())
