@@ -16,10 +16,9 @@ The long game: add AI agents that can write and execute code as part of their re
 | Code execution | JS only | No | No | **5 languages** (JS, Python, Go, Rust, PHP) |
 | Sandboxed isolation | No | N/A | N/A | **Docker + gVisor** (syscall-level) |
 | Interactive debugging | No | No | No | **DAP/CDP debugger** (breakpoints, step, inspect) |
-| WebSocket triggers | Plugin | No | No | **Native** (OAuth + WS client worker) |
-| Custom parsers/scrapers | No | No | No | **JS scripting** (goja runtime, jQuery-like selectors) |
+| AI agent nodes | No | No | No | **Native** (Anthropic / OpenAI / Ollama, edge-bound tool nodes, sandboxed `code_execute`) |
+| Multi-tenancy + auth | No | N/A | N/A | **Built-in** (tenants, invites, RBAC, JWT, OAuth login, audit log) |
 | Self-hosted | Yes | No | No | **Yes** |
-| AI agent integration | No | No | No | **Planned** (safe — runs in sandbox) |
 
 ---
 
@@ -167,34 +166,33 @@ This is what makes AI agent integration safe — an agent can write and execute 
 
 ### Workflow Triggers
 
-Four ways to kick off workflows:
+Five ways to kick off workflows:
 
+- **Manual** — run on-demand from the UI
+- **Webhook (HTTP)** — POST to `/api/v1/webhooks/<slug>` with optional HMAC signature verification
 - **Cron** — schedule workflows on any interval (`workflow-cron` worker)
 - **RabbitMQ** — trigger from message queue events (`workflow-rabbitmq` worker)
 - **Redis Subscribe** — trigger from Redis pub/sub channels and patterns (`workflow-redis-subscribe` worker)
-- **WebSocket** — connect to external WebSocket sources with OAuth, trigger on incoming messages (`workflow-ws-client` worker)
 
-WebSocket triggers support OAuth connections — authenticate with any service, then stream their WebSocket data into your workflow. Preview incoming data with SSE before wiring up the full flow.
+### Multi-Tenancy + Auth
 
-### Custom Scraper Scripts
+Every per-user resource (workflows, runs, connections, evals, chat memory, audit) carries a `tenant_id`. Stores filter by ctx tenant.
 
-Define per-source parsing logic with JavaScript. Built-in bindings:
+- **Email + password** registration with bcrypt hashes
+- **OAuth login** (Google + GitHub)
+- **JWT cookies** (httpOnly, sliding TTL) + **API keys** for programmatic access
+- **Tenants** — every user gets a personal tenant on signup; can be invited to additional tenants
+- **Roles** — `owner`, `admin`, `member`. Owner-only ops gated; admin-or-owner ops gated; pure reads open to all members
+- **Invites** — email-bound, single-use, time-bound tokens; SMTP delivery via Mailpit (dev) or any standard relay (prod)
+- **Ownership transfer** — owner can hand off to any admin; demoted to admin atomically
+- **Audit log** — append-only ledger of privileged actions (login, logout, password change/reset, OAuth link, API key create/revoke, invite/membership ops, ownership transfer)
 
-- `$(html)` — jQuery-like CSS selectors for HTML parsing
-- `parseRSS(xml)` — RSS/Atom feed parser
-- `parseDate(str)` — flexible date parsing
-- `now()` — current timestamp
+### Admin Dashboard
 
-Validate scripts before deploying. Fallback to built-in parsers (Bloomberg RSS, AlJazeera, Investing.com) when no custom script is set.
+`/admin` (owner/admin only) shows:
 
-### Real-Time Streaming
-
-All data flows through Redis Pub/Sub and is exposed via Server-Sent Events:
-
-- `/api/v1/trades/stream` — live trade events
-- `/api/v1/news/stream` — new articles as they're scraped
-- `/api/v1/options/stream` — options activity
-- `/api/v1/futures/stream` — futures activity
+- **Run metrics** — total runs + cost, by-status breakdown, top workflows by run count over selectable window (24h / 7d / 30d)
+- **Worker health** — live heartbeats, tick counts, last error per registered worker (heartbeat ticker writes every 30s; reaper sweeps stuck runs)
 
 ---
 
@@ -211,7 +209,6 @@ All data flows through Redis Pub/Sub and is exposed via Server-Sent Events:
 | **Sandbox Runtimes** | Node.js 20, Python 3.12, Go 1.22, Rust 1.86, PHP 8.3 |
 | **Debug Protocols** | DAP (Python/debugpy), CDP (JS/Node --inspect) |
 | **LLM Providers** | Anthropic, OpenAI, Ollama (configurable per agent node via Connection) |
-| **JS Engine** | goja (scraper script runtime, jQuery-like selectors) |
 
 ---
 
@@ -285,9 +282,7 @@ make list-workers                              # See all available workers
 make worker NAME=workflow-cron                 # Cron-triggered workflows
 make worker NAME=workflow-rabbitmq             # RabbitMQ-triggered workflows
 make worker NAME=workflow-redis-subscribe      # Redis pub/sub-triggered workflows
-make worker NAME=workflow-ws-client            # WebSocket-triggered workflows
-make worker NAME=news-scraper                  # News scraper
-make worker NAME=mongodb-writer                # Background MongoDB writes
+make worker NAME=reaper                        # Sweeps stuck workflow runs (running/paused/pending_approval)
 ```
 
 ### 6. Start / tear down a session
@@ -341,10 +336,12 @@ What each touches:
 │   └── worker/                 # Worker entrypoint (registry-based)
 ├── internal/
 │   ├── api/                    # HTTP server, routes, handlers
-│   │   └── handler/            # Request handlers (workflows, sandbox, debug, news, etc.)
+│   │   └── handler/            # Request handlers (workflows, sandbox, debug, auth, tenants, etc.)
+│   ├── auth/                   # JWT issue/parse, claims, request-ctx user/tenant
 │   ├── config/                 # Environment configuration
-│   ├── mongodb/                # MongoDB repositories
-│   ├── news/                   # Scraper configs, parsers, executor
+│   ├── email/                  # Transactional email sender (log + SMTP)
+│   ├── llm/                    # LLM provider registry (Anthropic / OpenAI / Ollama)
+│   ├── mongodb/                # MongoDB repositories (users, tenants, workflows, runs, audit, …)
 │   ├── sandbox/                # Container sandbox engine
 │   │   ├── dap/                # DAP client (Python) + CDP client (JS)
 │   │   └── runtimes/           # Per-language Dockerfiles + entrypoints
@@ -360,8 +357,9 @@ What each touches:
 │   │       │   └── workflow/   # Canvas, nodes, debug dialog
 │   │       ├── hooks/          # useDebugSession, useWorkflowStore
 │   │       └── routes/         # Page routes
-│   ├── workflow/               # Workflow engine (executor, types)
-│   └── worker/                 # Background worker implementations
+│   ├── skills/                 # Skill registry + local-fs source (versioned tool catalogs for AI agents)
+│   ├── worker/                 # Background worker implementations
+│   └── workflow/               # Workflow engine (executor, types)
 ├── scripts/                    # Dev scripts
 └── tools/                      # Dev dependencies
 ```
@@ -377,7 +375,7 @@ What each touches:
 | `PUT` | `/api/v1/workflows/:id` | Create/update workflow |
 | `DELETE` | `/api/v1/workflows/:id` | Delete workflow |
 | `POST` | `/api/v1/workflows/:id/run` | Execute workflow |
-| `GET` | `/api/v1/workflows/:id/ws-preview` | SSE preview of WebSocket trigger data |
+| `GET` | `/api/v1/workflows/:id/run/stream` | WebSocket stream of run events |
 
 ### Sandbox
 | Method | Path | Description |
@@ -385,9 +383,9 @@ What each touches:
 | `GET` | `/api/v1/sandbox/debug` | WebSocket upgrade for interactive debug session |
 | `GET` | `/api/v1/sandbox/run` | WebSocket upgrade for one-shot sandbox runs (streams stdout/stderr/output) |
 
-### Connections (data sources, OAuth, LLM providers)
+### Connections (data sources, LLM providers)
 
-Supported types: `mongodb`, `redis`, `rabbitmq`, `polymarket`, `schwab`, `anthropic`, `openai`, `ollama`.
+Supported types: `mongodb`, `redis`, `rabbitmq`, `anthropic`, `openai`, `ollama`.
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -395,23 +393,45 @@ Supported types: `mongodb`, `redis`, `rabbitmq`, `polymarket`, `schwab`, `anthro
 | `PUT` | `/api/v1/connections/:id` | Create/update connection |
 | `DELETE` | `/api/v1/connections/:id` | Delete connection |
 | `POST` | `/api/v1/connections/test` | Test connection (driver dial / API ping) |
-| `GET` | `/api/v1/connections/:id/oauth/url` | Begin OAuth flow (Schwab) |
-| `GET` | `/api/v1/connections/:id/oauth/status` | OAuth connection status |
-| `GET` | `/auth/connections/:id/callback` | OAuth redirect target |
 
-### News Scrapers
+### Auth + Multi-Tenancy
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/api/v1/news/scrapers` | List scraper configs |
-| `PATCH` | `/api/v1/news/scrapers/:source` | Update scraper config/script |
-| `DELETE` | `/api/v1/news/scrapers/:source/script` | Remove custom parsing script |
-| `POST` | `/api/v1/news/scrapers/validate` | Validate JS parsing script |
+| `POST` | `/api/v1/auth/register` | Register new user + personal tenant |
+| `POST` | `/api/v1/auth/login` | Email + password login |
+| `POST` | `/api/v1/auth/logout` | Clear session cookie |
+| `GET` | `/api/v1/auth/me` | Current user + memberships |
+| `POST` | `/api/v1/auth/switch_tenant` | Re-issue JWT for a different active tenant |
+| `GET` | `/auth/oauth/:provider/start` | OAuth start (google, github) |
+| `GET` | `/auth/oauth/:provider/callback` | OAuth callback |
+| `POST` | `/api/v1/auth/password/change` | Change password (authed) |
+| `POST` | `/api/v1/auth/password/reset/request` | Request reset email |
+| `POST` | `/api/v1/auth/password/reset/confirm` | Confirm reset w/ token |
+| `POST` | `/api/v1/api_keys` | Create API key |
+| `DELETE` | `/api/v1/api_keys/:id` | Revoke API key |
+| `POST` | `/api/v1/tenants/invites` | Create invite (owner/admin) |
+| `POST` | `/api/v1/invites/:token/accept` | Accept invite |
+| `DELETE` | `/api/v1/tenants/members/:user_id` | Remove member |
+| `POST` | `/api/v1/tenants/transfer` | Transfer ownership (owner only) |
+| `GET` | `/api/v1/audit_log` | Privileged action ledger (owner/admin) |
 
-### Streaming
+### Admin
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/api/v1/trades/stream` | SSE — live trade events |
-| `GET` | `/api/v1/news/stream` | SSE — new articles |
+| `GET` | `/api/v1/runs/metrics` | Run + cost rollups (owner/admin) |
+| `GET` | `/api/v1/workers/health` | Live worker heartbeats |
+
+### Workflow Runs
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/v1/workflow_runs` | List runs (tenant-scoped) |
+| `GET` | `/api/v1/workflow_runs/:id` | Run detail w/ trace |
+| `GET` | `/api/v1/workflow_runs/daily_total` | Daily cost rollup |
+
+### Webhooks
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/v1/webhooks/:slug` | HMAC-verified webhook trigger |
 
 ---
 
@@ -422,10 +442,15 @@ Supported types: `mongodb`, `redis`, `rabbitmq`, `polymarket`, `schwab`, `anthro
 - [x] 8 node types (trigger, http_request, sandbox_script, ai_agent, for_each, mongo_request, redis_request, notify)
 - [x] Multi-language sandbox execution (JS, Python, Go, Rust, PHP)
 - [x] Interactive debugging (DAP for Python, CDP for JavaScript)
-- [x] WebSocket workflow triggers with OAuth
-- [x] Custom scraper scripts (goja + jQuery-like selectors)
-- [x] Real-time streaming (SSE)
 - [x] HTTP Request node with full Go `http.Client` parity (method, headers, query, body, auth, redirects, TLS, JSON parse)
+- [x] Webhook trigger (HMAC SHA-256 signature verification)
+- [x] Email + password auth, OAuth (Google + GitHub), API keys, password reset
+- [x] Multi-tenancy w/ owner/admin/member roles, invites, ownership transfer
+- [x] Audit log (append-only ledger of privileged actions)
+- [x] Run metrics dashboard (`/admin`) + worker health heartbeats
+- [x] Reaper worker (sweeps stuck running/paused/pending_approval runs)
+- [x] Transactional email (SMTP via Mailpit dev sink or any standard relay)
+- [x] CI pipeline (vet/build/test -race/lint/typecheck) on push + PR; branch protection on `main`
 - [x] gVisor integration (syscall-level isolation via k3s `RuntimeClass=runsc`)
 - [x] Kubernetes-API sandbox backend (single-node k3s today; portable to upstream Kubernetes — see `examples/k3s/MIGRATION.md`)
 - [x] AI agent node (reason-act-observe loop, Anthropic / OpenAI / Ollama, edge-bound tool nodes, built-in `code_execute`)
