@@ -72,3 +72,20 @@ make test
 # or
 go test -v -count=1 ./...
 ```
+
+### Smoke shells (`.private/ai-automation/*.sh`)
+* If a smoke spawns a background process via `go run ./cmd/<x> -name <name> &`, **`kill $PID` is not enough**. `go run` compiles to `/tmp/go-build*/.../exe/<x>` and execs the child; killing the wrapper PID leaves the child orphaned (re-parented to init, still writing heartbeats / holding ports). Always include a `pkill -TERM -f "<x> -name <name>"` in the trap cleanup so the compiled child also dies.
+* Example trap pattern (see `reaper-01-smoke.sh`):
+  ```bash
+  PID=""
+  cleanup() {
+    if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
+      kill "$PID" 2>/dev/null || true
+      wait "$PID" 2>/dev/null || true
+    fi
+    pkill -TERM -f "<x> -name <name>" 2>/dev/null || true
+    # … other resource cleanup …
+  }
+  trap cleanup EXIT
+  ```
+* Without this, `/admin` accumulates stale "running" worker_health rows from prior smoke runs and downstream sweeps race on them.
