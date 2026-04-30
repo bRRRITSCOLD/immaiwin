@@ -27,10 +27,25 @@ type WorkerRegistry struct {
 	// (registry stays usable in tooling that doesn't have a Mongo
 	// connection).
 	health *mongodb.WorkerHealthRepository
+	// heartbeatInterval governs how often the registry calls Beat on
+	// the health repo. Production = DefaultHeartbeatInterval (30s);
+	// tests override via WithHeartbeatInterval to keep runtime under
+	// a few seconds.
+	heartbeatInterval time.Duration
 }
 
+// DefaultHeartbeatInterval is the production cadence for worker
+// heartbeats. Decoupled from any worker's internal tick — a worker
+// that ticks every 5s shouldn't write to mongo every 5s; a worker
+// that blocks for 10min on a long task still wants its "alive"
+// signal updating.
+const DefaultHeartbeatInterval = 30 * time.Second
+
 func NewWorkerRegistry() *WorkerRegistry {
-	return &WorkerRegistry{registry: map[string]Worker{}}
+	return &WorkerRegistry{
+		registry:          map[string]Worker{},
+		heartbeatInterval: DefaultHeartbeatInterval,
+	}
 }
 
 // WithHealth enables heartbeat persistence. Pass nil to disable
@@ -40,12 +55,16 @@ func (wr *WorkerRegistry) WithHealth(h *mongodb.WorkerHealthRepository) *WorkerR
 	return wr
 }
 
-// healthBeatInterval is how often the registry pings worker_health
-// while a worker's Run is live. Decoupled from the worker's internal
-// tick — a worker that ticks every 5s shouldn't write to mongo every
-// 5s; a worker that blocks for 10min on a long task still wants its
-// "alive" signal updating.
-const healthBeatInterval = 30 * time.Second
+// WithHeartbeatInterval overrides the heartbeat cadence. Tests pass a
+// short interval (e.g. 100ms) so they can assert tick_count advances
+// within seconds rather than minutes. Values <=0 leave the default
+// untouched.
+func (wr *WorkerRegistry) WithHeartbeatInterval(d time.Duration) *WorkerRegistry {
+	if d > 0 {
+		wr.heartbeatInterval = d
+	}
+	return wr
+}
 
 // Register adds a worker to the registry. Panics on duplicate name.
 func (wr *WorkerRegistry) RegisterWorker(w Worker) {
@@ -98,7 +117,7 @@ func (wr *WorkerRegistry) StartWorker(ctx context.Context, name string, concurre
 		hbCtx, hbCancel := context.WithCancel(ctx)
 		defer hbCancel()
 		go func() {
-			tick := time.NewTicker(healthBeatInterval)
+			tick := time.NewTicker(wr.heartbeatInterval)
 			defer tick.Stop()
 			for {
 				select {
