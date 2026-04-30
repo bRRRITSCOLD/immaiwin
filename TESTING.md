@@ -39,6 +39,8 @@ Real Mongo + Redis (per `.claude/rules/TESTING.md` — no mocks). Each suite use
 | `internal/worker` | `registry_integration_test.go` | Heartbeat ticker | `TestHeartbeat_TickerOver1s_AdvancesAndCleanlyStops` (tick_count >= 5 in 1s @ 100ms cadence; `MarkStopped` flips status on clean exit), `TestHeartbeat_NilHealthRepo_RegistryStillUsable` (registry usable when health repo nil) |
 | `internal/api/handler` | `workflow_integration_test.go` | Workflow CRUD + tenant isolation | `TestWorkflowsList_NoCookie_Returns401`, `TestWorkflowCRUD_Lifecycle_RoundTripsAllOps` (PUT → list → update → list → DELETE → empty), `TestWorkflows_ForeignTenant_AreInvisibleAnd403OnTakeover` (alice can't read bob's wf; takeover-PUT → 403) |
 | `internal/api/handler` | `workflow_run_integration_test.go` | Workflow execution | `TestRun_TriggerOnly_PersistsSuccessRow`, `TestRun_NonexistentWorkflow_404`, `TestRun_Unauth_401`, `TestRunsList_FilteredByWorkflow` (workflow_id query param narrows list) |
+| `internal/api/handler` | `auth_integration_test.go` | Auth + multi-tenancy flow | `TestRegister_Login_RoundTrip_Returns200WithCookieAndUser`, `TestLogin_WrongPassword_Returns401`, `TestMe_NoCookie_Returns401`, `TestSwitchTenant_NonMember_Returns403`, `TestLogout_ClearsCookie_SubsequentMeReturns401`, `TestRegister_DuplicateEmail_Returns409` |
+| `internal/api/handler` | `webhook_integration_test.go` | Webhook trigger (HMAC SHA-256) | `TestWebhook_NoSecret_JSONBody_Returns202Accepted`, `TestWebhook_ValidSignature_WaitTrue_Returns200`, `TestWebhook_InvalidSignature_Returns401`, `TestWebhook_MissingSignature_WhenSecretConfigured_Returns401`, `TestWebhook_UnknownSlug_Returns404` |
 
 ### Setup conventions
 
@@ -64,12 +66,15 @@ Slot reserved here for the future catalog:
 ## Coverage gaps (open backlog)
 
 - **Workflow run with executable nodes** — current run suite covers trigger-only. http_request / mongo_request / redis_request / sandbox_script / ai_agent paths uncovered.
-- **Webhook trigger HMAC** — `POST /api/v1/webhooks/:slug` signature-verification path has no test.
 - **Skill registry CRUD** — install/refresh/uninstall + drift detection at the HTTP boundary.
 - **Sandbox WS run** — `/api/v1/sandbox/run` WebSocket path has no automated test.
 - **Agent loop end-to-end** — burns LLM tokens; defer to record-and-replay or VCR-style harness.
-- **OAuth login** — Google + GitHub are smoke-tested manually; provider-callback path has no integration test.
-- **Connection OAuth refresh** — was Schwab-only, removed in PR #38; if a new OAuth provider lands, add a test alongside.
+- **OAuth login** — Google + GitHub provider-callback paths have no integration test (manual only).
+- **API keys** — create + revoke + use as Bearer auth has no integration test.
+- **Tenant invites + member management** — invite create / accept / revoke / RemoveMember have no integration test.
+- **Tenant ownership transfer** — endpoint shipped in PR #33; no integration test.
+- **Audit log** — append-only ledger has no integration test (smoke only).
+- **Password reset** — request + confirm flow has no integration test.
 
 ---
 
