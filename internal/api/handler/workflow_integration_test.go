@@ -241,18 +241,19 @@ func (s *WorkflowCRUDIntegrationSuite) deleteWorkflow(client *http.Client, id st
 
 // ---- tests ----
 
-// TestUnauthRejected verifies that the workflows endpoint requires
-// auth. RequireAuth middleware should return 401 with no cookie.
-func (s *WorkflowCRUDIntegrationSuite) TestUnauthRejected() {
+// TestWorkflowsList_NoCookie_Returns401 verifies the workflows endpoint
+// requires auth — RequireAuth middleware returns 401 with no cookie.
+func (s *WorkflowCRUDIntegrationSuite) TestWorkflowsList_NoCookie_Returns401() {
 	resp, err := http.Get(s.httpSrv.URL + "/api/v1/workflows")
 	s.Require().NoError(err)
 	defer resp.Body.Close() //nolint:errcheck
 	s.Equal(http.StatusUnauthorized, resp.StatusCode)
 }
 
-// TestCRUDLifecycle exercises the create/read/update/list/delete loop
-// for a workflow under a single authed user/tenant.
-func (s *WorkflowCRUDIntegrationSuite) TestCRUDLifecycle() {
+// TestWorkflowCRUD_Lifecycle_RoundTripsAllOps exercises the create /
+// read / update / list / delete loop for a workflow under a single
+// authed user/tenant.
+func (s *WorkflowCRUDIntegrationSuite) TestWorkflowCRUD_Lifecycle_RoundTripsAllOps() {
 	suffix := time.Now().UnixNano()
 	client, tenantID := s.authedClient(fmt.Sprintf("alice-crud-%d@example.com", suffix))
 	s.NotEmpty(tenantID)
@@ -302,10 +303,10 @@ func (s *WorkflowCRUDIntegrationSuite) TestCRUDLifecycle() {
 	s.Empty(list)
 }
 
-// TestCrossTenantIsolation registers two users, creates a workflow
-// under alice's tenant, and asserts bob can neither list it nor delete
-// it (foreign-tenant lookups must 404, not leak).
-func (s *WorkflowCRUDIntegrationSuite) TestCrossTenantIsolation() {
+// TestWorkflows_ForeignTenant_AreInvisibleAnd403OnTakeover registers
+// two users, creates a workflow under alice's tenant, and asserts bob
+// can neither list it nor take it over (cross-tenant PUT → 403).
+func (s *WorkflowCRUDIntegrationSuite) TestWorkflows_ForeignTenant_AreInvisibleAnd403OnTakeover() {
 	suffix := time.Now().UnixNano()
 	alice, aliceTenant := s.authedClient(fmt.Sprintf("alice-iso-%d@example.com", suffix))
 	bob, bobTenant := s.authedClient(fmt.Sprintf("bob-iso-%d@example.com", suffix))
