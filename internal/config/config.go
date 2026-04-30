@@ -14,7 +14,36 @@ type Config struct {
 	Sandbox       SandboxConfig `envPrefix:"SANDBOX_"`
 	Skills        SkillsConfig  `envPrefix:"SKILLS_"`
 	Auth          AuthConfig    `envPrefix:"AUTH_"`
+	Email         EmailConfig   `envPrefix:"EMAIL_"`
 	EncryptionKey string        `env:"ENCRYPTION_KEY" envDefault:""`
+}
+
+// EmailConfig drives the transactional email sender (password reset
+// + tenant invites today; future templates add here too). Provider
+// "log" prints the message via slog so dev can copy reset/invite URLs
+// from stdout. Provider "smtp" connects to the given host using
+// standard net/smtp PLAIN auth + optional STARTTLS.
+//
+// SMTP host examples (real services that speak vanilla SMTP):
+//   - SendGrid:    smtp.sendgrid.net:587   user="apikey", pass=<api_key>
+//   - Mailgun:     smtp.mailgun.org:587
+//   - AWS SES:     email-smtp.<region>.amazonaws.com:587
+//   - Gmail (dev): smtp.gmail.com:587 (requires app password)
+type EmailConfig struct {
+	// Provider switches the sender impl: "log" | "smtp". Empty defaults
+	// to "log" so dev boxes work out-of-the-box.
+	Provider string `env:"PROVIDER" envDefault:"log"`
+	// From is the envelope sender + From header. Required for SMTP.
+	From string `env:"FROM" envDefault:""`
+	// SMTP transport.
+	SMTPHost     string `env:"SMTP_HOST"     envDefault:""`
+	SMTPPort     int    `env:"SMTP_PORT"     envDefault:"587"`
+	SMTPUser     string `env:"SMTP_USER"     envDefault:""`
+	SMTPPassword string `env:"SMTP_PASSWORD" envDefault:""`
+	// SMTPStartTLS upgrades a plaintext connection to TLS via the
+	// STARTTLS extension. Standard for port 587. Set false only if
+	// connecting to localhost mailcatcher / mailpit etc.
+	SMTPStartTLS bool `env:"SMTP_STARTTLS" envDefault:"true"`
 }
 
 // AuthConfig drives JWT issuance + verification for the user-auth

@@ -48,6 +48,28 @@ services:
       timeout: 5s
       retries: 3
 
+  # Mailpit — SMTP sink + web UI for transactional email testing.
+  # Captures everything the API sends via EMAIL_PROVIDER=smtp without
+  # actually delivering anything. Web UI at http://localhost:8025.
+  # Use EMAIL_SMTP_HOST=localhost EMAIL_SMTP_PORT=1025 EMAIL_SMTP_STARTTLS=false
+  # in .env to wire the API into it.
+  mailpit:
+    image: axllent/mailpit:latest
+    container_name: immaiwin-mailpit
+    ports:
+      - "1025:1025"  # SMTP
+      - "8025:8025"  # web UI + HTTP API
+    environment:
+      MP_MAX_MESSAGES: "5000"
+      MP_SMTP_AUTH_ACCEPT_ANY: "1"
+      MP_SMTP_AUTH_ALLOW_INSECURE: "1"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8025/livez"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
 volumes:
   redis-data:
     driver: local

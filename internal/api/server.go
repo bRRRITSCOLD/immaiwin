@@ -85,6 +85,7 @@ func NewServer(
 	apiKeys *mongodb.APIKeyRepository,
 	workerHealth *mongodb.WorkerHealthRepository,
 	invites *mongodb.InviteRepository,
+	emailSender email.Sender,
 	db *mongo.Database,
 	sandboxRT sandbox.Runtime,
 ) *Server {
@@ -172,7 +173,7 @@ func NewServer(
 			Users:     users,
 			JWTBytes:  authDeps.JWTBytes,
 			UIBaseURL: authCfg.UIBaseURL,
-			Email:     email.NewLogSender(), // dev default; swap for SMTP later
+			Email:     emailSender, // dev default; swap for SMTP later
 			Redis:     rc,
 		}
 		r.POST("/api/v1/auth/password_reset/request", pwResetLimit, handler.PasswordResetRequest(pwDeps))
@@ -306,7 +307,7 @@ func NewServer(
 			Invites:   invites,
 			Tenants:   tenants,
 			Users:     users,
-			Email:     email.NewLogSender(),
+			Email:     emailSender,
 			UIBaseURL: authCfg.UIBaseURL,
 		}
 		r.POST("/api/v1/tenants/invites", requireAuth, handler.CreateInvite(inviteDeps))
