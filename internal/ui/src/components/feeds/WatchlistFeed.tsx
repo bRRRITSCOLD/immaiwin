@@ -126,7 +126,7 @@ export function WatchlistFeed() {
               Remove {selected.size}
             </Button>
           )}
-          <Link to="/markets">
+          <Link to="/">
             <Button variant="outline" size="sm">+ Add markets</Button>
           </Link>
         </div>
@@ -355,7 +355,7 @@ function EmptyState() {
         <p className="text-sm text-muted-foreground/60">
           Go to Markets and star markets to add them here.
         </p>
-        <Link to="/markets">
+        <Link to="/">
           <Button variant="outline" size="sm">Browse markets</Button>
         </Link>
       </CardContent>

@@ -2,8 +2,6 @@ package workflow
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -967,11 +965,3 @@ func rawJSONToAny(raw json.RawMessage) any {
 	return v
 }
 
-// newRunID returns a 16-char hex ID for new WorkflowRun records. Caller
-// uses this when persistence is enabled. Lives here because the executor
-// is the natural place to mint run IDs.
-func newRunID() string {
-	var b [8]byte
-	_, _ = rand.Read(b[:])
-	return hex.EncodeToString(b[:])
-}

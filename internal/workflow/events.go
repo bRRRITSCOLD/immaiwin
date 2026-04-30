@@ -1,7 +1,6 @@
 package workflow
 
 import (
-	"sync"
 	"time"
 )
 
@@ -98,34 +97,6 @@ type noopEmitter struct{}
 // Emit implements EventEmitter (no-op).
 func (noopEmitter) Emit(RunEvent) {}
 
-// fanoutEmitter forwards to multiple downstream emitters in registration
-// order. Used internally so the trace path can simultaneously persist via
-// RunRepo and stream via the WS handler.
-type fanoutEmitter struct {
-	mu       sync.RWMutex
-	children []EventEmitter
-}
-
-func newFanoutEmitter(children ...EventEmitter) *fanoutEmitter {
-	out := &fanoutEmitter{children: make([]EventEmitter, 0, len(children))}
-	for _, c := range children {
-		if c != nil {
-			out.children = append(out.children, c)
-		}
-	}
-	return out
-}
-
-// Emit fans out to every registered child. A slow child cannot block
-// others — implementations are expected to do their own buffering.
-func (f *fanoutEmitter) Emit(ev RunEvent) {
-	f.mu.RLock()
-	children := f.children
-	f.mu.RUnlock()
-	for _, c := range children {
-		c.Emit(ev)
-	}
-}
 
 // stamp ensures ev.At is populated; called by every emit site so the UI
 // always has a sortable timestamp without each callsite remembering.

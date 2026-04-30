@@ -193,7 +193,6 @@ func main() {
 	runRepo, err := mongodb.NewWorkflowRunRepository(ctx, mc.DB())
 	if err != nil {
 		slog.Warn("workflow run repo init failed (agent traces will not persist)", "err", err)
-		runRepo = nil
 	} else {
 		runStore = runRepo
 	}

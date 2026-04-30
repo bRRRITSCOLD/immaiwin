@@ -88,14 +88,6 @@ func oauth2Config(authCfg config.AuthConfig, provider string) *oauth2.Config {
 	return nil
 }
 
-// stateClaims is the short-lived JWT we use as the OAuth `state`
-// parameter. Carries the provider name + a nonce. Verified on
-// callback; any mismatch = CSRF.
-type stateClaims struct {
-	Provider string `json:"provider"`
-	Nonce    string `json:"nonce"`
-}
-
 func issueState(secret []byte, provider string) (string, error) {
 	// Reuse the auth JWT signer w/ a 5-min TTL. State claims piggyback
 	// on the regular Claims struct; the agent loop never reads them.

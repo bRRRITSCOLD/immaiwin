@@ -11,6 +11,10 @@ linters:
         - fmt.Print
         - fmt.Println
         - fmt.Sprintf
+        - (io.Closer).Close
+        - (*os.File).Close
+        - (*io.PipeWriter).Close
+        - (*io.PipeReader).Close
   exclusions:
     rules:
       - path: '_test\.go'
