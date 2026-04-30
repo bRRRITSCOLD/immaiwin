@@ -57,6 +57,7 @@ Real Mongo + Redis (per `.claude/rules/TESTING.md` — no mocks). Each suite use
 | `internal/api/handler` | `api_keys_integration_test.go` | API keys + Bearer auth | `TestCreate_ReturnsRawKey_OncePopulatedListShowsPrefixOnly`, `TestBearerAuth_ValidKey_ReturnsMe`, `TestBearerAuth_InvalidKey_Returns401`, `TestRevoke_BearerWithRevokedKey_Returns401`, `TestList_NoKeys_ReturnsEmptyArray`, `TestCreate_NoSession_Returns401` |
 | `internal/api/handler` | `tenant_integration_test.go` | Tenant invites + members + ownership transfer | `TestInviteFlow_BobAcceptsAlicesInvite_GainsAdminRole`, `TestInvite_ReAcceptSameToken_Returns410`, `TestInvite_NonAdminCaller_Returns403`, `TestOwnershipTransfer_HappyPath_FlipsRolesAndAuditLogs`, `TestOwnershipTransfer_SelfAsTarget_Returns400`, `TestOwnershipTransfer_NonMember_Returns400`, `TestOwnershipTransfer_AdminCaller_Returns403` |
 | `internal/api/handler` | `password_reset_integration_test.go` | Password reset flow | `TestPasswordReset_HappyPath_NewPasswordWorks_OldPasswordRejected`, `TestPasswordReset_TokenReuse_Returns401`, `TestPasswordReset_BogusToken_Returns401`, `TestPasswordReset_NonexistentEmail_Returns200_NoEmail`, `TestPasswordReset_ConfirmMissingFields_Returns400` |
+| `internal/api/handler` | `workflow_http_node_integration_test.go` | Workflow `http_request` node | `TestHTTPNode_GetWithJSON_DecodesIntoOutput`, `TestHTTPNode_4xx_PropagatesError`, `TestHTTPNode_AcceptAnyStatus_TreatsNon2xxAsSuccess`, `TestHTTPNode_RawBody_NoJSONParseOnFalse`, `TestHTTPNode_PostJSONBody_ServerSeesPayload` |
 
 ### Setup conventions
 
@@ -81,7 +82,7 @@ Slot reserved here for the future catalog:
 
 ## Coverage gaps (open backlog)
 
-- **Workflow run with executable nodes** — current run suite covers trigger-only. http_request / mongo_request / redis_request / sandbox_script / ai_agent paths uncovered.
+- **Workflow run with executable nodes** — `http_request` covered (`workflow_http_node_integration_test.go`). `mongo_request` / `redis_request` / `sandbox_script` / `ai_agent` paths still uncovered.
 - **Skill registry CRUD** — install/refresh/uninstall + drift detection at the HTTP boundary.
 - **Sandbox WS run** — `/api/v1/sandbox/run` WebSocket path has no automated test.
 - **Agent loop end-to-end** — burns LLM tokens; defer to record-and-replay or VCR-style harness.
