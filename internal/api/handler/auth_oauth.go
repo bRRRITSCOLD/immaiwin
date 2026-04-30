@@ -45,6 +45,7 @@ type OAuthDeps struct {
 	TTL      time.Duration
 	Users    *mongodb.UserRepository
 	Tenants  *mongodb.TenantRepository
+	Audit    *mongodb.AuditRepository
 }
 
 // providerProfile is the normalised user profile pulled from each
@@ -184,6 +185,8 @@ func OAuthCallback(deps OAuthDeps) gin.HandlerFunc {
 			return
 		}
 		setAuthCookie(c, AuthDeps{Cfg: deps.Cfg, TTL: deps.TTL}, jwtTok)
+		recordAuditUnauth(c, deps.Audit, mongodb.AuditOAuthLinked, user.Email, user.ID, tenantID,
+			map[string]any{"provider": provider})
 		// Land users back on the UI. They're now authenticated via the
 		// cookie set above; the SPA reads /auth/me to populate state.
 		ui := strings.TrimRight(deps.Cfg.UIBaseURL, "/")

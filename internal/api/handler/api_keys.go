@@ -22,7 +22,8 @@ import (
 
 // APIKeyDeps wraps the api_key repo for handler injection.
 type APIKeyDeps struct {
-	Keys *mongodb.APIKeyRepository
+	Keys  *mongodb.APIKeyRepository
+	Audit *mongodb.AuditRepository
 }
 
 // ListAPIKeys returns every key the caller has issued. Hashes never
@@ -96,11 +97,14 @@ func CreateAPIKey(deps APIKeyDeps) gin.HandlerFunc {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
+		recordAudit(c, deps.Audit, mongodb.AuditAPIKeyCreated,
+			map[string]any{"key_id": saved.ID, "key_prefix": saved.KeyPrefix},
+			map[string]any{"name": saved.Name})
 		// Surface the raw value ONLY here. Subsequent ListAPIKeys
 		// calls return only the prefix + hash-derived metadata.
 		c.JSON(http.StatusOK, gin.H{
-			"key": saved,
-			"raw": raw,
+			"key":     saved,
+			"raw":     raw,
 			"warning": "copy this value now — it will never be shown again",
 		})
 	}
@@ -127,6 +131,7 @@ func RevokeAPIKey(deps APIKeyDeps) gin.HandlerFunc {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
+		recordAudit(c, deps.Audit, mongodb.AuditAPIKeyRevoked, map[string]any{"key_id": id}, nil)
 		c.Status(http.StatusNoContent)
 	}
 }

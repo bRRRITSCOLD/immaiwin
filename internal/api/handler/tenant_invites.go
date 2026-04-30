@@ -41,6 +41,7 @@ type InviteDeps struct {
 	Invites   *mongodb.InviteRepository
 	Tenants   *mongodb.TenantRepository
 	Users     *mongodb.UserRepository
+	Audit     *mongodb.AuditRepository
 	Email     email.Sender
 	UIBaseURL string
 }
@@ -120,6 +121,10 @@ func CreateInvite(deps InviteDeps) gin.HandlerFunc {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
+
+		recordAudit(c, deps.Audit, mongodb.AuditInviteCreated,
+			map[string]any{"invite_id": saved.ID, "tenant_id": tenantID},
+			map[string]any{"to": saved.Email, "role": string(role)})
 
 		// Dispatch the email out-of-band so the response returns fast.
 		// Caller doesn't need confirmation that the email landed —
@@ -208,6 +213,8 @@ func RevokeInvite(deps InviteDeps) gin.HandlerFunc {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
+		recordAudit(c, deps.Audit, mongodb.AuditInviteRevoked,
+			map[string]any{"invite_id": id, "tenant_id": tenantID}, nil)
 		c.JSON(http.StatusOK, gin.H{"ok": true})
 	}
 }
@@ -314,6 +321,10 @@ func AcceptInvite(deps InviteDeps) gin.HandlerFunc {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
+		// Stamp the joined tenant explicitly — caller's ctx tenant
+		// (their personal one) doesn't reflect the new membership yet.
+		recordAudit(c, deps.Audit, mongodb.AuditInviteAccepted,
+			map[string]any{"invite_id": inv.ID, "tenant_id": inv.TenantID, "role": string(inv.Role)}, nil)
 
 		c.JSON(http.StatusOK, gin.H{"ok": true, "tenant_id": inv.TenantID, "role": inv.Role})
 	}
@@ -390,6 +401,8 @@ func RemoveMember(deps InviteDeps) gin.HandlerFunc {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
+		recordAudit(c, deps.Audit, mongodb.AuditMemberRemoved,
+			map[string]any{"removed_user_id": targetID, "tenant_id": tenantID}, nil)
 		c.JSON(http.StatusOK, gin.H{"ok": true})
 	}
 }

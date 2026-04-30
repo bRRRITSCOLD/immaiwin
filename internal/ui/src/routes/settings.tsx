@@ -12,7 +12,7 @@ import { useEffect, useState } from 'react'
 import { useForm } from '@tanstack/react-form'
 import { z } from 'zod'
 import { toast } from 'sonner'
-import { Trash2, Plus, ExternalLink, Copy, Check, AlertTriangle, UserMinus, Users } from 'lucide-react'
+import { Trash2, Plus, ExternalLink, Copy, Check, AlertTriangle, UserMinus, Users, ScrollText } from 'lucide-react'
 import { Button } from '~/components/ui/button'
 import { Input } from '~/components/ui/input'
 import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from '~/components/ui/field'
@@ -66,12 +66,133 @@ function SettingsPage() {
 
         <MembersSection currentUserId={me.user.id} />
 
+        <AuditLogSection />
+
         <LinkedAccountsSection
           linkedProviders={(me.user.oauth_providers ?? []).map((p) => p.provider)}
           onUpdate={() => void loadMe()}
         />
       </main>
     </div>
+  )
+}
+
+interface AuditEntry {
+  id: string
+  ts: string
+  tenant_id?: string
+  user_id?: string
+  actor_email?: string
+  action: string
+  target?: Record<string, unknown>
+  ip?: string
+  user_agent?: string
+  metadata?: Record<string, unknown>
+}
+
+const ACTION_FILTERS = [
+  { value: '', label: 'All actions' },
+  { value: 'login_success', label: 'Login success' },
+  { value: 'login_failure', label: 'Login failure' },
+  { value: 'logout', label: 'Logout' },
+  { value: 'password_change', label: 'Password change' },
+  { value: 'password_reset_requested', label: 'Reset requested' },
+  { value: 'password_reset_completed', label: 'Reset completed' },
+  { value: 'api_key_created', label: 'API key created' },
+  { value: 'api_key_revoked', label: 'API key revoked' },
+  { value: 'oauth_linked', label: 'OAuth linked' },
+  { value: 'oauth_unlinked', label: 'OAuth unlinked' },
+  { value: 'tenant_switch', label: 'Tenant switch' },
+  { value: 'invite_created', label: 'Invite created' },
+  { value: 'invite_revoked', label: 'Invite revoked' },
+  { value: 'invite_accepted', label: 'Invite accepted' },
+  { value: 'member_removed', label: 'Member removed' },
+]
+
+function AuditLogSection() {
+  const [entries, setEntries] = useState<AuditEntry[]>([])
+  const [loading, setLoading] = useState(true)
+  const [forbidden, setForbidden] = useState(false)
+  const [actionFilter, setActionFilter] = useState('')
+
+  async function load() {
+    setLoading(true)
+    try {
+      const q = actionFilter ? `?action=${actionFilter}&limit=100` : '?limit=100'
+      const res = await api.get<{ entries: AuditEntry[] }>(`/api/v1/audit_log${q}`)
+      setEntries(res.entries ?? [])
+      setForbidden(false)
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 403) {
+        // Members see their own actions only — for now, we hide the
+        // section entirely. Future: surface a /me audit view.
+        setForbidden(true)
+        setEntries([])
+      } else {
+        toast.error(err instanceof ApiError ? err.message : 'Load failed')
+      }
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    void load()
+  }, [actionFilter])
+
+  if (forbidden) return null
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <ScrollText className="size-5" />
+          Activity log
+        </CardTitle>
+        <CardDescription>Privileged actions in this tenant. Owner/admin view.</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="flex items-center gap-2">
+          <FieldLabel htmlFor="audit-filter">Filter</FieldLabel>
+          <select
+            id="audit-filter"
+            className="border rounded px-2 py-1.5 text-sm bg-background"
+            value={actionFilter}
+            onChange={(e) => setActionFilter(e.target.value)}
+          >
+            {ACTION_FILTERS.map((a) => (
+              <option key={a.value} value={a.value}>{a.label}</option>
+            ))}
+          </select>
+        </div>
+
+        {loading && <div className="text-sm text-muted-foreground">Loading…</div>}
+
+        {!loading && entries.length === 0 && (
+          <div className="text-sm text-muted-foreground">No events match this filter.</div>
+        )}
+
+        {!loading && entries.length > 0 && (
+          <div className="border rounded divide-y max-h-[480px] overflow-auto">
+            {entries.map((e) => (
+              <div key={e.id} className="p-3 text-xs space-y-1">
+                <div className="flex items-center gap-2">
+                  <span className="text-muted-foreground">{new Date(e.ts).toLocaleString()}</span>
+                  <Badge variant="outline" className="text-xs">{e.action}</Badge>
+                  {e.actor_email && <span className="font-mono">{e.actor_email}</span>}
+                  {e.ip && <span className="text-muted-foreground ml-auto">{e.ip}</span>}
+                </div>
+                {(e.target || e.metadata) && (
+                  <pre className="text-xs text-muted-foreground bg-muted/30 rounded p-2 overflow-x-auto">
+                    {JSON.stringify({ target: e.target, metadata: e.metadata }, null, 0)}
+                  </pre>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
   )
 }
 

@@ -276,6 +276,11 @@ func main() {
 		slog.Warn("invite repo init failed (tenant invites disabled)", "err", ierr)
 		inviteRepo = nil
 	}
+	auditRepo, aerr := mongodb.NewAuditRepository(ctx, mc.DB())
+	if aerr != nil {
+		slog.Warn("audit repo init failed (audit log disabled)", "err", aerr)
+		auditRepo = nil
+	}
 	if cfg.Auth.JWTSecret == "" {
 		slog.Warn("AUTH_JWT_SECRET not configured — auth endpoints will refuse requests; set a 32+ byte hex value in .env to enable")
 	}
@@ -284,7 +289,7 @@ func main() {
 	if cfg.Email.Provider != "smtp" && cfg.Email.Provider != "log" && cfg.Email.Provider != "" {
 		slog.Warn("EMAIL_PROVIDER unrecognised, falling back to log-only sender", "provider", cfg.Email.Provider)
 	}
-	srv := api.NewServer(cfg.API, cfg.Auth, rc, pm, wl, tr, nr, tokens, owl, fwl, sc, wfRepo, runStore, wfExec, connRepo, connResolver, skillBackend, evalDeps, userRepo, tenantRepo, apiKeyRepo, workerHealthRepo, inviteRepo, emailSender, mc.DB(), sandboxRT)
+	srv := api.NewServer(cfg.API, cfg.Auth, rc, pm, wl, tr, nr, tokens, owl, fwl, sc, wfRepo, runStore, wfExec, connRepo, connResolver, skillBackend, evalDeps, userRepo, tenantRepo, apiKeyRepo, workerHealthRepo, inviteRepo, auditRepo, emailSender, mc.DB(), sandboxRT)
 
 	go func() {
 		slog.Info("api server listening", "addr", srv.Addr())
