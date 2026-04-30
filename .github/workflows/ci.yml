@@ -28,6 +28,14 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      # Reuse the dev compose stack for integration-test deps (Mongo +
+      # Redis) — single source of truth for service versions/config so
+      # CI can't drift from local. `--wait` blocks until each service's
+      # compose-declared healthcheck passes, eliminating connect races.
+      # docker compose ships pre-installed on ubuntu-latest runners.
+      - name: start service deps (mongo + redis)
+        run: docker compose up -d --wait mongodb redis
+
       - name: go vet
         run: go vet ./...
 
@@ -36,6 +44,9 @@ jobs:
 
       - name: go test (race)
         run: go test -race -count=1 ./...
+        env:
+          MONGO_URI: mongodb://localhost:27017
+          REDIS_URL: redis://localhost:6379
 
       - name: golangci-lint
         run: go tool -modfile=tools/go.mod golangci-lint run ./...
