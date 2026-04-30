@@ -9,8 +9,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/sandbox"
-	dockerpkg "github.com/bRRRITSCOLD/immaiwin-go/internal/sandbox/docker"
+	"github.com/bRRRITSCOLD/burrow/internal/sandbox"
+	dockerpkg "github.com/bRRRITSCOLD/burrow/internal/sandbox/docker"
 	dockerimage "github.com/docker/docker/api/types/image"
 	dockerclient "github.com/docker/docker/client"
 )
@@ -106,7 +106,7 @@ func (b *builder) registryHas(ctx context.Context, tag string) (bool, error) {
 }
 
 // splitTag extracts the repository and reference from a registry-qualified tag,
-// e.g. "localhost:5000/immaiwin/sandbox-pkg:abcd" → "immaiwin/sandbox-pkg", "abcd".
+// e.g. "localhost:5000/burrow/sandbox-pkg:abcd" → "burrow/sandbox-pkg", "abcd".
 func splitTag(tag string) (repo, ref string, ok bool) {
 	slash := strings.Index(tag, "/")
 	if slash < 0 {

@@ -26,7 +26,7 @@ const INACTIVE = 'text-muted-foreground hover:text-foreground transition-colors'
 export function AppHeader({ children }: { children?: React.ReactNode }) {
   return (
     <header className="sticky top-0 z-10 border-b bg-background/90 backdrop-blur-sm px-6 py-3 flex items-center gap-4 shrink-0">
-      <h1 className="text-lg font-semibold tracking-tight">immaiwin</h1>
+      <h1 className="text-lg font-semibold tracking-tight">burrow</h1>
       <Separator orientation="vertical" className="h-5" />
       <nav className="flex items-center gap-3 text-sm">
         {NAV.map((n) => (

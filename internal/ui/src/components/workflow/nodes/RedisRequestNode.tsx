@@ -349,7 +349,7 @@ export function RedisRequestNode({ id, data, selected }: NodeProps) {
               >
                 {showSection(op, 'publish') && (
                   <>
-                    <StringFieldRow form={form} name="channel" label="channel" placeholder="immaiwin:news:articles" />
+                    <StringFieldRow form={form} name="channel" label="channel" placeholder="burrow:news:articles" />
                     <StringFieldRow
                       form={form}
                       name="payload"

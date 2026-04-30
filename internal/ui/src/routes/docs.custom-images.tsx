@@ -14,10 +14,10 @@ const examples: {
 }[] = [
   {
     language: 'JavaScript',
-    base: 'immaiwin/sandbox-node:20',
+    base: 'burrow/sandbox-node:20',
     custom: 'myorg/sandbox-node-cheerio:20',
     packages: 'cheerio',
-    dockerfile: `FROM immaiwin/sandbox-node:20
+    dockerfile: `FROM burrow/sandbox-node:20
 RUN npm install -g cheerio`,
     script: `const cheerio = require('cheerio')
 const $ = cheerio.load(input.html)
@@ -26,10 +26,10 @@ output({ titles })`,
   },
   {
     language: 'Python',
-    base: 'immaiwin/sandbox-python:3.12',
+    base: 'burrow/sandbox-python:3.12',
     custom: 'myorg/sandbox-python-bs4:3.12',
     packages: 'beautifulsoup4, lxml',
-    dockerfile: `FROM immaiwin/sandbox-python:3.12
+    dockerfile: `FROM burrow/sandbox-python:3.12
 RUN pip install --no-cache-dir beautifulsoup4 lxml`,
     script: `from bs4 import BeautifulSoup
 soup = BeautifulSoup(input["html"], "lxml")
@@ -38,10 +38,10 @@ output({"titles": titles})`,
   },
   {
     language: 'Go',
-    base: 'immaiwin/sandbox-go:1.22',
+    base: 'burrow/sandbox-go:1.22',
     custom: 'myorg/sandbox-go-goquery:1.22',
     packages: 'goquery',
-    dockerfile: `FROM immaiwin/sandbox-go:1.22
+    dockerfile: `FROM burrow/sandbox-go:1.22
 RUN mkdir -p /tmp/seed && cd /tmp/seed && \\
     go mod init seed && \\
     go get github.com/PuerkitoBio/goquery@latest && \\
@@ -61,10 +61,10 @@ output(map[string]any{"titles": titles})`,
   },
   {
     language: 'Rust',
-    base: 'immaiwin/sandbox-rust:1.86',
+    base: 'burrow/sandbox-rust:1.86',
     custom: 'myorg/sandbox-rust-scraper:1.86',
     packages: 'scraper',
-    dockerfile: `FROM immaiwin/sandbox-rust:1.86
+    dockerfile: `FROM burrow/sandbox-rust:1.86
 RUN mkdir -p /tmp/seed/src && \\
     printf '[package]\\nname="seed"\\nversion="0.1.0"\\nedition="2021"\\n[dependencies]\\nscraper="0.22"' \\
       > /tmp/seed/Cargo.toml && \\
@@ -154,7 +154,7 @@ function CustomImagesDocs() {
               ))}
               <tr className="border-t border-border">
                 <td className="px-4 py-2">PHP</td>
-                <td className="px-4 py-2 font-mono text-xs">immaiwin/sandbox-php:8.3</td>
+                <td className="px-4 py-2 font-mono text-xs">burrow/sandbox-php:8.3</td>
               </tr>
             </tbody>
           </table>

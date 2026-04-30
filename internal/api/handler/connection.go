@@ -7,9 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/auth"
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/llm"
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/workflow"
+	"github.com/bRRRITSCOLD/burrow/internal/auth"
+	"github.com/bRRRITSCOLD/burrow/internal/llm"
+	"github.com/bRRRITSCOLD/burrow/internal/workflow"
 	"github.com/gin-gonic/gin"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/redis/go-redis/v9"

@@ -1,4 +1,4 @@
-module github.com/bRRRITSCOLD/immaiwin-go
+module github.com/bRRRITSCOLD/burrow
 
 go 1.25.0
 

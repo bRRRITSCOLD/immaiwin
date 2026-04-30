@@ -17,8 +17,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/sandbox"
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/skills"
+	"github.com/bRRRITSCOLD/burrow/internal/sandbox"
+	"github.com/bRRRITSCOLD/burrow/internal/skills"
 	"github.com/oklog/ulid/v2"
 	"github.com/redis/go-redis/v9"
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -1309,7 +1309,7 @@ func (e *WorkflowExecutor) runHTTPRequest(ctx context.Context, data map[string]a
 	if ua := getStringData(data, "user_agent"); ua != "" {
 		req.Header.Set("User-Agent", applyTemplate(ua, input, wfCtx))
 	} else if req.Header.Get("User-Agent") == "" {
-		req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; immaiwin/1.0)")
+		req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; burrow/1.0)")
 	}
 
 	// Auth

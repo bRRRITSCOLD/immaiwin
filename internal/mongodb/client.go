@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/config"
+	"github.com/bRRRITSCOLD/burrow/internal/config"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )

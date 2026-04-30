@@ -25,7 +25,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/rediss"
+	"github.com/bRRRITSCOLD/burrow/internal/rediss"
 	"github.com/gin-gonic/gin"
 )
 

@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/auth"
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/workflow"
+	"github.com/bRRRITSCOLD/burrow/internal/auth"
+	"github.com/bRRRITSCOLD/burrow/internal/workflow"
 	"github.com/gin-gonic/gin"
 	cronlib "github.com/robfig/cron/v3"
 	"go.mongodb.org/mongo-driver/v2/mongo"

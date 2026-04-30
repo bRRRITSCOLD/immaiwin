@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/sandbox"
+	"github.com/bRRRITSCOLD/burrow/internal/sandbox"
 	"github.com/gin-gonic/gin"
 )
 

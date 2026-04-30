@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/llm"
+	"github.com/bRRRITSCOLD/burrow/internal/llm"
 	"github.com/redis/go-redis/v9"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
@@ -382,7 +382,7 @@ func (r *ConnectionResolver) ResolveDB(ctx context.Context, connectionID string)
 
 	database := conn.Config["database"]
 	if database == "" {
-		database = "immaiwin"
+		database = "burrow"
 	}
 	mc := &mongoClientImpl{db: client.Database(database)}
 

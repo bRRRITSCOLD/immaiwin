@@ -1,4 +1,4 @@
-# immaiwin
+# burrow
 
 **Visual workflow automation with sandboxed multi-language code execution and interactive debugging.**
 
@@ -59,7 +59,7 @@ The long game: add AI agents that can write and execute code as part of their re
 
 ## What makes this different
 
-| Feature | n8n | Zapier | Make.com | **immaiwin** |
+| Feature | n8n | Zapier | Make.com | **burrow** |
 |---------|-----|--------|----------|-------------|
 | Visual workflow builder | Yes | Limited | Yes | **Yes** (React Flow canvas) |
 | Code execution | JS only | No | No | **5 languages** (JS, Python, Go, Rust, PHP) |
@@ -273,8 +273,8 @@ Every per-user resource (workflows, runs, connections, evals, chat memory, audit
 ### 1. Clone and configure
 
 ```bash
-git clone https://github.com/bRRRITSCOLD/immaiwin-go.git
-cd immaiwin-go
+git clone https://github.com/bRRRITSCOLD/burrow.git
+cd burrow
 cp .env.example .env
 # Edit .env with your settings
 ```
@@ -371,7 +371,7 @@ What each touches:
 | `docker compose` stack (Mongo, Redis, RabbitMQ, …) | `make docker-compose-up` | `dev-teardown` (`docker-compose-down`) |
 | Local Docker registry (`registry:2` on `:5000`) | `examples/k3s/setup.sh` | `dev-teardown` (`docker stop registry`); removed by `dev-teardown-full` |
 | `k3s.service` (single-node cluster) | `examples/k3s/setup.sh` (calls upstream `get.k3s.io`) | `dev-teardown` (`systemctl stop k3s`); uninstalled by `dev-teardown-full` |
-| Sandbox pods inside `immaiwin-sandbox` namespace | API server creates them at runtime | `dev-teardown-sandbox`, or wiped with the cluster by `dev-teardown-full` |
+| Sandbox pods inside `burrow-sandbox` namespace | API server creates them at runtime | `dev-teardown-sandbox`, or wiped with the cluster by `dev-teardown-full` |
 | gVisor (`runsc` shim) | `examples/k3s/setup.sh` (apt) | `dev-teardown-full` only |
 
 ---

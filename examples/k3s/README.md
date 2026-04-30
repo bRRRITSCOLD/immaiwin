@@ -31,7 +31,7 @@ make sandbox-images-push REGISTRY=registry.local:5000
 
 The Makefile builds five base images (python, javascript, golang, rust, php)
 plus two debug images (javascript, python) and pushes each tagged
-`<REGISTRY>/immaiwin/sandbox-<lang>:latest`. k3s pulls them on first reference.
+`<REGISTRY>/burrow/sandbox-<lang>:latest`. k3s pulls them on first reference.
 
 ## Configure the api process
 
@@ -41,7 +41,7 @@ Set environment variables (see `internal/config/config.go`):
 export SANDBOX_ENABLED=true
 export SANDBOX_BACKEND=k3s
 export SANDBOX_KUBECONFIG=/etc/rancher/k3s/k3s.yaml
-export SANDBOX_K3S_NAMESPACE=immaiwin-sandbox
+export SANDBOX_K3S_NAMESPACE=burrow-sandbox
 export SANDBOX_K3S_RUNTIMECLASS=gvisor
 export SANDBOX_IMAGE_REGISTRY=localhost:5000
 ```
@@ -54,10 +54,10 @@ in the sandbox namespace. All idempotent.
 
 Two NetworkPolicies select pods by label:
 
-- `immaiwin.sandbox/network=allow` — egress to public internet allowed; egress
+- `burrow.sandbox/network=allow` — egress to public internet allowed; egress
   to k3s pod CIDR `10.42.0.0/16`, service CIDR `10.43.0.0/16`, and link-local
   `169.254.0.0/16` blocked. Ingress denied.
-- `immaiwin.sandbox/network=deny` — ingress + egress denied entirely.
+- `burrow.sandbox/network=deny` — ingress + egress denied entirely.
 
 The pod label is set per-run from `RunRequest.Network` (true → allow, false →
 deny). No Service exposes sandbox pods, so even without NetworkPolicies there
@@ -77,7 +77,7 @@ Run a Python script against k3s:
 ```bash
 SANDBOX_BACKEND=k3s SANDBOX_ENABLED=true ./bin/api &
 # WS to /api/v1/sandbox/run with {"language":"python","code":"output(input + 1)","input":41}
-kubectl -n immaiwin-sandbox get pods -w     # observe pod scheduling + completion
+kubectl -n burrow-sandbox get pods -w     # observe pod scheduling + completion
 sudo runsc list                             # populated mid-run
 ```
 

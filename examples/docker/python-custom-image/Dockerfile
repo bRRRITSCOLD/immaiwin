@@ -9,7 +9,7 @@
 # The base image provides the entrypoint protocol (stdin JSON → code exec → stdout JSON).
 # This image just adds extra pip packages on top.
 
-FROM immaiwin/sandbox-python:3.12
+FROM burrow/sandbox-python:3.12
 
 # Install BeautifulSoup4 + lxml parser
 RUN pip install --no-cache-dir beautifulsoup4 lxml

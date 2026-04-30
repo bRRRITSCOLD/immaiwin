@@ -86,7 +86,7 @@ type OAuthProviderConfig struct {
 // (or just rely on the Mongo registry) to expose skills to AI agents.
 type SkillsConfig struct {
 	Enabled bool   `env:"ENABLED" envDefault:"false"`
-	Dir     string `env:"DIR"     envDefault:"/var/lib/immaiwin/skills"`
+	Dir     string `env:"DIR"     envDefault:"/var/lib/burrow/skills"`
 }
 
 type APIConfig struct {
@@ -142,7 +142,7 @@ type RedisConfig struct {
 
 type MongoDBConfig struct {
 	URI      string `env:"URI" envDefault:"mongodb://localhost:27017"`
-	Database string `env:"DATABASE" envDefault:"immaiwin"`
+	Database string `env:"DATABASE" envDefault:"burrow"`
 }
 
 type SandboxConfig struct {
@@ -152,7 +152,7 @@ type SandboxConfig struct {
 	PoolSize      int    `env:"POOL_SIZE"      envDefault:"2"`      // Docker only — warm containers per language
 	DockerHost    string `env:"DOCKER_HOST"    envDefault:""`       // override DOCKER_HOST env
 	Kubeconfig    string `env:"KUBECONFIG"     envDefault:"/etc/rancher/k3s/k3s.yaml"`
-	Namespace     string `env:"K3S_NAMESPACE"  envDefault:"immaiwin-sandbox"`
+	Namespace     string `env:"K3S_NAMESPACE"  envDefault:"burrow-sandbox"`
 	RuntimeClass  string `env:"K3S_RUNTIMECLASS" envDefault:"gvisor"`
 	ImageRegistry string `env:"IMAGE_REGISTRY" envDefault:""` // image registry prefix; required for k3s, optional for docker
 	// Cluster CIDRs blocked by NetworkPolicy egress IPBlock Except (defense

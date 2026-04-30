@@ -12,20 +12,20 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/api"
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/api/handler"
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/config"
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/email"
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/mongodb"
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/rediss"
-	_ "github.com/bRRRITSCOLD/immaiwin-go/internal/llm/anthropic" // register Anthropic provider in llm.Default
-	_ "github.com/bRRRITSCOLD/immaiwin-go/internal/llm/ollama"    // register Ollama provider
-	_ "github.com/bRRRITSCOLD/immaiwin-go/internal/llm/openai"    // register OpenAI provider
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/sandbox"
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/sandbox/docker"
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/sandbox/k3s"
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/skills"
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/workflow"
+	"github.com/bRRRITSCOLD/burrow/internal/api"
+	"github.com/bRRRITSCOLD/burrow/internal/api/handler"
+	"github.com/bRRRITSCOLD/burrow/internal/config"
+	"github.com/bRRRITSCOLD/burrow/internal/email"
+	"github.com/bRRRITSCOLD/burrow/internal/mongodb"
+	"github.com/bRRRITSCOLD/burrow/internal/rediss"
+	_ "github.com/bRRRITSCOLD/burrow/internal/llm/anthropic" // register Anthropic provider in llm.Default
+	_ "github.com/bRRRITSCOLD/burrow/internal/llm/ollama"    // register Ollama provider
+	_ "github.com/bRRRITSCOLD/burrow/internal/llm/openai"    // register OpenAI provider
+	"github.com/bRRRITSCOLD/burrow/internal/sandbox"
+	"github.com/bRRRITSCOLD/burrow/internal/sandbox/docker"
+	"github.com/bRRRITSCOLD/burrow/internal/sandbox/k3s"
+	"github.com/bRRRITSCOLD/burrow/internal/skills"
+	"github.com/bRRRITSCOLD/burrow/internal/workflow"
 )
 
 func main() {
@@ -164,7 +164,7 @@ func main() {
 
 	// Skill resolver. Off by default; opt-in via SKILLS_ENABLED. When enabled
 	// we wire the Mongo-backed registry as the index and a LocalFS source
-	// (default `/var/lib/immaiwin/skills`) as the bundle storage. Failures
+	// (default `/var/lib/burrow/skills`) as the bundle storage. Failures
 	// degrade the skill feature without taking down the rest of the API.
 	var (
 		skillRes     *skills.Resolver

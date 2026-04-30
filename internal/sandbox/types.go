@@ -60,15 +60,15 @@ const DefaultCPULimit = 0.5
 func ImageForLanguage(lang Language) string {
 	switch lang {
 	case LangJavaScript:
-		return "immaiwin/sandbox-node:20"
+		return "burrow/sandbox-node:20"
 	case LangPython:
-		return "immaiwin/sandbox-python:3.12"
+		return "burrow/sandbox-python:3.12"
 	case LangGolang:
-		return "immaiwin/sandbox-go:1.22"
+		return "burrow/sandbox-go:1.22"
 	case LangRust:
-		return "immaiwin/sandbox-rust:1.86"
+		return "burrow/sandbox-rust:1.86"
 	case LangPHP:
-		return "immaiwin/sandbox-php:8.3"
+		return "burrow/sandbox-php:8.3"
 	default:
 		return ""
 	}
@@ -79,9 +79,9 @@ func ImageForLanguage(lang Language) string {
 func DebugImageForLanguage(lang Language) string {
 	switch lang {
 	case LangJavaScript:
-		return "immaiwin/sandbox-node-debug:20"
+		return "burrow/sandbox-node-debug:20"
 	case LangPython:
-		return "immaiwin/sandbox-python-debug:3.12"
+		return "burrow/sandbox-python-debug:3.12"
 	default:
 		return ""
 	}

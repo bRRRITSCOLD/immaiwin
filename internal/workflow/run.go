@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/llm"
+	"github.com/bRRRITSCOLD/burrow/internal/llm"
 )
 
 // WorkflowRun is one execution of a workflow. Persisted to MongoDB so the

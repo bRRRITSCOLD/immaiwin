@@ -58,7 +58,7 @@
           "max_redirects": 10,
           "max_response_bytes": 1048576,
           "timeout_seconds": 20,
-          "user_agent": "immaiwin-agent/1.0",
+          "user_agent": "burrow-agent/1.0",
           "parse_json": false,
           "as_tool": {
             "enabled": true,

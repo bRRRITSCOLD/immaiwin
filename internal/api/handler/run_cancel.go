@@ -17,8 +17,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/auth"
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/workflow"
+	"github.com/bRRRITSCOLD/burrow/internal/auth"
+	"github.com/bRRRITSCOLD/burrow/internal/workflow"
 	"github.com/gin-gonic/gin"
 )
 

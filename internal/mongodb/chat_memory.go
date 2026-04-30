@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/llm"
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/workflow"
+	"github.com/bRRRITSCOLD/burrow/internal/llm"
+	"github.com/bRRRITSCOLD/burrow/internal/workflow"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"

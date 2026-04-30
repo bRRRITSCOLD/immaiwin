@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# k3s + gVisor + local registry setup for immaiwin sandbox.
+# k3s + gVisor + local registry setup for burrow sandbox.
 # Idempotent — safe to re-run.
 set -euo pipefail
 

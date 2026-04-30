@@ -16,7 +16,7 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/workflow"
+	"github.com/bRRRITSCOLD/burrow/internal/workflow"
 	"github.com/gin-gonic/gin"
 )
 

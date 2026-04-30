@@ -8,7 +8,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/sandbox"
+	"github.com/bRRRITSCOLD/burrow/internal/sandbox"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/scheme"

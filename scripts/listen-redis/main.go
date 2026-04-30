@@ -24,8 +24,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/config"
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/rediss"
+	"github.com/bRRRITSCOLD/burrow/internal/config"
+	"github.com/bRRRITSCOLD/burrow/internal/rediss"
 )
 
 func main() {

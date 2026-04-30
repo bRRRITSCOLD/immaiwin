@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/sandbox"
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/sandbox/dap"
+	"github.com/bRRRITSCOLD/burrow/internal/sandbox"
+	"github.com/bRRRITSCOLD/burrow/internal/sandbox/dap"
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 )

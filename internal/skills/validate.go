@@ -34,7 +34,7 @@ var reservedNamespaces = map[string]struct{}{
 	"core":     {},
 	"internal": {},
 	"system":   {},
-	"immaiwin": {},
+	"burrow": {},
 }
 
 // supportedLanguages mirrors sandbox.Language. Hard-coded here to avoid an

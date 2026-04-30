@@ -24,7 +24,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/config"
+	"github.com/bRRRITSCOLD/burrow/internal/config"
 )
 
 // SMTPSender is a Sender backed by an SMTP relay.

@@ -6,7 +6,7 @@ import (
 )
 
 // SandboxLabel is applied to all sandbox containers/pods for orphan cleanup.
-const SandboxLabel = "immaiwin.sandbox"
+const SandboxLabel = "burrow.sandbox"
 
 // Runtime executes user code in an isolated environment.
 // Implementations: docker (default) and k3s (Linux + gVisor).

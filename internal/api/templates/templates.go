@@ -25,7 +25,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/workflow"
+	"github.com/bRRRITSCOLD/burrow/internal/workflow"
 )
 
 //go:embed workflows/*.json

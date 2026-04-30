@@ -286,7 +286,7 @@ function MongoFields({ config, setField }: { config: Record<string, string>; set
   return (
     <FieldGroup>
       <ConfigInput label="URI" configKey="uri" config={config} setField={setField} placeholder="mongodb://localhost:27017" />
-      <ConfigInput label="Database" configKey="database" config={config} setField={setField} placeholder="immaiwin" />
+      <ConfigInput label="Database" configKey="database" config={config} setField={setField} placeholder="burrow" />
 
       <Section title="Authentication">
         <ConfigInput label="Username" configKey="username" config={config} setField={setField} placeholder="(optional)" />
@@ -338,7 +338,7 @@ function MongoFields({ config, setField }: { config: Record<string, string>; set
       </Section>
 
       <Section title="Advanced">
-        <ConfigInput label="App Name" configKey="app_name" config={config} setField={setField} placeholder="immaiwin" />
+        <ConfigInput label="App Name" configKey="app_name" config={config} setField={setField} placeholder="burrow" />
         <ConfigInput label="Local Threshold" configKey="local_threshold" config={config} setField={setField} placeholder="15ms" />
         <ConfigInput label="SRV Max Hosts" configKey="srv_max_hosts" config={config} setField={setField} placeholder="0 (all)" />
         <ConfigCheckbox label="Load Balanced" configKey="load_balanced" config={config} setField={setField} />

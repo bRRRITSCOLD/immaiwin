@@ -556,7 +556,7 @@ export function HTTPRequestNode({ id, data, selected }: NodeProps) {
                     <Input
                       id={field.name}
                       className="nodrag h-7 text-xs"
-                      placeholder="immaiwin/1.0"
+                      placeholder="burrow/1.0"
                       value={field.state.value}
                       onChange={(e) => field.handleChange(e.target.value)}
                     />

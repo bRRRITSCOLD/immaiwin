@@ -177,7 +177,7 @@ function SkillsPage() {
               No skills installed. Drop a skill bundle into the local source directory and click <strong>Refresh from sources</strong>.
             </p>
             <p className="text-xs text-muted-foreground/70 mt-2">
-              Default source dir: <code>/var/lib/immaiwin/skills</code> (override with <code>SKILLS_DIR</code> env var).
+              Default source dir: <code>/var/lib/burrow/skills</code> (override with <code>SKILLS_DIR</code> env var).
             </p>
           </div>
         ) : (

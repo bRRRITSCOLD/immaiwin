@@ -3,7 +3,7 @@ package workflow
 import (
 	"context"
 
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/llm"
+	"github.com/bRRRITSCOLD/burrow/internal/llm"
 )
 
 // AgentMemory persists agent conversations across runs.

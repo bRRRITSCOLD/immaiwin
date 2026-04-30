@@ -11,10 +11,10 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/config"
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/sandbox"
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/sandbox/docker"
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/sandbox/k3s"
+	"github.com/bRRRITSCOLD/burrow/internal/config"
+	"github.com/bRRRITSCOLD/burrow/internal/sandbox"
+	"github.com/bRRRITSCOLD/burrow/internal/sandbox/docker"
+	"github.com/bRRRITSCOLD/burrow/internal/sandbox/k3s"
 )
 
 // buildSandboxRT constructs a sandbox runtime per the config. Backend

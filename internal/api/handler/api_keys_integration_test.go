@@ -20,13 +20,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/api"
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/api/handler"
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/config"
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/email"
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/mongodb"
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/rediss"
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/workflow"
+	"github.com/bRRRITSCOLD/burrow/internal/api"
+	"github.com/bRRRITSCOLD/burrow/internal/api/handler"
+	"github.com/bRRRITSCOLD/burrow/internal/config"
+	"github.com/bRRRITSCOLD/burrow/internal/email"
+	"github.com/bRRRITSCOLD/burrow/internal/mongodb"
+	"github.com/bRRRITSCOLD/burrow/internal/rediss"
+	"github.com/bRRRITSCOLD/burrow/internal/workflow"
 	"github.com/stretchr/testify/suite"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	driveroptions "go.mongodb.org/mongo-driver/v2/mongo/options"
@@ -65,7 +65,7 @@ func (s *APIKeyIntegrationSuite) SetupSuite() {
 	c, err := mongo.Connect(driveroptions.Client().ApplyURI(mongoURI))
 	s.Require().NoError(err)
 	s.mongoClient = c
-	s.dbName = fmt.Sprintf("immaiwin_test_apikeys_%d", time.Now().UnixNano())
+	s.dbName = fmt.Sprintf("burrow_test_apikeys_%d", time.Now().UnixNano())
 	s.db = c.Database(s.dbName)
 	s.redis = rediss.New(config.RedisConfig{Host: "localhost", Port: 6379})
 

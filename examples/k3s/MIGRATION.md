@@ -16,7 +16,7 @@ Set these env vars on the api process:
 |-----|---------------|-------|
 | `SANDBOX_BACKEND` | `docker` | Set to `k3s` (the runtime is k8s-API based; the env name is historical) |
 | `SANDBOX_KUBECONFIG` | `/etc/rancher/k3s/k3s.yaml` | Set to your cluster's kubeconfig, or unset to use in-cluster service-account auth when the api runs in-cluster |
-| `SANDBOX_K3S_NAMESPACE` | `immaiwin-sandbox` | Any namespace the api can `create/get/list/delete` Pods + NetworkPolicies in |
+| `SANDBOX_K3S_NAMESPACE` | `burrow-sandbox` | Any namespace the api can `create/get/list/delete` Pods + NetworkPolicies in |
 | `SANDBOX_K3S_RUNTIMECLASS` | `gvisor` | Must match a RuntimeClass installed on the target cluster |
 | `SANDBOX_IMAGE_REGISTRY` | `localhost:5000` | Cluster-reachable registry (e.g. ECR, GCR, Harbor); use the full host:port |
 | `SANDBOX_POD_CIDR` | `10.42.0.0/16` | Your cluster's pod CIDR |
@@ -65,7 +65,7 @@ These are applied **once** per cluster, not per node:
 
 - **`RuntimeClass: gvisor`** — already applied by `k3s.New()` on startup; works
   on any k8s.
-- **`Namespace: immaiwin-sandbox`** + **NetworkPolicies** (`sandbox-deny-all`,
+- **`Namespace: burrow-sandbox`** + **NetworkPolicies** (`sandbox-deny-all`,
   `sandbox-egress-only`) — also applied by `k3s.New()`.
 - **CNI that enforces NetworkPolicy** — required for security. k3s ships
   kube-router by default. kubeadm needs a CNI install (Calico, Cilium, etc).
@@ -98,7 +98,7 @@ These aren't blockers, but you'll want them for non-dev use:
    queue (cuts cold-start from ~1.5–3s to ~50–100ms)
 5. **Multi-replica api support** — current `CleanupOrphans` deletes all
    sandbox-labeled pods at startup, which races with other api replicas.
-   Add a per-instance label (`immaiwin.sandbox/instance=<uuid>`) to the
+   Add a per-instance label (`burrow.sandbox/instance=<uuid>`) to the
    selector to scope cleanup
 6. **Audit logging** — record who ran what code, when. Currently sandbox
    pods are anonymous

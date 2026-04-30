@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"sync"
 
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/sandbox"
+	"github.com/bRRRITSCOLD/burrow/internal/sandbox"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -50,7 +50,7 @@ type debugSessionEntry struct {
 // policies (deny-all + egress-only). All idempotent.
 func New(opts Options) (*Runtime, error) {
 	if opts.Namespace == "" {
-		opts.Namespace = "immaiwin-sandbox"
+		opts.Namespace = "burrow-sandbox"
 	}
 	if opts.RuntimeClass == "" {
 		opts.RuntimeClass = "gvisor"
