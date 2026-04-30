@@ -18,6 +18,7 @@ package handler
 import (
 	"net/http"
 
+	"github.com/bRRRITSCOLD/immaiwin-go/internal/auth"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/workflow"
 	"github.com/gin-gonic/gin"
 )
@@ -60,6 +61,15 @@ func SubmitRunApproval(exec *workflow.WorkflowExecutor, runStore workflow.Workfl
 		if err != nil {
 			c.JSON(http.StatusNotFound, gin.H{"error": "run not found"})
 			return
+		}
+		// Tenant ownership: a run from another tenant must look like it
+		// doesn't exist (404, not 403) so the endpoint can't be used to
+		// probe for run-id existence across tenants.
+		if tenantID, ok := auth.TenantFromCtx(c.Request.Context()); ok {
+			if rec.TenantID != tenantID {
+				c.JSON(http.StatusNotFound, gin.H{"error": "run not found"})
+				return
+			}
 		}
 		if rec.Status != workflow.RunStatusPendingApproval || rec.PendingApproval == nil {
 			c.JSON(http.StatusNotFound, gin.H{"error": "no pending approval for this run"})

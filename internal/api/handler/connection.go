@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bRRRITSCOLD/immaiwin-go/internal/auth"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/llm"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/polymarket"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/workflow"
@@ -17,9 +18,13 @@ import (
 )
 
 // ConnectionStore is the persistence interface for workflow connections.
+// Adds tenant-scoped variants alongside the unscoped versions used by
+// internal callers (connection resolver, workers).
 type ConnectionStore interface {
 	List(ctx context.Context) ([]workflow.Connection, error)
 	GetByID(ctx context.Context, id string) (workflow.Connection, error)
+	ListForTenant(ctx context.Context, tenantID string) ([]workflow.Connection, error)
+	GetByIDForTenant(ctx context.Context, id, tenantID string) (workflow.Connection, error)
 	Upsert(ctx context.Context, conn workflow.Connection) (workflow.Connection, error)
 	Delete(ctx context.Context, id string) error
 }
@@ -30,10 +35,17 @@ type ConnectionInvalidator interface {
 	Invalidate(connectionID string)
 }
 
-// ListConnections returns all stored connections.
+// ListConnections returns connections scoped to the caller's tenant.
+// Unauthed legacy fallback returns all (Phase G removes).
 func ListConnections(store ConnectionStore) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		conns, err := store.List(c.Request.Context())
+		var conns []workflow.Connection
+		var err error
+		if tenantID, ok := auth.TenantFromCtx(c.Request.Context()); ok {
+			conns, err = store.ListForTenant(c.Request.Context(), tenantID)
+		} else {
+			conns, err = store.List(c.Request.Context())
+		}
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
@@ -128,6 +140,22 @@ func UpsertConnection(store ConnectionStore, invalidator ConnectionInvalidator) 
 			// No required config — endpoint defaults to http://localhost:11434.
 		}
 
+		// Tenant scoping: stamp the active tenant on new connections,
+		// verify ownership on updates. Cross-tenant takeover blocked.
+		if tenantID, ok := auth.TenantFromCtx(c.Request.Context()); ok {
+			existing, gerr := store.GetByIDForTenant(c.Request.Context(), id, tenantID)
+			if gerr == nil {
+				conn.TenantID = existing.TenantID
+				conn.CreatedAt = existing.CreatedAt
+			} else {
+				if _, anyErr := store.GetByID(c.Request.Context(), id); anyErr == nil {
+					c.JSON(http.StatusForbidden, gin.H{"error": "connection exists in another tenant"})
+					return
+				}
+				conn.TenantID = tenantID
+			}
+		}
+
 		saved, err := store.Upsert(c.Request.Context(), conn)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -140,14 +168,20 @@ func UpsertConnection(store ConnectionStore, invalidator ConnectionInvalidator) 
 	}
 }
 
-// DeleteConnection removes the connection with the given ID.
-// invalidator is optional; when non-nil its cache is dropped post-delete.
+// DeleteConnection removes the connection with the given ID. Tenant-
+// scoped when authed: foreign-tenant connections return 404.
 func DeleteConnection(store ConnectionStore, invalidator ConnectionInvalidator) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id := c.Param("id")
 		if id == "" {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "id required"})
 			return
+		}
+		if tenantID, ok := auth.TenantFromCtx(c.Request.Context()); ok {
+			if _, gerr := store.GetByIDForTenant(c.Request.Context(), id, tenantID); gerr != nil {
+				c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+				return
+			}
 		}
 		if err := store.Delete(c.Request.Context(), id); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})

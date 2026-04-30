@@ -20,7 +20,7 @@ setup:
 
 certs:
 	mkcert -install
-	mkcert -cert-file .private/certs/localhost.pem -key-file .private/certs/localhost-key.pem 127.0.0.1
+	mkcert -cert-file .private/certs/localhost.pem -key-file .private/certs/localhost-key.pem localhost
 
 docker-compose-up:
 	go run ./scripts/docker-compose/main.go up

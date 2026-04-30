@@ -14,6 +14,8 @@
 package middleware
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -26,27 +28,74 @@ import (
 // to avoid the middleware importing the handler package (cycle).
 const authCookieName = "immaiwin_auth"
 
-// extractToken pulls the JWT from either the auth cookie or the
-// Authorization: Bearer header, in that order. Cookie wins because
-// it's harder to leak via accidental logging.
-func extractToken(c *gin.Context) string {
+// extractToken pulls the auth token from (in order) the auth cookie,
+// Authorization: Bearer header, or the `?token=<...>` query string.
+// Returns the raw value + a flag indicating whether it's an API key
+// (`iwk_<...>`) or a JWT.
+//
+// The query-string fallback exists so WebSocket clients can pass a
+// token at upgrade time — the browser WebSocket API doesn't allow
+// custom request headers, and httpOnly auth cookies don't always
+// travel cross-origin on the upgrade handshake. UI obtains a short-
+// lived JWT via POST /api/v1/auth/ws_token and tacks it onto the
+// WS URL.
+func extractToken(c *gin.Context) (raw string, isAPIKey bool) {
 	if cookie, err := c.Cookie(authCookieName); err == nil && cookie != "" {
-		return cookie
+		return cookie, false
 	}
 	hdr := c.GetHeader("Authorization")
 	if strings.HasPrefix(hdr, "Bearer ") {
-		return strings.TrimPrefix(hdr, "Bearer ")
+		raw = strings.TrimPrefix(hdr, "Bearer ")
+		return raw, strings.HasPrefix(raw, mongodb.APIKeyPrefix)
 	}
-	return ""
+	if q := c.Query("token"); q != "" {
+		return q, strings.HasPrefix(q, mongodb.APIKeyPrefix)
+	}
+	return "", false
 }
 
-// RequireAuth enforces a valid JWT on every request. Hands off the
-// authenticated user/tenant to the handler via ctx.
-func RequireAuth(jwtSecret []byte, users *mongodb.UserRepository) gin.HandlerFunc {
+// resolveAPIKey looks up the API key + injects the matching user +
+// tenant into ctx. Returns the new ctx + nil on success, or empty
+// ctx + error on miss.
+func resolveAPIKey(c *gin.Context, raw string, users *mongodb.UserRepository, keys *mongodb.APIKeyRepository) (context.Context, error) {
+	if keys == nil {
+		return nil, errAPIKeysNotConfigured
+	}
+	k, err := keys.LookupByRaw(c.Request.Context(), raw)
+	if err != nil {
+		return nil, err
+	}
+	u, err := users.GetByID(c.Request.Context(), k.UserID)
+	if err != nil {
+		return nil, err
+	}
+	go keys.TouchLastUsed(c.Request.Context(), k.ID) // best-effort
+	ctx := auth.WithUser(c.Request.Context(), auth.UserCtx{ID: u.ID, Email: u.Email})
+	if k.TenantID != "" {
+		ctx = auth.WithTenant(ctx, k.TenantID)
+	}
+	return ctx, nil
+}
+
+var errAPIKeysNotConfigured = errors.New("api keys not configured")
+
+// RequireAuth enforces a valid JWT or API key on every request.
+// Hands off the authenticated user/tenant to the handler via ctx.
+func RequireAuth(jwtSecret []byte, users *mongodb.UserRepository, keys *mongodb.APIKeyRepository) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		raw := extractToken(c)
+		raw, isAPIKey := extractToken(c)
 		if raw == "" {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
+			return
+		}
+		if isAPIKey {
+			ctx, err := resolveAPIKey(c, raw, users, keys)
+			if err != nil {
+				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid api key"})
+				return
+			}
+			c.Request = c.Request.WithContext(ctx)
+			c.Next()
 			return
 		}
 		claims, err := auth.ParseJWT(jwtSecret, raw)
@@ -54,9 +103,6 @@ func RequireAuth(jwtSecret []byte, users *mongodb.UserRepository) gin.HandlerFun
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid token: " + err.Error()})
 			return
 		}
-		// Look up the user so we have a stable email / can detect
-		// account deletion mid-session. One DB hit per request — fine
-		// at our current scale; cache later if it becomes hot.
 		u, err := users.GetByID(c.Request.Context(), claims.UserID)
 		if err != nil {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "user not found"})
@@ -71,12 +117,20 @@ func RequireAuth(jwtSecret []byte, users *mongodb.UserRepository) gin.HandlerFun
 	}
 }
 
-// OptionalAuth tags the ctx when a valid token is present, otherwise
-// lets the request through unauthenticated. No 401s.
-func OptionalAuth(jwtSecret []byte, users *mongodb.UserRepository) gin.HandlerFunc {
+// OptionalAuth tags the ctx when a valid JWT or API key is present;
+// otherwise lets the request through unauthenticated. No 401s.
+func OptionalAuth(jwtSecret []byte, users *mongodb.UserRepository, keys *mongodb.APIKeyRepository) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		raw := extractToken(c)
+		raw, isAPIKey := extractToken(c)
 		if raw == "" {
+			c.Next()
+			return
+		}
+		if isAPIKey {
+			ctx, err := resolveAPIKey(c, raw, users, keys)
+			if err == nil {
+				c.Request = c.Request.WithContext(ctx)
+			}
 			c.Next()
 			return
 		}

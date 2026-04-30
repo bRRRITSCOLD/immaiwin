@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { buildWSURL } from '~/lib/api'
 
 export type RunStatus = 'idle' | 'connecting' | 'running' | 'done' | 'error'
 
@@ -326,31 +327,39 @@ export function useWorkflowRunStream(): WorkflowRunStream {
         wsRef.current.close()
       }
 
-      const apiBase = import.meta.env['VITE_API_URL'] ?? 'http://localhost:8080'
-      const wsUrl = apiBase.replace(/^http/, 'ws') + `/api/v1/workflows/${workflowId}/run/stream`
-      const ws = new WebSocket(wsUrl)
-      wsRef.current = ws
+      void (async () => {
+        let wsUrl: string
+        try {
+          wsUrl = await buildWSURL(`/api/v1/workflows/${workflowId}/run/stream`)
+        } catch {
+          setError('failed to mint ws token (auth required)')
+          setStatus('error')
+          return
+        }
+        const ws = new WebSocket(wsUrl)
+        wsRef.current = ws
 
-      ws.onopen = () => {
-        setStatus('running')
-        ws.send(
-          JSON.stringify({
-            type: 'run',
-            ...(input !== undefined ? { input } : {}),
-            ...(stopAt ? { stop_at: stopAt } : {}),
-            ...(resumeRunID ? { resume_run_id: resumeRunID } : {}),
-          }),
-        )
-      }
-      ws.onmessage = handleMessage
-      ws.onerror = () => {
-        setError('WebSocket connection error')
-        setStatus('error')
-      }
-      ws.onclose = () => {
-        wsRef.current = null
-        setStatus((s) => (s === 'running' || s === 'connecting' ? 'done' : s))
-      }
+        ws.onopen = () => {
+          setStatus('running')
+          ws.send(
+            JSON.stringify({
+              type: 'run',
+              ...(input !== undefined ? { input } : {}),
+              ...(stopAt ? { stop_at: stopAt } : {}),
+              ...(resumeRunID ? { resume_run_id: resumeRunID } : {}),
+            }),
+          )
+        }
+        ws.onmessage = handleMessage
+        ws.onerror = () => {
+          setError('WebSocket connection error')
+          setStatus('error')
+        }
+        ws.onclose = () => {
+          wsRef.current = null
+          setStatus((s) => (s === 'running' || s === 'connecting' ? 'done' : s))
+        }
+      })()
     },
     [handleMessage],
   )

@@ -96,6 +96,9 @@ func (r *WorkflowRunRepository) ListWithFilter(ctx context.Context, f workflow.R
 	}
 
 	q := bson.M{}
+	if f.TenantID != "" {
+		q["tenant_id"] = f.TenantID
+	}
 	if f.WorkflowID != "" {
 		q["workflow_id"] = f.WorkflowID
 	}

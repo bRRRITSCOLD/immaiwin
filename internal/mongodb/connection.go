@@ -23,6 +23,7 @@ func NewConnectionRepository(ctx context.Context, db *mongo.Database, encKey []b
 	_, err := col.Indexes().CreateMany(ctx, []mongo.IndexModel{
 		{Keys: bson.D{{Key: "name", Value: 1}}},
 		{Keys: bson.D{{Key: "type", Value: 1}}},
+		{Keys: bson.D{{Key: "tenant_id", Value: 1}}},
 	})
 	if err != nil {
 		return nil, err
@@ -30,7 +31,9 @@ func NewConnectionRepository(ctx context.Context, db *mongo.Database, encKey []b
 	return &ConnectionRepository{col: col, encKey: encKey}, nil
 }
 
-// List returns all stored connections.
+// List returns all stored connections (no tenant scope). Used by
+// internal callers like the connection resolver. UI list endpoint
+// uses ListForTenant.
 func (r *ConnectionRepository) List(ctx context.Context) ([]workflow.Connection, error) {
 	cur, err := r.col.Find(ctx, bson.M{})
 	if err != nil {
@@ -95,6 +98,7 @@ func (r *ConnectionRepository) Upsert(ctx context.Context, conn workflow.Connect
 		bson.M{"_id": conn.ID},
 		bson.M{
 			"$set": bson.M{
+				"tenant_id":  conn.TenantID,
 				"name":       conn.Name,
 				"type":       conn.Type,
 				"config":     cfgToStore,
@@ -107,6 +111,55 @@ func (r *ConnectionRepository) Upsert(ctx context.Context, conn workflow.Connect
 		options.UpdateOne().SetUpsert(true),
 	)
 	return conn, err
+}
+
+// ListForTenant scopes List to a single tenant.
+func (r *ConnectionRepository) ListForTenant(ctx context.Context, tenantID string) ([]workflow.Connection, error) {
+	if tenantID == "" {
+		return []workflow.Connection{}, nil
+	}
+	cur, err := r.col.Find(ctx, bson.M{"tenant_id": tenantID})
+	if err != nil {
+		return nil, err
+	}
+	defer cur.Close(ctx) //nolint:errcheck
+	var results []workflow.Connection
+	if err := cur.All(ctx, &results); err != nil {
+		return nil, err
+	}
+	if r.encKey != nil {
+		for i, c := range results {
+			dec, derr := workflow.DecryptConfigMap(c.Config, r.encKey)
+			if derr != nil {
+				return nil, fmt.Errorf("decrypt connection %s: %w", c.ID, derr)
+			}
+			results[i].Config = dec
+		}
+	}
+	return results, nil
+}
+
+// GetByIDForTenant returns the connection only when its tenant matches.
+func (r *ConnectionRepository) GetByIDForTenant(ctx context.Context, id, tenantID string) (workflow.Connection, error) {
+	if tenantID == "" {
+		return workflow.Connection{}, mongo.ErrNoDocuments
+	}
+	var conn workflow.Connection
+	err := r.col.FindOne(ctx, bson.M{"_id": id, "tenant_id": tenantID}).Decode(&conn)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return workflow.Connection{}, mongo.ErrNoDocuments
+	}
+	if err != nil {
+		return workflow.Connection{}, err
+	}
+	if r.encKey != nil {
+		dec, derr := workflow.DecryptConfigMap(conn.Config, r.encKey)
+		if derr != nil {
+			return workflow.Connection{}, fmt.Errorf("decrypt connection %s: %w", conn.ID, derr)
+		}
+		conn.Config = dec
+	}
+	return conn, nil
 }
 
 // Delete removes the connection with the given ID.

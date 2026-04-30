@@ -17,6 +17,7 @@ import (
 // agent output, (3) aggregate pass-rate / cost / p95 latency.
 type Eval struct {
 	ID          string     `bson:"_id"         json:"id"`            // ULID
+	TenantID    string     `bson:"tenant_id"   json:"tenant_id"`
 	WorkflowID  string     `bson:"workflow_id" json:"workflow_id"`
 	Name        string     `bson:"name"        json:"name"`
 	Description string     `bson:"description,omitempty" json:"description,omitempty"`

@@ -16,6 +16,7 @@ import { Play, Plus, Trash2, RefreshCw } from 'lucide-react'
 import { Badge } from '~/components/ui/badge'
 import { Button } from '~/components/ui/button'
 import { Separator } from '~/components/ui/separator'
+import { TenantSwitcher } from '~/components/TenantSwitcher'
 import { Textarea } from '~/components/ui/textarea'
 import {
   Select,
@@ -336,6 +337,7 @@ function EvalsPage() {
           <Link to="/evals" className="text-foreground font-medium">Evals</Link>
           <Link to="/skills" className="text-muted-foreground hover:text-foreground transition-colors">Skills</Link>
         </nav>
+        <div className="ml-auto"><TenantSwitcher /></div>
       </header>
 
       <main className="flex-1 overflow-hidden flex">

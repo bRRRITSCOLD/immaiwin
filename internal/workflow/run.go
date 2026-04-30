@@ -161,6 +161,7 @@ type WorkflowRunStore interface {
 // All fields are optional. Limit defaults to 50; Skip defaults to 0.
 // Sort is started_at descending (most recent first).
 type RunFilter struct {
+	TenantID   string    // empty = unscoped (workers / system queries)
 	WorkflowID string    // empty = all workflows
 	Status     RunStatus // empty = any status
 	StartedAfter  time.Time // zero = no lower bound

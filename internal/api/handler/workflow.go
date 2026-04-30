@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/bRRRITSCOLD/immaiwin-go/internal/auth"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/workflow"
 	"github.com/gin-gonic/gin"
 	cronlib "github.com/robfig/cron/v3"
@@ -14,17 +15,33 @@ import (
 )
 
 // WorkflowStore is the persistence interface for workflow graphs.
+// `List` + `GetByID` are unscoped (workers + cross-tenant lookups);
+// `ListForTenant` + `GetByIDForTenant` enforce per-tenant scoping
+// for UI requests. Handlers should use the scoped variants whenever
+// the caller is a logged-in user.
 type WorkflowStore interface {
 	List(ctx context.Context) ([]workflow.Workflow, error)
 	GetByID(ctx context.Context, id string) (workflow.Workflow, error)
+	ListForTenant(ctx context.Context, tenantID string) ([]workflow.Workflow, error)
+	GetByIDForTenant(ctx context.Context, id, tenantID string) (workflow.Workflow, error)
 	Upsert(ctx context.Context, wf workflow.Workflow) (workflow.Workflow, error)
 	Delete(ctx context.Context, id string) error
 }
 
-// ListWorkflows returns all stored workflows.
+// ListWorkflows returns workflows scoped to the caller's tenant.
+// When no tenant is in ctx (legacy unauthenticated probe during the
+// auth-rollout transition), returns the full list — Phase G will
+// flip those to RequireAuth.
 func ListWorkflows(store WorkflowStore) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		wfs, err := store.List(c.Request.Context())
+		tenantID, hasTenant := auth.TenantFromCtx(c.Request.Context())
+		var wfs []workflow.Workflow
+		var err error
+		if hasTenant {
+			wfs, err = store.ListForTenant(c.Request.Context(), tenantID)
+		} else {
+			wfs, err = store.List(c.Request.Context())
+		}
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
@@ -51,6 +68,32 @@ func UpsertWorkflow(store WorkflowStore) gin.HandlerFunc {
 			return
 		}
 		wf.ID = id
+
+		// Tenant scoping: if the request is authed, stamp the active
+		// tenant onto the workflow + verify ownership on update. Drops
+		// to legacy unscoped behaviour during the auth-rollout phase
+		// when no tenant in ctx (Phase G removes that fallback).
+		if tenantID, ok := auth.TenantFromCtx(c.Request.Context()); ok {
+			existing, gerr := store.GetByIDForTenant(c.Request.Context(), id, tenantID)
+			if gerr == nil {
+				// Update path — keep existing tenant + created_at.
+				wf.TenantID = existing.TenantID
+				wf.CreatedAt = existing.CreatedAt
+			} else if errors.Is(gerr, mongo.ErrNoDocuments) {
+				// New workflow OR foreign-tenant takeover attempt.
+				// Probe unscoped: if it exists for someone else,
+				// reject; if it doesn't exist anywhere, create new.
+				_, anyErr := store.GetByID(c.Request.Context(), id)
+				if anyErr == nil {
+					c.JSON(http.StatusForbidden, gin.H{"error": "workflow exists in another tenant"})
+					return
+				}
+				wf.TenantID = tenantID
+			} else {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": gerr.Error()})
+				return
+			}
+		}
 
 		// Validate ParamsSchema (typed Params declaration) when set:
 		// every entry must have a name + a recognised type, enum types
@@ -150,8 +193,8 @@ func UpsertWorkflow(store WorkflowStore) gin.HandlerFunc {
 	}
 }
 
-// GetWorkflow returns a single workflow by ID. Used by /runs detail page
-// when only a workflow_id is on hand and the page wants node names.
+// GetWorkflow returns a single workflow by ID, scoped to the caller's
+// tenant when authed. Foreign-tenant lookups return 404.
 func GetWorkflow(store WorkflowStore) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id := c.Param("id")
@@ -159,7 +202,13 @@ func GetWorkflow(store WorkflowStore) gin.HandlerFunc {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "id required"})
 			return
 		}
-		wf, err := store.GetByID(c.Request.Context(), id)
+		var wf workflow.Workflow
+		var err error
+		if tenantID, ok := auth.TenantFromCtx(c.Request.Context()); ok {
+			wf, err = store.GetByIDForTenant(c.Request.Context(), id, tenantID)
+		} else {
+			wf, err = store.GetByID(c.Request.Context(), id)
+		}
 		if err != nil {
 			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 			return
@@ -168,13 +217,21 @@ func GetWorkflow(store WorkflowStore) gin.HandlerFunc {
 	}
 }
 
-// DeleteWorkflow removes the workflow with the given ID.
+// DeleteWorkflow removes the workflow with the given ID. Tenant-scoped
+// when authed: a workflow that doesn't belong to the caller's tenant
+// returns 404 (not 403 — don't confirm existence).
 func DeleteWorkflow(store WorkflowStore) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id := c.Param("id")
 		if id == "" {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "id required"})
 			return
+		}
+		if tenantID, ok := auth.TenantFromCtx(c.Request.Context()); ok {
+			if _, gerr := store.GetByIDForTenant(c.Request.Context(), id, tenantID); gerr != nil {
+				c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+				return
+			}
 		}
 		if err := store.Delete(c.Request.Context(), id); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})

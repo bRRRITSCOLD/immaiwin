@@ -2,6 +2,7 @@ import { createFileRoute, Link } from '@tanstack/react-router'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import { Separator } from '~/components/ui/separator'
+import { TenantSwitcher } from '~/components/TenantSwitcher'
 import { WorkflowSidebar } from '~/components/workflow/WorkflowSidebar'
 import { WorkflowCanvas } from '~/components/workflow/WorkflowCanvas'
 import { useWorkflowStore, type Workflow, type Connection } from '~/components/workflow/useWorkflowStore'
@@ -240,11 +241,10 @@ function WorkflowsPage() {
           <Link to="/evals" className="text-muted-foreground hover:text-foreground transition-colors">Evals</Link>
           <Link to="/skills" className="text-muted-foreground hover:text-foreground transition-colors">Skills</Link>
         </nav>
-        {active && (
-          <div className="ml-auto flex items-center gap-2">
-            <span className="text-sm text-muted-foreground">{active.name}</span>
-          </div>
-        )}
+        <div className="ml-auto flex items-center gap-3">
+          {active && <span className="text-sm text-muted-foreground">{active.name}</span>}
+          <TenantSwitcher />
+        </div>
       </header>
 
       <div className="flex flex-1 overflow-hidden">

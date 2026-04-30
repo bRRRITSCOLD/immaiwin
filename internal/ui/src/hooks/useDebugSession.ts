@@ -1,4 +1,5 @@
 import { useCallback, useRef, useState } from 'react'
+import { buildWSURL } from '~/lib/api'
 
 export type DebugStatus = 'idle' | 'connecting' | 'running' | 'paused' | 'terminated'
 
@@ -178,37 +179,45 @@ export function useDebugSession(): DebugSession {
       wsRef.current.close()
     }
 
-    const apiBase = import.meta.env['VITE_API_URL'] ?? 'http://localhost:8080'
-    const wsUrl = apiBase.replace(/^http/, 'ws') + '/api/v1/sandbox/debug'
+    void (async () => {
+      let wsUrl: string
+      try {
+        wsUrl = await buildWSURL('/api/v1/sandbox/debug')
+      } catch {
+        setError('failed to mint ws token (auth required)')
+        setStatus('terminated')
+        return
+      }
 
-    const ws = new WebSocket(wsUrl)
-    wsRef.current = ws
+      const ws = new WebSocket(wsUrl)
+      wsRef.current = ws
 
-    ws.onopen = () => {
-      ws.send(JSON.stringify({
-        type: 'start',
-        language,
-        code,
-        input,
-        context,
-        breakpoints,
-        ...(image ? { image } : {}),
-        ...(packages ? { packages } : {}),
-      }))
-    }
+      ws.onopen = () => {
+        ws.send(JSON.stringify({
+          type: 'start',
+          language,
+          code,
+          input,
+          context,
+          breakpoints,
+          ...(image ? { image } : {}),
+          ...(packages ? { packages } : {}),
+        }))
+      }
 
-    ws.onmessage = handleMessage
+      ws.onmessage = handleMessage
 
-    ws.onerror = () => {
-      setError('WebSocket connection error')
-      setStatus('terminated')
-    }
-
-    ws.onclose = () => {
-      if (status !== 'terminated') {
+      ws.onerror = () => {
+        setError('WebSocket connection error')
         setStatus('terminated')
       }
-    }
+
+      ws.onclose = () => {
+        if (status !== 'terminated') {
+          setStatus('terminated')
+        }
+      }
+    })()
   }, [handleMessage, status])
 
   const setBreakpoints = useCallback((bps: { line: number; condition?: string }[]) => {
