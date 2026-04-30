@@ -79,7 +79,6 @@ func main() {
 	fmt.Println()
 	fmt.Println("Preserved (platform-global):")
 	fmt.Println("  - skill_registry")
-	fmt.Println("  - watchlists, news, scraper_configs, options_watchlist, futures_watchlist (legacy/non-user)")
 	fmt.Println()
 
 	if !*skipConfirm {
