@@ -2,13 +2,30 @@ MODULE := github.com/bRRRITSCOLD/immaiwin-go
 CMDS    := api ui worker
 BINDIR  := bin
 
-.PHONY: setup build test lint clean api ui start-worker list-workers dev-ui docker-compose-up docker-compose-down certs sandbox-images sandbox-images-debug sandbox-images-push dev-teardown dev-teardown-sandbox dev-teardown-full dev-startup dev-startup-fresh
+.PHONY: setup build test test-unit test-integration test-e2e lint clean api ui start-worker list-workers dev-ui docker-compose-up docker-compose-down certs sandbox-images sandbox-images-debug sandbox-images-push dev-teardown dev-teardown-sandbox dev-teardown-full dev-startup dev-startup-fresh
 
 build:
 	go build ./...
 
-test:
-	go run ./scripts/test/main.go
+# Run only unit tests (files matching *_test.go without tier build tags).
+# Fast — no service deps. Default target for quick iteration.
+test-unit:
+	go test -race -count=1 ./...
+
+# Run only integration tests (files matching *_integration_test.go gated
+# by `//go:build integration`). Requires the docker compose stack to be
+# UP — suites fail loud (no skip path) if Mongo/Redis unreachable.
+test-integration:
+	go test -tags=integration -race -count=1 ./...
+
+# Run only e2e tests (files matching *_e2e_test.go gated by `//go:build
+# e2e`). Requires the full stack — API + UI + workers + services.
+test-e2e:
+	go test -tags=e2e -race -count=1 ./...
+
+# Run every tier in sequence. CI uses this. Local devs typically run
+# `make test-unit` while iterating; `make test` before pushing.
+test: test-unit test-integration test-e2e
 
 lint:
 	golangci-lint run

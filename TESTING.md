@@ -7,14 +7,27 @@ The naming convention used everywhere is xUnit-style **`TestSubject_Scenario_Exp
 ## Layout
 
 ```
-<package>/<file>_test.go              — unit
-<package>/<file>_integration_test.go  — integration (real services, may self-skip)
-<package>/<file>_e2e_test.go          — end-to-end (full stack)
+<package>/<file>_test.go              — unit                (default build)
+<package>/<file>_integration_test.go  — //go:build integration
+<package>/<file>_e2e_test.go          — //go:build e2e
 ```
 
-Run all: `make test` or `go test -race -count=1 ./...`.
+The build-tag gate keeps the tiers strictly separate. `go test ./...` only sees the unit tier — fast, zero service deps. The tagged tiers compile in only when the matching `-tags=...` flag is set.
 
-The integration suites probe `MONGO_URI` (default `mongodb://localhost:27017`) and `REDIS_URL` (default `redis://localhost:6379`) on startup and self-skip when unreachable, so `go test ./...` stays green outside the compose stack. CI (`.github/workflows/ci.yml`) brings up `docker compose up -d --wait mongodb redis` before `go test`, so the integration suites actually execute there.
+### Running
+
+```bash
+make test-unit         # fast, no deps
+make test-integration  # requires `make docker-compose-up` first
+make test-e2e          # requires full stack
+make test              # every tier in sequence (run before pushing)
+```
+
+### No skip path
+
+Integration + e2e suites **must fail loud** when their service deps are unreachable. `t.Skipf` is forbidden here; the rule is `t.Fatalf`. Reason: a silent skip in CI would let regressions ride a green badge, and a silent skip locally would let devs push red and learn about it from CI hours later. Same code path everywhere, no env-var opt-outs.
+
+CI (`.github/workflows/ci.yml`) brings up `docker compose up -d --wait mongodb redis` before running the integration tier — if compose hiccups, the build fails before any test executes.
 
 ---
 

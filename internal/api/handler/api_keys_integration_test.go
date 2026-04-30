@@ -1,8 +1,11 @@
+//go:build integration
+
 // API key integration tests — exercises the full create / list /
 // revoke flow plus the Bearer-auth middleware path that uses a
 // minted key as a session token. The middleware accepts cookie OR
 // Bearer header; this suite covers the Bearer side end-to-end so
 // programmatic clients (CLI, CI bots, MCP consumers) stay covered.
+// Compiled only under `-tags=integration`.
 
 package handler_test
 
@@ -45,12 +48,12 @@ func TestAPIKeyIntegrationSuite(t *testing.T) {
 	defer probeCancel()
 	mc, err := mongo.Connect(driveroptions.Client().ApplyURI(mongoURI))
 	if err != nil {
-		t.Skipf("mongo connect failed (skipping integration suite): %v", err)
+		t.Fatalf("mongo connect failed (compose stack required): %v", err)
 		return
 	}
 	if err := mc.Ping(probeCtx, nil); err != nil {
 		_ = mc.Disconnect(context.Background())
-		t.Skipf("mongo unreachable at %s (skipping integration suite): %v", mongoURI, err)
+		t.Fatalf("mongo unreachable at %s (compose stack required): %v", mongoURI, err)
 		return
 	}
 	_ = mc.Disconnect(context.Background())

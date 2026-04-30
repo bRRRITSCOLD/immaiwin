@@ -1,8 +1,11 @@
+//go:build integration
+
 // Webhook trigger integration tests — exercises POST /api/v1/webhooks/:slug
 // against a wired-up Server.Handler() with real Mongo + a real
 // WorkflowExecutor. Asserts slug routing, JSON body decoding, HMAC
 // SHA-256 signature verification (valid, invalid, missing headers),
-// and the unknown-slug 404 path.
+// and the unknown-slug 404 path. Compiled only under
+// `-tags=integration`.
 
 package handler_test
 
@@ -48,12 +51,12 @@ func TestWebhookIntegrationSuite(t *testing.T) {
 	defer probeCancel()
 	mc, err := mongo.Connect(driveroptions.Client().ApplyURI(mongoURI))
 	if err != nil {
-		t.Skipf("mongo connect failed (skipping integration suite): %v", err)
+		t.Fatalf("mongo connect failed (compose stack required): %v", err)
 		return
 	}
 	if err := mc.Ping(probeCtx, nil); err != nil {
 		_ = mc.Disconnect(context.Background())
-		t.Skipf("mongo unreachable at %s (skipping integration suite): %v", mongoURI, err)
+		t.Fatalf("mongo unreachable at %s (compose stack required): %v", mongoURI, err)
 		return
 	}
 	_ = mc.Disconnect(context.Background())
