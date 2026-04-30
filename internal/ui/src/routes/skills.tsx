@@ -11,14 +11,13 @@
 // agent-node skill picker (which is for *using* skills, not
 // inventorying them).
 
-import { createFileRoute, Link } from '@tanstack/react-router'
+import { createFileRoute } from '@tanstack/react-router'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import { ChevronDown, ChevronRight, Package, RefreshCw } from 'lucide-react'
 import { Badge } from '~/components/ui/badge'
 import { Button } from '~/components/ui/button'
 import { Separator } from '~/components/ui/separator'
-import { TenantSwitcher } from '~/components/TenantSwitcher'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '~/components/ui/table'
 
 export const Route = createFileRoute('/skills')({
@@ -154,19 +153,7 @@ function SkillsPage() {
   }, [records])
 
   return (
-    <div className="min-h-screen bg-background text-foreground">
-      <div className="border-b">
-        <nav className="flex items-center gap-3 text-sm px-6 py-3">
-          <Link to="/" className="text-muted-foreground hover:text-foreground transition-colors">Polymarket</Link>
-          <Link to="/workflows" className="text-muted-foreground hover:text-foreground transition-colors">Workflows</Link>
-          <Link to="/runs" className="text-muted-foreground hover:text-foreground transition-colors">Runs</Link>
-          <Link to="/evals" className="text-muted-foreground hover:text-foreground transition-colors">Evals</Link>
-          <Link to="/skills" className="text-foreground font-medium">Skills</Link>
-          <div className="ml-auto"><TenantSwitcher /></div>
-        </nav>
-      </div>
-
-      <div className="max-w-6xl mx-auto p-6">
+      <div className="flex-1 min-h-0 overflow-y-auto max-w-6xl w-full mx-auto p-6">
         <div className="flex items-center justify-between mb-4">
           <div>
             <h1 className="text-2xl font-semibold flex items-center gap-2">
@@ -323,6 +310,5 @@ function SkillsPage() {
           </div>
         )}
       </div>
-    </div>
   )
 }

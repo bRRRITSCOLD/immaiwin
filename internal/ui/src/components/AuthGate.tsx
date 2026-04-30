@@ -18,7 +18,7 @@ const PUBLIC_PATHS = new Set<string>(['/login', '/register', '/forgot', '/reset'
 // /invite/:token where the preview endpoint serves unauth.
 const PUBLIC_PREFIXES = ['/invite/']
 
-function isPublicPath(pathname: string): boolean {
+export function isPublicPath(pathname: string): boolean {
   if (PUBLIC_PATHS.has(pathname)) return true
   return PUBLIC_PREFIXES.some((p) => pathname.startsWith(p))
 }

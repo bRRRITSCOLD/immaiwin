@@ -69,7 +69,6 @@ func main() {
 		}
 	}()
 
-	wl := mongodb.NewWatchlistRepository(mc.DB())
 	tr := mongodb.NewTradeRepository(mc.DB())
 	nr, err := mongodb.NewNewsRepository(ctx, mc.DB())
 	if err != nil {
@@ -288,7 +287,7 @@ func main() {
 	if cfg.Email.Provider != "smtp" && cfg.Email.Provider != "log" && cfg.Email.Provider != "" {
 		slog.Warn("EMAIL_PROVIDER unrecognised, falling back to log-only sender", "provider", cfg.Email.Provider)
 	}
-	srv := api.NewServer(cfg.API, cfg.Auth, rc, pm, wl, tr, nr, tokens, owl, fwl, sc, wfRepo, runStore, wfExec, connRepo, connResolver, skillBackend, evalDeps, userRepo, tenantRepo, apiKeyRepo, workerHealthRepo, inviteRepo, auditRepo, emailSender, mc.DB(), sandboxRT)
+	srv := api.NewServer(cfg.API, cfg.Auth, rc, tr, nr, tokens, owl, fwl, sc, wfRepo, runStore, wfExec, connRepo, connResolver, skillBackend, evalDeps, userRepo, tenantRepo, apiKeyRepo, workerHealthRepo, inviteRepo, auditRepo, emailSender, mc.DB(), sandboxRT)
 
 	go func() {
 		slog.Info("api server listening", "addr", srv.Addr())

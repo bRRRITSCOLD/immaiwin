@@ -10,15 +10,13 @@
 // non-admin lands here the metrics endpoint 403s + section shows a
 // "no permission" notice rather than a blank page.
 
-import { createFileRoute, Link } from '@tanstack/react-router'
+import { createFileRoute } from '@tanstack/react-router'
 import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { Activity, DollarSign, AlertTriangle, RefreshCw } from 'lucide-react'
 import { Button } from '~/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '~/components/ui/card'
-import { Separator } from '~/components/ui/separator'
 import { Badge } from '~/components/ui/badge'
-import { TenantSwitcher } from '~/components/TenantSwitcher'
 import { api, ApiError } from '~/lib/api'
 import { useAuthStore } from '~/lib/auth-store'
 
@@ -90,23 +88,7 @@ function AdminPage() {
   }, [windowKey])
 
   return (
-    <div className="min-h-screen bg-background text-foreground">
-      <header className="sticky top-0 z-10 border-b bg-background/90 backdrop-blur-sm px-6 py-3 flex items-center gap-4 shrink-0">
-        <h1 className="text-lg font-semibold tracking-tight">immaiwin</h1>
-        <Separator orientation="vertical" className="h-5" />
-        <nav className="flex items-center gap-3 text-sm">
-          <Link to="/" className="text-muted-foreground hover:text-foreground transition-colors">Polymarket</Link>
-          <Link to="/workflows" className="text-muted-foreground hover:text-foreground transition-colors">Workflows</Link>
-          <Link to="/runs" className="text-muted-foreground hover:text-foreground transition-colors">Runs</Link>
-          <Link to="/evals" className="text-muted-foreground hover:text-foreground transition-colors">Evals</Link>
-          <Link to="/skills" className="text-muted-foreground hover:text-foreground transition-colors">Skills</Link>
-          <Link to="/admin" className="text-foreground font-medium">Admin</Link>
-          <Link to="/settings" className="text-muted-foreground hover:text-foreground transition-colors">Settings</Link>
-        </nav>
-        <div className="ml-auto"><TenantSwitcher /></div>
-      </header>
-
-      <main className="max-w-5xl mx-auto p-6 space-y-6">
+    <main className="flex-1 min-h-0 overflow-y-auto max-w-5xl w-full mx-auto p-6 space-y-6">
         <div className="flex items-center justify-between">
           <h2 className="text-2xl font-semibold">Tenant ops</h2>
           <div className="flex items-center gap-2">
@@ -143,7 +125,6 @@ function AdminPage() {
           </>
         )}
       </main>
-    </div>
   )
 }
 

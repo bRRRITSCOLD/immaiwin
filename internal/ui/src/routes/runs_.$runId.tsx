@@ -19,8 +19,6 @@ import { toast } from 'sonner'
 import { ArrowLeft, Play } from 'lucide-react'
 import { Badge } from '~/components/ui/badge'
 import { Button } from '~/components/ui/button'
-import { Separator } from '~/components/ui/separator'
-import { TenantSwitcher } from '~/components/TenantSwitcher'
 import {
   Collapsible,
   CollapsibleContent,
@@ -366,21 +364,7 @@ function RunDetailPage() {
   }, [data, load])
 
   return (
-    <div className="h-screen overflow-hidden bg-background text-foreground flex flex-col">
-      <header className="sticky top-0 z-10 border-b bg-background/90 backdrop-blur-sm px-6 py-3 flex items-center gap-4 shrink-0">
-        <h1 className="text-lg font-semibold tracking-tight">immaiwin</h1>
-        <Separator orientation="vertical" className="h-5" />
-        <nav className="flex items-center gap-3 text-sm">
-          <Link to="/" className="text-muted-foreground hover:text-foreground transition-colors">Polymarket</Link>
-          <Link to="/workflows" className="text-muted-foreground hover:text-foreground transition-colors">Workflows</Link>
-          <Link to="/runs" className="text-foreground font-medium">Runs</Link>
-          <Link to="/evals" className="text-muted-foreground hover:text-foreground transition-colors">Evals</Link>
-          <Link to="/skills" className="text-muted-foreground hover:text-foreground transition-colors">Skills</Link>
-        </nav>
-        <div className="ml-auto"><TenantSwitcher /></div>
-      </header>
-
-      <main className="flex-1 overflow-auto p-6">
+      <main className="flex-1 min-h-0 overflow-y-auto p-6">
         <div className="max-w-5xl mx-auto">
           <div className="mb-4">
             <Button variant="ghost" size="sm" asChild>
@@ -587,7 +571,6 @@ function RunDetailPage() {
           )}
         </div>
       </main>
-    </div>
   )
 }
 
