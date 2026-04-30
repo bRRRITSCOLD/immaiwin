@@ -165,6 +165,117 @@ func (r *WorkflowRunRepository) SumCostSince(ctx context.Context, workflowID str
 	return rows[0].Total, nil
 }
 
+// RunMetricsFilter scopes the metrics aggregation. TenantID required
+// (caller is responsible for setting it from the active ctx); Since/
+// Until bound the started_at window. Empty bounds = unbounded.
+type RunMetricsFilter struct {
+	TenantID string
+	Since    time.Time
+	Until    time.Time
+}
+
+// WorkflowRollup is one workflow's contribution to the metrics view —
+// run count + cost. Used for "top workflows by activity / cost" lists.
+type WorkflowRollup struct {
+	WorkflowID string  `bson:"_id"      json:"workflow_id"`
+	Count      int64   `bson:"count"    json:"count"`
+	CostUSD    float64 `bson:"cost_usd" json:"cost_usd"`
+}
+
+// StatusCount is one (status, count) pair from the by_status facet.
+type StatusCount struct {
+	Status string `bson:"_id"   json:"status"`
+	Count  int64  `bson:"count" json:"count"`
+}
+
+// RunMetrics is the aggregate view returned by AggregateMetrics.
+type RunMetrics struct {
+	TotalRuns    int64            `json:"total_runs"`
+	TotalCostUSD float64          `json:"total_cost_usd"`
+	ByStatus     []StatusCount    `json:"by_status"`
+	TopWorkflows []WorkflowRollup `json:"top_workflows"` // top 10 by run count
+}
+
+// AggregateMetrics returns a single-pass rollup of run counts + cost
+// across status + workflow dimensions, scoped to the filter's tenant
+// and started_at window. Uses $facet so all dimensions ride one
+// pipeline scan over the bounded match — cheap enough for ad-hoc
+// dashboard refreshes without a materialised view.
+func (r *WorkflowRunRepository) AggregateMetrics(ctx context.Context, f RunMetricsFilter) (RunMetrics, error) {
+	if f.TenantID == "" {
+		return RunMetrics{}, errors.New("run_metrics: tenant_id required")
+	}
+	match := bson.M{"tenant_id": f.TenantID}
+	if !f.Since.IsZero() || !f.Until.IsZero() {
+		startedQ := bson.M{}
+		if !f.Since.IsZero() {
+			startedQ["$gte"] = f.Since
+		}
+		if !f.Until.IsZero() {
+			startedQ["$lte"] = f.Until
+		}
+		match["started_at"] = startedQ
+	}
+
+	pipeline := mongo.Pipeline{
+		{{Key: "$match", Value: match}},
+		{{Key: "$facet", Value: bson.M{
+			"totals": bson.A{
+				bson.M{"$group": bson.M{
+					"_id":      nil,
+					"count":    bson.M{"$sum": 1},
+					"cost_usd": bson.M{"$sum": "$usage.cost_usd"},
+				}},
+			},
+			"by_status": bson.A{
+				bson.M{"$group": bson.M{
+					"_id":   "$status",
+					"count": bson.M{"$sum": 1},
+				}},
+				bson.M{"$sort": bson.M{"count": -1}},
+			},
+			"top_workflows": bson.A{
+				bson.M{"$group": bson.M{
+					"_id":      "$workflow_id",
+					"count":    bson.M{"$sum": 1},
+					"cost_usd": bson.M{"$sum": "$usage.cost_usd"},
+				}},
+				bson.M{"$sort": bson.M{"count": -1}},
+				bson.M{"$limit": 10},
+			},
+		}}},
+	}
+	cur, err := r.col.Aggregate(ctx, pipeline)
+	if err != nil {
+		return RunMetrics{}, err
+	}
+	defer func() { _ = cur.Close(ctx) }()
+
+	var rows []struct {
+		Totals []struct {
+			Count   int64   `bson:"count"`
+			CostUSD float64 `bson:"cost_usd"`
+		} `bson:"totals"`
+		ByStatus     []StatusCount    `bson:"by_status"`
+		TopWorkflows []WorkflowRollup `bson:"top_workflows"`
+	}
+	if err := cur.All(ctx, &rows); err != nil {
+		return RunMetrics{}, err
+	}
+	if len(rows) == 0 {
+		return RunMetrics{}, nil
+	}
+	out := RunMetrics{
+		ByStatus:     rows[0].ByStatus,
+		TopWorkflows: rows[0].TopWorkflows,
+	}
+	if len(rows[0].Totals) > 0 {
+		out.TotalRuns = rows[0].Totals[0].Count
+		out.TotalCostUSD = rows[0].Totals[0].CostUSD
+	}
+	return out, nil
+}
+
 // AppendTrace atomically pushes a trace event to a run's agent_traces map.
 // Mongo dot-notation on a map field: agent_traces.<nodeID>
 func (r *WorkflowRunRepository) AppendTrace(ctx context.Context, runID, nodeID string, event workflow.TraceEvent) error {
