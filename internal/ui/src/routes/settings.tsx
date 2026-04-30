@@ -12,7 +12,7 @@ import { useEffect, useState } from 'react'
 import { useForm } from '@tanstack/react-form'
 import { z } from 'zod'
 import { toast } from 'sonner'
-import { Trash2, Plus, ExternalLink, Copy, Check, AlertTriangle } from 'lucide-react'
+import { Trash2, Plus, ExternalLink, Copy, Check, AlertTriangle, UserMinus, Users } from 'lucide-react'
 import { Button } from '~/components/ui/button'
 import { Input } from '~/components/ui/input'
 import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from '~/components/ui/field'
@@ -64,12 +64,214 @@ function SettingsPage() {
 
         <APIKeysSection />
 
+        <MembersSection currentUserId={me.user.id} />
+
         <LinkedAccountsSection
           linkedProviders={(me.user.oauth_providers ?? []).map((p) => p.provider)}
           onUpdate={() => void loadMe()}
         />
       </main>
     </div>
+  )
+}
+
+interface Member {
+  user_id: string
+  email: string
+  role: string
+  joined_at: string
+}
+
+interface PendingInvite {
+  id: string
+  email: string
+  role: string
+  token_prefix: string
+  created_at: string
+  expires_at: string
+}
+
+function MembersSection({ currentUserId }: { currentUserId: string }) {
+  const [members, setMembers] = useState<Member[]>([])
+  const [invites, setInvites] = useState<PendingInvite[]>([])
+  const [loading, setLoading] = useState(true)
+  const [inviteEmail, setInviteEmail] = useState('')
+  const [inviteRole, setInviteRole] = useState<'member' | 'admin'>('member')
+  const [creating, setCreating] = useState(false)
+  const [lastInviteURL, setLastInviteURL] = useState<string | null>(null)
+
+  async function load() {
+    setLoading(true)
+    try {
+      const [m, inv] = await Promise.all([
+        api.get<{ members: Member[] }>('/api/v1/tenants/members'),
+        api.get<{ invites: PendingInvite[] }>('/api/v1/tenants/invites'),
+      ])
+      setMembers(m.members ?? [])
+      setInvites(inv.invites ?? [])
+    } catch (err) {
+      // Non-admin members get 403 on /tenants/invites; degrade to
+      // showing the members list only.
+      if (err instanceof ApiError && err.status === 403) {
+        try {
+          const m = await api.get<{ members: Member[] }>('/api/v1/tenants/members')
+          setMembers(m.members ?? [])
+          setInvites([])
+        } catch (err2) {
+          toast.error(err2 instanceof ApiError ? err2.message : 'Load failed')
+        }
+      } else {
+        toast.error(err instanceof ApiError ? err.message : 'Load failed')
+      }
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    void load()
+  }, [])
+
+  async function createInvite() {
+    if (!inviteEmail.includes('@')) {
+      toast.error('Valid email required')
+      return
+    }
+    setCreating(true)
+    try {
+      const res = await api.post<{ invite: PendingInvite; url: string }>(
+        '/api/v1/tenants/invites',
+        { email: inviteEmail.trim().toLowerCase(), role: inviteRole },
+      )
+      setLastInviteURL(res.url)
+      setInviteEmail('')
+      await load()
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : 'Invite failed')
+    } finally {
+      setCreating(false)
+    }
+  }
+
+  async function revokeInvite(id: string) {
+    if (!confirm('Revoke invite? The recipient won\'t be able to use the link.')) return
+    try {
+      await api.delete(`/api/v1/tenants/invites/${id}`)
+      toast.success('Invite revoked')
+      await load()
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : 'Revoke failed')
+    }
+  }
+
+  async function removeMember(userID: string) {
+    if (!confirm('Remove this member from the tenant?')) return
+    try {
+      await api.delete(`/api/v1/tenants/members/${userID}`)
+      toast.success('Member removed')
+      await load()
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : 'Remove failed')
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <Users className="size-5" />
+          Team members
+        </CardTitle>
+        <CardDescription>People with access to this tenant.</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {lastInviteURL && (
+          <div className="rounded border border-amber-600/50 bg-amber-950/20 p-3 space-y-2">
+            <div className="flex items-center gap-2 text-amber-400 text-sm font-medium">
+              <AlertTriangle className="size-4" />
+              Invite URL — copy now (also sent to recipient's email if SMTP wired):
+            </div>
+            <code className="block font-mono text-xs bg-background border rounded px-2 py-1 break-all">
+              {lastInviteURL}
+            </code>
+            <Button size="sm" variant="ghost" onClick={() => setLastInviteURL(null)}>Dismiss</Button>
+          </div>
+        )}
+
+        <div className="grid grid-cols-[1fr_auto_auto] gap-2 items-end">
+          <div>
+            <FieldLabel htmlFor="invite-email">Invite by email</FieldLabel>
+            <Input
+              id="invite-email"
+              type="email"
+              placeholder="teammate@example.com"
+              value={inviteEmail}
+              onChange={(e) => setInviteEmail(e.target.value)}
+            />
+          </div>
+          <div>
+            <FieldLabel htmlFor="invite-role">Role</FieldLabel>
+            <select
+              id="invite-role"
+              className="border rounded px-2 py-2 text-sm bg-background"
+              value={inviteRole}
+              onChange={(e) => setInviteRole(e.target.value as 'member' | 'admin')}
+            >
+              <option value="member">member</option>
+              <option value="admin">admin</option>
+            </select>
+          </div>
+          <Button onClick={() => void createInvite()} disabled={creating}>
+            <Plus className="size-4 mr-1" />
+            {creating ? 'Sending…' : 'Invite'}
+          </Button>
+        </div>
+
+        {loading && <div className="text-sm text-muted-foreground">Loading…</div>}
+
+        {!loading && members.length > 0 && (
+          <div className="border rounded divide-y">
+            <div className="p-2 text-xs uppercase text-muted-foreground">Members ({members.length})</div>
+            {members.map((m) => (
+              <div key={m.user_id} className="flex items-center gap-3 p-3 text-sm">
+                <div className="flex-1">
+                  <div className="font-medium font-mono">{m.email}</div>
+                  <div className="text-xs text-muted-foreground">
+                    joined {new Date(m.joined_at).toLocaleDateString()}
+                  </div>
+                </div>
+                <Badge variant="outline">{m.role}</Badge>
+                {m.user_id !== currentUserId && m.role !== 'owner' && (
+                  <Button size="sm" variant="ghost" onClick={() => void removeMember(m.user_id)}>
+                    <UserMinus className="size-4 text-destructive" />
+                  </Button>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {!loading && invites.length > 0 && (
+          <div className="border rounded divide-y">
+            <div className="p-2 text-xs uppercase text-muted-foreground">Pending invites ({invites.length})</div>
+            {invites.map((inv) => (
+              <div key={inv.id} className="flex items-center gap-3 p-3 text-sm">
+                <div className="flex-1">
+                  <div className="font-medium font-mono">{inv.email}</div>
+                  <div className="text-xs text-muted-foreground">
+                    {inv.token_prefix}… · expires {new Date(inv.expires_at).toLocaleDateString()}
+                  </div>
+                </div>
+                <Badge variant="outline">{inv.role}</Badge>
+                <Button size="sm" variant="ghost" onClick={() => void revokeInvite(inv.id)}>
+                  <Trash2 className="size-4 text-destructive" />
+                </Button>
+              </div>
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
   )
 }
 

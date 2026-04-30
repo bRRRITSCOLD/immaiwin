@@ -270,11 +270,16 @@ func main() {
 		slog.Warn("worker health repo init failed (worker observability disabled)", "err", herr)
 		workerHealthRepo = nil
 	}
+	inviteRepo, ierr := mongodb.NewInviteRepository(ctx, mc.DB())
+	if ierr != nil {
+		slog.Warn("invite repo init failed (tenant invites disabled)", "err", ierr)
+		inviteRepo = nil
+	}
 	if cfg.Auth.JWTSecret == "" {
 		slog.Warn("AUTH_JWT_SECRET not configured — auth endpoints will refuse requests; set a 32+ byte hex value in .env to enable")
 	}
 
-	srv := api.NewServer(cfg.API, cfg.Auth, rc, pm, wl, tr, nr, tokens, owl, fwl, sc, wfRepo, runStore, wfExec, connRepo, connResolver, skillBackend, evalDeps, userRepo, tenantRepo, apiKeyRepo, workerHealthRepo, mc.DB(), sandboxRT)
+	srv := api.NewServer(cfg.API, cfg.Auth, rc, pm, wl, tr, nr, tokens, owl, fwl, sc, wfRepo, runStore, wfExec, connRepo, connResolver, skillBackend, evalDeps, userRepo, tenantRepo, apiKeyRepo, workerHealthRepo, inviteRepo, mc.DB(), sandboxRT)
 
 	go func() {
 		slog.Info("api server listening", "addr", srv.Addr())
