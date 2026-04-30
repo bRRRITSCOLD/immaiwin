@@ -9,6 +9,12 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # Opt JS-based actions (checkout, setup-node, pnpm/action-setup) onto
+  # Node 24 ahead of the 2026-06-02 deprecation flip. Removes the
+  # deprecation annotation on every run.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
 jobs:
   go:
     name: go (vet + lint + test + build)
@@ -51,7 +57,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: pnpm
           cache-dependency-path: internal/ui/pnpm-lock.yaml
 
