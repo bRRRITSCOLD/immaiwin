@@ -9,14 +9,12 @@ import (
 type ConnectionType string
 
 const (
-	ConnectionTypeMongoDB    ConnectionType = "mongodb"
-	ConnectionTypeRedis      ConnectionType = "redis"
-	ConnectionTypeRabbitMQ   ConnectionType = "rabbitmq"
-	ConnectionTypePolymarket ConnectionType = "polymarket"
-	ConnectionTypeSchwab     ConnectionType = "schwab"
-	ConnectionTypeAnthropic  ConnectionType = "anthropic"
-	ConnectionTypeOpenAI     ConnectionType = "openai"
-	ConnectionTypeOllama     ConnectionType = "ollama"
+	ConnectionTypeMongoDB   ConnectionType = "mongodb"
+	ConnectionTypeRedis     ConnectionType = "redis"
+	ConnectionTypeRabbitMQ  ConnectionType = "rabbitmq"
+	ConnectionTypeAnthropic ConnectionType = "anthropic"
+	ConnectionTypeOpenAI    ConnectionType = "openai"
+	ConnectionTypeOllama    ConnectionType = "ollama"
 )
 
 // Connection is a named, reusable configuration for an external service.

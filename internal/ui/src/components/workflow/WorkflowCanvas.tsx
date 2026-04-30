@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Play, Square, Terminal, Bug } from 'lucide-react'
-import { WSPreviewPanel } from './WSPreviewPanel'
 import {
   ReactFlow,
   ReactFlowProvider,
@@ -322,7 +321,6 @@ function WorkflowCanvasInner({ workflow, onSave, onRun, onCancel, onContinue, on
   const [debugMode, setDebugMode] = useState(false)
   const [breakpointIds, setBreakpointIds] = useState<Set<string>>(new Set())
   const [edgeMenu, setEdgeMenu] = useState<EdgeMenuState | null>(null)
-  const [wsPreviewOpen, setWSPreviewOpen] = useState(false)
 
   // Escape clears edge palette + edge context menu
   useEffect(() => {
@@ -355,11 +353,6 @@ function WorkflowCanvasInner({ workflow, onSave, onRun, onCancel, onContinue, on
     [nodes],
   )
   const bodyIds = useMemo(() => getForEachBodyIds(nodes, edges), [nodes, edges])
-
-  const hasWSTrigger = useMemo(
-    () => nodes.some((n) => n.type === 'trigger' && ['polymarket_ws', 'schwab_ws'].includes(n.data?.trigger_type as string)),
-    [nodes],
-  )
 
   // Recompute styles from sourceHandle + selected every render
   const styledEdges = useMemo(
@@ -635,18 +628,6 @@ function WorkflowCanvasInner({ workflow, onSave, onRun, onCancel, onContinue, on
               <Bug className="h-3 w-3" /> Debug
             </button>
           </div>
-          {hasWSTrigger && !debugMode && (
-            <button
-              onClick={() => setWSPreviewOpen((v) => !v)}
-              className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
-                wsPreviewOpen
-                  ? 'bg-cyan-600 text-white hover:bg-cyan-700'
-                  : 'bg-muted text-muted-foreground hover:bg-muted/80'
-              }`}
-            >
-              {wsPreviewOpen ? 'Close Preview' : 'Live Preview'}
-            </button>
-          )}
           {/* Primary run action — single slot, label switches by mode +
               run state. Always sits on the LEFT of Save so the eye finds
               the green action button in the same place across modes. */}
@@ -766,16 +747,6 @@ function WorkflowCanvasInner({ workflow, onSave, onRun, onCancel, onContinue, on
           </>
         )}
       </div>
-      {wsPreviewOpen && (
-        <WSPreviewPanel
-          workflowId={workflow.id}
-          onRunWithInput={async (input) => {
-            const ids = debugMode ? Array.from(breakpointIds) : []
-            onRun(ids.length > 0 ? ids : undefined, input)
-          }}
-          onClose={() => setWSPreviewOpen(false)}
-        />
-      )}
       </div>
     </RunResultsContext.Provider>
     </ToolApprovalContext.Provider>

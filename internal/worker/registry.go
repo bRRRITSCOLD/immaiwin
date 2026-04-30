@@ -11,14 +11,6 @@ import (
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/mongodb"
 )
 
-// registry maps worker names to their implementations.
-// Add a new entry here to register a worker.
-// var registry = map[string]Worker{
-// 	jobs.ExampleWorker.Name():           jobs.ExampleWorker,
-// 	jobs.MongoDBWriterWorker.Name():     jobs.MongoDBWriterWorker,
-// 	jobs.PolymarketWatcherWorker.Name(): jobs.PolymarketWatcherWorker,
-// }
-
 type WorkerRegistry struct {
 	registry map[string]Worker
 	// health is optional — when set, the registry records start /

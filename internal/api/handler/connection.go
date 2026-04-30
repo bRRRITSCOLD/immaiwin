@@ -9,7 +9,6 @@ import (
 
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/auth"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/llm"
-	"github.com/bRRRITSCOLD/immaiwin-go/internal/polymarket"
 	"github.com/bRRRITSCOLD/immaiwin-go/internal/workflow"
 	"github.com/gin-gonic/gin"
 	amqp "github.com/rabbitmq/amqp091-go"
@@ -80,14 +79,12 @@ func UpsertConnection(store ConnectionStore, invalidator ConnectionInvalidator) 
 			return
 		}
 		validTypes := map[workflow.ConnectionType]bool{
-			workflow.ConnectionTypeMongoDB:    true,
-			workflow.ConnectionTypeRedis:      true,
-			workflow.ConnectionTypeRabbitMQ:   true,
-			workflow.ConnectionTypePolymarket: true,
-			workflow.ConnectionTypeSchwab:     true,
-			workflow.ConnectionTypeAnthropic:  true,
-			workflow.ConnectionTypeOpenAI:     true,
-			workflow.ConnectionTypeOllama:     true,
+			workflow.ConnectionTypeMongoDB:   true,
+			workflow.ConnectionTypeRedis:     true,
+			workflow.ConnectionTypeRabbitMQ:  true,
+			workflow.ConnectionTypeAnthropic: true,
+			workflow.ConnectionTypeOpenAI:    true,
+			workflow.ConnectionTypeOllama:    true,
 		}
 		if !validTypes[conn.Type] {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported connection type"})
@@ -113,17 +110,6 @@ func UpsertConnection(store ConnectionStore, invalidator ConnectionInvalidator) 
 		case workflow.ConnectionTypeRabbitMQ:
 			if conn.Config["host"] == "" {
 				c.JSON(http.StatusBadRequest, gin.H{"error": "config.host is required for rabbitmq"})
-				return
-			}
-		case workflow.ConnectionTypePolymarket:
-			// No required config — SDK falls back to env vars
-		case workflow.ConnectionTypeSchwab:
-			if conn.Config["client_id"] == "" {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "config.client_id is required for schwab"})
-				return
-			}
-			if conn.Config["client_secret"] == "" {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "config.client_secret is required for schwab"})
 				return
 			}
 		case workflow.ConnectionTypeAnthropic:
@@ -226,16 +212,6 @@ func TestConnection(db *mongo.Database) gin.HandlerFunc {
 				c.JSON(http.StatusOK, gin.H{"ok": false, "error": err.Error()})
 				return
 			}
-		case workflow.ConnectionTypePolymarket:
-			if err := testPolymarket(); err != nil {
-				c.JSON(http.StatusOK, gin.H{"ok": false, "error": err.Error()})
-				return
-			}
-		case workflow.ConnectionTypeSchwab:
-			if err := testSchwab(ctx, req.Config, db); err != nil {
-				c.JSON(http.StatusOK, gin.H{"ok": false, "error": err.Error()})
-				return
-			}
 		case workflow.ConnectionTypeAnthropic:
 			if err := testAnthropic(ctx, req.Config); err != nil {
 				c.JSON(http.StatusOK, gin.H{"ok": false, "error": err.Error()})
@@ -291,22 +267,6 @@ func testRabbitMQ(cfg map[string]string) error {
 	return nil
 }
 
-func testSchwab(ctx context.Context, cfg map[string]string, db *mongo.Database) error {
-	if cfg["client_id"] == "" || cfg["client_secret"] == "" {
-		return fmt.Errorf("client_id and client_secret are required")
-	}
-	// For Schwab, "test" means checking if OAuth tokens exist (connection is authorized).
-	// We use a placeholder connection ID since this is ephemeral.
-	tm := workflow.BuildSchwabTokenManager(cfg, db, "test_ephemeral")
-	if err := tm.Load(ctx); err != nil {
-		return fmt.Errorf("load tokens: %w", err)
-	}
-	if !tm.IsAuthorized() {
-		return fmt.Errorf("not authorized — complete OAuth flow first")
-	}
-	return nil
-}
-
 func testAnthropic(_ context.Context, cfg map[string]string) error {
 	// llm.Build validates required fields (api_key, etc.) without calling the
 	// remote API. A live ping would consume tokens for every Test click.
@@ -352,11 +312,3 @@ func testOllama(ctx context.Context, cfg map[string]string) error {
 	return nil
 }
 
-func testPolymarket() error {
-	client, err := polymarket.New(polymarket.ClientConfig{})
-	if err != nil {
-		return fmt.Errorf("init: %w", err)
-	}
-	defer client.Close() //nolint:errcheck
-	return nil
-}
