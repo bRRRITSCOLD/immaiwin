@@ -85,6 +85,7 @@ func NewServer(
 	apiKeys *mongodb.APIKeyRepository,
 	workerHealth *mongodb.WorkerHealthRepository,
 	invites *mongodb.InviteRepository,
+	audit *mongodb.AuditRepository,
 	emailSender email.Sender,
 	db *mongo.Database,
 	sandboxRT sandbox.Runtime,
@@ -120,6 +121,7 @@ func NewServer(
 	authDeps := handler.AuthDeps{
 		Users:    users,
 		Tenants:  tenants,
+		Audit:    audit,
 		Cfg:      authCfg,
 		JWTBytes: []byte(authCfg.JWTSecret),
 		TTL:      authTTL,
@@ -171,6 +173,7 @@ func NewServer(
 	if users != nil && len(authDeps.JWTBytes) > 0 {
 		pwDeps := handler.PasswordResetDeps{
 			Users:     users,
+			Audit:     audit,
 			JWTBytes:  authDeps.JWTBytes,
 			UIBaseURL: authCfg.UIBaseURL,
 			Email:     emailSender, // dev default; swap for SMTP later
@@ -197,6 +200,7 @@ func NewServer(
 			TTL:      authDeps.TTL,
 			Users:    users,
 			Tenants:  tenants,
+			Audit:    audit,
 		}
 		r.GET("/auth/oauth/:provider/start", oauthStartLimit, handler.OAuthStart(oauthDeps))
 		r.GET("/auth/oauth/:provider/callback", handler.OAuthCallback(oauthDeps))
@@ -223,7 +227,7 @@ func NewServer(
 		// API keys (programmatic access). All routes require auth via
 		// JWT cookie OR existing API key. Listing/revoking from an
 		// API-key context is allowed so a CLI can manage its own keys.
-		apiKeyDeps := handler.APIKeyDeps{Keys: apiKeys}
+		apiKeyDeps := handler.APIKeyDeps{Keys: apiKeys, Audit: audit}
 		r.GET("/api/v1/api_keys",
 			middleware.RequireAuth(authDeps.JWTBytes, users, apiKeys),
 			handler.ListAPIKeys(apiKeyDeps))
@@ -307,6 +311,7 @@ func NewServer(
 			Invites:   invites,
 			Tenants:   tenants,
 			Users:     users,
+			Audit:     audit,
 			Email:     emailSender,
 			UIBaseURL: authCfg.UIBaseURL,
 		}
@@ -319,6 +324,13 @@ func NewServer(
 		// metadata before signup; accept requires auth.
 		r.GET("/api/v1/invites/:token/preview", handler.PreviewInvite(inviteDeps))
 		r.POST("/api/v1/invites/:token/accept", requireAuth, handler.AcceptInvite(inviteDeps))
+	}
+
+	// Audit log read endpoint. Owner/admin only — audit entries can
+	// leak member emails + action timing.
+	if audit != nil && tenants != nil {
+		r.GET("/api/v1/audit_log", requireAuth,
+			handler.ListAuditLog(handler.AuditLogDeps{Audit: audit, Tenants: tenants}))
 	}
 
 	// Evals (P-eval). Disabled when EvalDeps is empty; handlers respond

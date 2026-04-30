@@ -29,6 +29,7 @@ import (
 type AuthDeps struct {
 	Users    *mongodb.UserRepository
 	Tenants  *mongodb.TenantRepository
+	Audit    *mongodb.AuditRepository
 	Cfg      config.AuthConfig
 	JWTBytes []byte
 	TTL      time.Duration
@@ -157,6 +158,11 @@ func Login(deps AuthDeps) gin.HandlerFunc {
 			return
 		}
 		if !auth.PasswordVerify(req.Password, u.PasswordHash) {
+			// Stamp userID so the row lands inside the user's tenant
+			// view post-login. tenantID still empty here (we haven't
+			// resolved a membership for the failed attempt) — that's
+			// fine; the row is still discoverable by user_id index.
+			recordAuditUnauth(c, deps.Audit, mongodb.AuditLoginFailure, req.Email, u.ID, "", map[string]any{"reason": "wrong_password"})
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid email or password"})
 			return
 		}
@@ -189,6 +195,7 @@ func Login(deps AuthDeps) gin.HandlerFunc {
 			return
 		}
 		setAuthCookie(c, deps, tok)
+		recordAuditUnauth(c, deps.Audit, mongodb.AuditLoginSuccess, u.Email, u.ID, tenantID, nil)
 		c.JSON(http.StatusOK, gin.H{
 			"user":      u,
 			"tenant_id": tenantID,
@@ -202,6 +209,9 @@ func Login(deps AuthDeps) gin.HandlerFunc {
 // header. (Token revocation list deferred to backlog.)
 func Logout(deps AuthDeps) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// Audit BEFORE clearing the cookie — recordAudit reads
+		// user/tenant from ctx, which OptionalAuth populated upstream.
+		recordAudit(c, deps.Audit, mongodb.AuditLogout, nil, nil)
 		clearAuthCookie(c, deps)
 		c.JSON(http.StatusOK, gin.H{"ok": true})
 	}
@@ -306,6 +316,7 @@ func ChangePassword(deps AuthDeps) gin.HandlerFunc {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
+		recordAudit(c, deps.Audit, mongodb.AuditPasswordChange, nil, map[string]any{"initial_set": isInitialSet})
 		c.JSON(http.StatusOK, gin.H{"ok": true, "initial_set": isInitialSet})
 	}
 }
@@ -350,6 +361,7 @@ func UnlinkOAuth(deps AuthDeps) gin.HandlerFunc {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
+		recordAudit(c, deps.Audit, mongodb.AuditOAuthUnlinked, map[string]any{"provider": provider}, nil)
 		c.JSON(http.StatusOK, gin.H{"ok": true})
 	}
 }
@@ -384,6 +396,7 @@ func SwitchTenant(deps AuthDeps) gin.HandlerFunc {
 			return
 		}
 		setAuthCookie(c, deps, tok)
+		recordAudit(c, deps.Audit, mongodb.AuditTenantSwitch, map[string]any{"to_tenant_id": req.TenantID}, nil)
 		c.JSON(http.StatusOK, gin.H{"tenant_id": req.TenantID, "token": tok})
 	}
 }

@@ -36,12 +36,13 @@ import (
 
 // PasswordResetDeps wraps the handler's needs.
 type PasswordResetDeps struct {
-	Users      *mongodb.UserRepository
-	JWTBytes   []byte
-	UIBaseURL  string
-	Email      email.Sender
-	Redis      *rediss.Client // for single-use token tracking
-	TokenTTL   time.Duration  // default 15min
+	Users     *mongodb.UserRepository
+	Audit     *mongodb.AuditRepository
+	JWTBytes  []byte
+	UIBaseURL string
+	Email     email.Sender
+	Redis     *rediss.Client // for single-use token tracking
+	TokenTTL  time.Duration  // default 15min
 }
 
 // passwordResetTokenTTL is the default lifetime of a reset link. Short
@@ -71,6 +72,7 @@ func PasswordResetRequest(deps PasswordResetDeps) gin.HandlerFunc {
 		// Always respond 200 to avoid email enumeration. The work below
 		// is "best effort" — log internal errors but don't surface.
 		c.JSON(http.StatusOK, gin.H{"ok": true})
+		recordAuditUnauth(c, deps.Audit, mongodb.AuditPasswordResetRequest, req.Email, "", "", nil)
 
 		go dispatchPasswordResetEmail(deps, req.Email)
 	}
@@ -197,6 +199,7 @@ func PasswordResetConfirm(deps PasswordResetDeps) gin.HandlerFunc {
 				slog.Warn("password_reset: redis Del failed (token still bound to TTL)", "err", err)
 			}
 		}
+		recordAuditUnauth(c, deps.Audit, mongodb.AuditPasswordResetConfirm, "", claims.UserID, "", nil)
 
 		c.JSON(http.StatusOK, gin.H{"ok": true})
 	}
