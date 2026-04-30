@@ -59,11 +59,7 @@ func NewServer(
 	authCfg config.AuthConfig,
 	rc *rediss.Client,
 	tr handler.TradesLister,
-	nr handler.NewsLister,
 	schwabAuth handler.SchwabAuthorizer,
-	owl handler.OptionsWatchlistStore,
-	fwl handler.FuturesWatchlistStore,
-	sc handler.ScraperConfigStore,
 	wfStore handler.WorkflowStore,
 	wfRunStore workflow.WorkflowRunStore,
 	wfExec *workflow.WorkflowExecutor,
@@ -240,15 +236,6 @@ func NewServer(
 	r.GET("/api/v1/trades/stream", handler.StreamTrades(tr, b))
 	r.GET("/api/v1/trades", handler.GetTrades(tr))
 
-	// News
-	r.GET("/api/v1/news", handler.GetNews(nr))
-	r.GET("/api/v1/news/stream", handler.StreamNews(nb))
-	r.GET("/api/v1/news/scrapers", requireAuth, handler.ListScraperConfigs(sc))
-	r.PATCH("/api/v1/news/scrapers/:source", requireAuth, handler.PatchScraperConfig(sc))
-	r.DELETE("/api/v1/news/scrapers/:source", requireAuth, handler.DeleteScraperConfig(sc))
-	r.DELETE("/api/v1/news/scrapers/:source/script", requireAuth, handler.DeleteScraperScript(sc))
-	r.POST("/api/v1/news/scrapers/validate", requireAuth, handler.ValidateScript())
-
 	// Workflows — tenant-scoped CRUD + run-time. WS routes accept
 	// ?token=<short-lived JWT> via the middleware's query fallback.
 	r.GET("/api/v1/workflows", requireAuth, handler.ListWorkflows(wfStore))
@@ -356,16 +343,6 @@ func NewServer(
 	r.GET("/auth/connections/:id/callback", handler.ConnectionOAuthCallback(connStore, db))
 	r.GET("/api/v1/connections/:id/oauth/url", requireAuth, handler.ConnectionOAuthURL(connStore, db, cfg.BaseURL))
 	r.GET("/api/v1/connections/:id/oauth/status", requireAuth, handler.ConnectionOAuthStatus(connStore, db))
-
-	// Options watchlist + stream
-	r.GET("/api/v1/options/watchlist", handler.GetOptionsWatchlist(owl))
-	r.PUT("/api/v1/options/watchlist", handler.SyncOptionsWatchlist(owl))
-	r.GET("/api/v1/options/stream", handler.StreamOptions(ob))
-
-	// Futures watchlist + stream
-	r.GET("/api/v1/futures/watchlist", handler.GetFuturesWatchlist(fwl))
-	r.PUT("/api/v1/futures/watchlist", handler.SyncFuturesWatchlist(fwl))
-	r.GET("/api/v1/futures/stream", handler.StreamFutures(fb))
 
 	// Sandbox (WebSocket) — executes user code; must be auth-gated.
 	// WS upgrades pass a short-lived ?token= via the middleware's

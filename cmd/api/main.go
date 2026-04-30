@@ -70,25 +70,12 @@ func main() {
 	}()
 
 	tr := mongodb.NewTradeRepository(mc.DB())
-	nr, err := mongodb.NewNewsRepository(ctx, mc.DB())
-	if err != nil {
-		slog.Error("failed to init news repository", "err", err)
-		os.Exit(1)
-	}
 
 	tokens := schwab.NewTokenManager(cfg.Schwab, mc.DB())
 	if err := tokens.Load(ctx); err != nil {
 		slog.Warn("schwab tokens not loaded (visit /auth/schwab to authorize)", "err", err)
 	}
 	tokens.RunRefresher(ctx)
-
-	owl := mongodb.NewOptionsWatchlistRepository(mc.DB())
-	fwl := mongodb.NewFuturesWatchlistRepository(mc.DB())
-	sc, err := mongodb.NewScraperConfigRepository(ctx, mc.DB())
-	if err != nil {
-		slog.Error("failed to init scraper config repository", "err", err)
-		os.Exit(1)
-	}
 
 	wfRepo, err := mongodb.NewWorkflowRepository(ctx, mc.DB())
 	if err != nil {
@@ -287,7 +274,7 @@ func main() {
 	if cfg.Email.Provider != "smtp" && cfg.Email.Provider != "log" && cfg.Email.Provider != "" {
 		slog.Warn("EMAIL_PROVIDER unrecognised, falling back to log-only sender", "provider", cfg.Email.Provider)
 	}
-	srv := api.NewServer(cfg.API, cfg.Auth, rc, tr, nr, tokens, owl, fwl, sc, wfRepo, runStore, wfExec, connRepo, connResolver, skillBackend, evalDeps, userRepo, tenantRepo, apiKeyRepo, workerHealthRepo, inviteRepo, auditRepo, emailSender, mc.DB(), sandboxRT)
+	srv := api.NewServer(cfg.API, cfg.Auth, rc, tr, tokens, wfRepo, runStore, wfExec, connRepo, connResolver, skillBackend, evalDeps, userRepo, tenantRepo, apiKeyRepo, workerHealthRepo, inviteRepo, auditRepo, emailSender, mc.DB(), sandboxRT)
 
 	go func() {
 		slog.Info("api server listening", "addr", srv.Addr())

@@ -26,9 +26,6 @@ func main() {
 	wr := worker.NewWorkerRegistry()
 
 	wr.RegisterWorker(worker.MongoDBWriterWorker)
-	wr.RegisterWorker(worker.NewsScraperWorker)
-	wr.RegisterWorker(worker.SchwabWatcherWorker)
-	wr.RegisterWorker(worker.SchwabFuturesWatcherWorker)
 	wr.RegisterWorker(worker.WorkflowCronWorker)
 	wr.RegisterWorker(worker.WorkflowRabbitMQWorker)
 	wr.RegisterWorker(worker.WorkflowRedisSubscribeWorker)
