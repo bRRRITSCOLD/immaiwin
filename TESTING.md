@@ -55,6 +55,7 @@ Real Mongo + Redis (per `.claude/rules/TESTING.md` — no mocks). Each suite use
 | `internal/api/handler` | `auth_integration_test.go` | Auth + multi-tenancy flow | `TestRegister_Login_RoundTrip_Returns200WithCookieAndUser`, `TestLogin_WrongPassword_Returns401`, `TestMe_NoCookie_Returns401`, `TestSwitchTenant_NonMember_Returns403`, `TestLogout_ClearsCookie_SubsequentMeReturns401`, `TestRegister_DuplicateEmail_Returns409` |
 | `internal/api/handler` | `webhook_integration_test.go` | Webhook trigger (HMAC SHA-256) | `TestWebhook_NoSecret_JSONBody_Returns202Accepted`, `TestWebhook_ValidSignature_WaitTrue_Returns200`, `TestWebhook_InvalidSignature_Returns401`, `TestWebhook_MissingSignature_WhenSecretConfigured_Returns401`, `TestWebhook_UnknownSlug_Returns404` |
 | `internal/api/handler` | `api_keys_integration_test.go` | API keys + Bearer auth | `TestCreate_ReturnsRawKey_OncePopulatedListShowsPrefixOnly`, `TestBearerAuth_ValidKey_ReturnsMe`, `TestBearerAuth_InvalidKey_Returns401`, `TestRevoke_BearerWithRevokedKey_Returns401`, `TestList_NoKeys_ReturnsEmptyArray`, `TestCreate_NoSession_Returns401` |
+| `internal/api/handler` | `tenant_integration_test.go` | Tenant invites + members + ownership transfer | `TestInviteFlow_BobAcceptsAlicesInvite_GainsAdminRole`, `TestInvite_ReAcceptSameToken_Returns410`, `TestInvite_NonAdminCaller_Returns403`, `TestOwnershipTransfer_HappyPath_FlipsRolesAndAuditLogs`, `TestOwnershipTransfer_SelfAsTarget_Returns400`, `TestOwnershipTransfer_NonMember_Returns400`, `TestOwnershipTransfer_AdminCaller_Returns403` |
 
 ### Setup conventions
 
@@ -84,9 +85,7 @@ Slot reserved here for the future catalog:
 - **Sandbox WS run** — `/api/v1/sandbox/run` WebSocket path has no automated test.
 - **Agent loop end-to-end** — burns LLM tokens; defer to record-and-replay or VCR-style harness.
 - **OAuth login** — Google + GitHub provider-callback paths have no integration test (manual only).
-- **Tenant invites + member management** — invite create / accept / revoke / RemoveMember have no integration test.
-- **Tenant ownership transfer** — endpoint shipped in PR #33; no integration test.
-- **Audit log** — append-only ledger has no integration test (smoke only).
+- **Audit log** — append-only ledger; partially covered by ownership-transfer test (verifies write + read of one action), but not the full action surface.
 - **Password reset** — request + confirm flow has no integration test.
 
 ---
