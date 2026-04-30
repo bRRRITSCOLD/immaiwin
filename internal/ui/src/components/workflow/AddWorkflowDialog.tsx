@@ -17,8 +17,7 @@ import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from '~/c
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '~/components/ui/tabs'
 import { Plus, Upload, FileUp, Copy } from 'lucide-react'
 import type { Workflow } from './useWorkflowStore'
-
-const API_BASE = import.meta.env['VITE_API_URL'] ?? 'http://localhost:8080'
+import { api, ApiError } from '~/lib/api'
 
 const nameSchema = z.string().min(1, 'Required').max(100, 'Too long')
 
@@ -41,33 +40,24 @@ export function AddWorkflowDialog({ onCreated }: Props) {
     onSubmit: async ({ value }) => {
       const id = crypto.randomUUID()
       try {
-        const res = await fetch(`${API_BASE}/api/v1/workflows/${id}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            name: value.name,
-            params: {},
-            nodes: [
-              {
-                id: 'trigger-1',
-                type: 'trigger',
-                position: { x: 250, y: 50 },
-                data: { trigger_type: 'manual' },
-              },
-            ],
-            edges: [],
-          }),
+        await api.put(`/api/v1/workflows/${id}`, {
+          name: value.name,
+          params: {},
+          nodes: [
+            {
+              id: 'trigger-1',
+              type: 'trigger',
+              position: { x: 250, y: 50 },
+              data: { trigger_type: 'manual' },
+            },
+          ],
+          edges: [],
         })
-        if (!res.ok) {
-          const data = await res.json()
-          toast.error(data.error ?? 'Failed to create workflow')
-          return
-        }
         toast.success(`Workflow "${value.name}" created`)
         handleClose()
         onCreated()
-      } catch {
-        toast.error('Network error')
+      } catch (err) {
+        toast.error(err instanceof ApiError ? err.message : 'Network error')
       }
     },
   })
@@ -87,9 +77,8 @@ export function AddWorkflowDialog({ onCreated }: Props) {
   useEffect(() => {
     if (tab !== 'template' || templates.length > 0) return
     setTmplLoading(true)
-    fetch(`${API_BASE}/api/v1/workflow_templates`)
-      .then((r) => r.json())
-      .then((d: { templates: TemplateMeta[] }) => setTemplates(d.templates ?? []))
+    api.get<{ templates: TemplateMeta[] }>('/api/v1/workflow_templates')
+      .then((d) => setTemplates(d.templates ?? []))
       .catch(() => toast.error('Failed to load templates'))
       .finally(() => setTmplLoading(false))
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -100,28 +89,19 @@ export function AddWorkflowDialog({ onCreated }: Props) {
     try {
       const id = crypto.randomUUID()
       const wf = tmpl.workflow
-      const res = await fetch(`${API_BASE}/api/v1/workflows/${id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: `${wf.name} (copy)`,
-          params: wf.params ?? {},
-          nodes: wf.nodes ?? [],
-          edges: wf.edges ?? [],
-          ...(wf.cost_limits ? { cost_limits: wf.cost_limits } : {}),
-          ...(wf.params_schema ? { params_schema: wf.params_schema } : {}),
-        }),
+      await api.put(`/api/v1/workflows/${id}`, {
+        name: `${wf.name} (copy)`,
+        params: wf.params ?? {},
+        nodes: wf.nodes ?? [],
+        edges: wf.edges ?? [],
+        ...(wf.cost_limits ? { cost_limits: wf.cost_limits } : {}),
+        ...(wf.params_schema ? { params_schema: wf.params_schema } : {}),
       })
-      if (!res.ok) {
-        const d = await res.json()
-        toast.error(d.error ?? 'Failed to fork template')
-        return
-      }
       toast.success(`Forked "${tmpl.name}"`)
       handleClose()
       onCreated()
-    } catch {
-      toast.error('Network error')
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : 'Network error')
     } finally {
       setTmplForking(false)
     }
@@ -169,27 +149,18 @@ export function AddWorkflowDialog({ onCreated }: Props) {
     try {
       const wfId = crypto.randomUUID()
       const wf = bundle.workflow
-      const res = await fetch(`${API_BASE}/api/v1/workflows/${wfId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: importName || wf.name,
-          params: wf.params ?? {},
-          nodes: wf.nodes ?? [],
-          edges: wf.edges ?? [],
-        }),
+      await api.put(`/api/v1/workflows/${wfId}`, {
+        name: importName || wf.name,
+        params: wf.params ?? {},
+        nodes: wf.nodes ?? [],
+        edges: wf.edges ?? [],
       })
-      if (!res.ok) {
-        const d = await res.json()
-        toast.error(d.error ?? 'Failed to import workflow')
-        return
-      }
 
       toast.success(`Imported "${importName}"`)
       handleClose()
       onCreated()
-    } catch {
-      toast.error('Network error')
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : 'Network error')
     } finally {
       setImporting(false)
     }

@@ -8,12 +8,11 @@ import type { RunResults, AgentIterSummary } from '~/components/workflow/RunResu
 import type { Node, Edge } from '@xyflow/react'
 import { useQueryState } from '~/hooks/useQueryState'
 import { useWorkflowRunStream } from '~/hooks/useWorkflowRunStream'
+import { api, ApiError } from '~/lib/api'
 
 export const Route = createFileRoute('/workflows')({
   component: WorkflowsPage,
 })
-
-const API_BASE = import.meta.env['VITE_API_URL'] ?? 'http://localhost:8080'
 
 function WorkflowsPage() {
   const { workflows, activeId, setWorkflows, setConnections, setActive, activeWorkflow } = useWorkflowStore()
@@ -141,12 +140,10 @@ function WorkflowsPage() {
 
   const load = useCallback(async () => {
     try {
-      const [wfRes, connRes] = await Promise.all([
-        fetch(`${API_BASE}/api/v1/workflows`),
-        fetch(`${API_BASE}/api/v1/connections`),
+      const [wfs, conns] = await Promise.all([
+        api.get<Workflow[]>('/api/v1/workflows'),
+        api.get<Connection[]>('/api/v1/connections'),
       ])
-      const wfs: Workflow[] = await wfRes.json()
-      const conns: Connection[] = await connRes.json()
       setWorkflows(wfs)
       setConnections(conns)
     } catch {
@@ -174,19 +171,10 @@ function WorkflowsPage() {
     const wf = activeWorkflow()
     if (!wf) return
     try {
-      const res = await fetch(`${API_BASE}/api/v1/workflows/${wf.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...wf, nodes, edges, params }),
-      })
-      if (!res.ok) {
-        const data = await res.json()
-        toast.error(`Save failed: ${data.error}`)
-      } else {
-        toast.success('Workflow saved')
-      }
-    } catch {
-      toast.error('Network error saving workflow')
+      await api.put(`/api/v1/workflows/${wf.id}`, { ...wf, nodes, edges, params })
+      toast.success('Workflow saved')
+    } catch (err) {
+      toast.error(err instanceof ApiError ? `Save failed: ${err.message}` : 'Network error saving workflow')
     }
   }
 
@@ -198,18 +186,9 @@ function WorkflowsPage() {
     // run won't pick up unsaved canvas changes either, so the auto-save
     // step is unchanged from the legacy POST flow.
     try {
-      const saveRes = await fetch(`${API_BASE}/api/v1/workflows/${wf.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(wf),
-      })
-      if (!saveRes.ok) {
-        const data = await saveRes.json()
-        toast.error(`Auto-save failed: ${data.error}`)
-        return
-      }
-    } catch {
-      toast.error('Network error auto-saving before run')
+      await api.put(`/api/v1/workflows/${wf.id}`, wf)
+    } catch (err) {
+      toast.error(err instanceof ApiError ? `Auto-save failed: ${err.message}` : 'Network error auto-saving before run')
       return
     }
 

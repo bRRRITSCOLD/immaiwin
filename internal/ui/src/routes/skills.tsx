@@ -19,12 +19,12 @@ import { Badge } from '~/components/ui/badge'
 import { Button } from '~/components/ui/button'
 import { Separator } from '~/components/ui/separator'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '~/components/ui/table'
+import { api, ApiError } from '~/lib/api'
 
 export const Route = createFileRoute('/skills')({
   component: SkillsPage,
 })
 
-const API_BASE = import.meta.env['VITE_API_URL'] ?? 'http://localhost:8080'
 
 interface ManifestTool {
   id?: string
@@ -97,12 +97,10 @@ function SkillsPage() {
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const res = await fetch(`${API_BASE}/api/v1/skills`)
-      if (!res.ok) throw new Error(`status ${res.status}`)
-      const data: SkillRecord[] = await res.json()
+      const data = await api.get<SkillRecord[]>('/api/v1/skills')
       setRecords(data)
     } catch (err) {
-      toast.error(`Failed to load skills: ${err instanceof Error ? err.message : 'unknown'}`)
+      toast.error(`Failed to load skills: ${err instanceof ApiError ? err.message : 'unknown'}`)
     } finally {
       setLoading(false)
     }
@@ -115,9 +113,7 @@ function SkillsPage() {
   const refresh = useCallback(async () => {
     setRefreshing(true)
     try {
-      const res = await fetch(`${API_BASE}/api/v1/skills/refresh`, { method: 'POST' })
-      if (!res.ok) throw new Error(`status ${res.status}`)
-      const result: RefreshResult = await res.json()
+      const result = await api.post<RefreshResult>('/api/v1/skills/refresh')
       if (result.errors && result.errors.length > 0) {
         toast.warning(`Imported ${result.imported}, ${result.errors.length} error${result.errors.length === 1 ? '' : 's'}`, {
           description: result.errors.join('\n'),

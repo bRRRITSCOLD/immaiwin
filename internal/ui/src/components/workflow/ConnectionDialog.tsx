@@ -11,8 +11,7 @@ import { Checkbox } from '~/components/ui/checkbox'
 import { Separator } from '~/components/ui/separator'
 import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from '~/components/ui/field'
 import type { Connection, ConnectionType } from './useWorkflowStore'
-
-const API_BASE = import.meta.env['VITE_API_URL'] ?? 'http://localhost:8080'
+import { api, ApiError } from '~/lib/api'
 
 // ── validators ───────────────────────────────────────────────────────────────
 
@@ -66,23 +65,18 @@ export function ConnectionDialog({ open, onOpenChange, connection, onSaved }: Pr
     },
     onSubmit: async ({ value }) => {
       try {
-        const res = await fetch(`${API_BASE}/api/v1/connections/${id}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: value.name, type: value.type, config: stripEmpty(value.config) }),
+        await api.put(`/api/v1/connections/${id}`, {
+          name: value.name,
+          type: value.type,
+          config: stripEmpty(value.config),
         })
-        if (!res.ok) {
-          const d = await res.json()
-          toast.error(`Save failed: ${d.error}`)
-          return
-        }
         toast.success('Connection saved')
         setSaved(true)
         if (!connection) setJustCreated(true)
         onOpenChange(false)
         onSaved()
-      } catch {
-        toast.error('Network error')
+      } catch (err) {
+        toast.error(err instanceof ApiError ? `Save failed: ${err.message}` : 'Network error')
       }
     },
   })
@@ -103,16 +97,14 @@ export function ConnectionDialog({ open, onOpenChange, connection, onSaved }: Pr
     const { type, config } = form.state.values
     setTesting(true)
     try {
-      const res = await fetch(`${API_BASE}/api/v1/connections/test`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type, config: stripEmpty(config) }),
+      const result = await api.post<{ ok: boolean; error?: string }>('/api/v1/connections/test', {
+        type,
+        config: stripEmpty(config),
       })
-      const result = await res.json()
       if (result.ok) toast.success('Connection successful')
       else toast.error(`Connection failed: ${result.error}`)
-    } catch {
-      toast.error('Network error')
+    } catch (err) {
+      toast.error(err instanceof ApiError ? `Connection failed: ${err.message}` : 'Network error')
     } finally {
       setTesting(false)
     }

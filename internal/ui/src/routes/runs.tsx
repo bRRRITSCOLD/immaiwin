@@ -24,12 +24,12 @@ import {
 } from '~/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '~/components/ui/table'
 import type { Workflow } from '~/components/workflow/useWorkflowStore'
+import { api, ApiError } from '~/lib/api'
 
 export const Route = createFileRoute('/runs')({
   component: RunsPage,
 })
 
-const API_BASE = import.meta.env['VITE_API_URL'] ?? 'http://localhost:8080'
 
 type RunStatus = 'running' | 'success' | 'error' | 'cancelled' | 'paused' | 'pending_approval'
 
@@ -191,8 +191,7 @@ function RunsPage() {
 
   const loadWorkflows = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/v1/workflows`)
-      const wfs: Workflow[] = await res.json()
+      const wfs = await api.get<Workflow[]>('/api/v1/workflows')
       setWorkflows(wfs)
     } catch {
       toast.error('Failed to load workflows')
@@ -207,16 +206,10 @@ function RunsPage() {
       if (statusFilter !== 'all') params.set('status', statusFilter)
       params.set('limit', String(limit))
       params.set('skip', String(skip))
-      const res = await fetch(`${API_BASE}/api/v1/workflow_runs?${params}`)
-      if (!res.ok) {
-        const data = await res.json()
-        toast.error(`Failed to load runs: ${data.error}`)
-        return
-      }
-      const data: WorkflowRun[] = await res.json()
+      const data = await api.get<WorkflowRun[]>(`/api/v1/workflow_runs?${params}`)
       setRuns(data ?? [])
-    } catch {
-      toast.error('Network error loading runs')
+    } catch (err) {
+      toast.error(err instanceof ApiError ? `Failed to load runs: ${err.message}` : 'Network error loading runs')
     } finally {
       setLoading(false)
     }
@@ -235,16 +228,11 @@ function RunsPage() {
       if (!confirm('Force-cancel this run? Marks it as cancelled.')) return
       setCancellingID(id)
       try {
-        const res = await fetch(`${API_BASE}/api/v1/workflow_runs/${id}/cancel`, { method: 'POST' })
-        if (!res.ok) {
-          const body = await res.json().catch(() => ({}))
-          toast.error(`Cancel failed: ${body.error ?? res.statusText}`)
-          return
-        }
+        await api.post(`/api/v1/workflow_runs/${id}/cancel`)
         toast.success('Run cancelled')
         loadRuns()
-      } catch {
-        toast.error('Network error cancelling run')
+      } catch (err) {
+        toast.error(err instanceof ApiError ? `Cancel failed: ${err.message}` : 'Network error cancelling run')
       } finally {
         setCancellingID(null)
       }
@@ -263,9 +251,7 @@ function RunsPage() {
       return
     }
     try {
-      const res = await fetch(`${API_BASE}/api/v1/workflow_runs/daily_total?workflow_id=${encodeURIComponent(workflowFilter)}`)
-      if (!res.ok) return
-      const data: DailyTotal = await res.json()
+      const data = await api.get<DailyTotal>(`/api/v1/workflow_runs/daily_total?workflow_id=${encodeURIComponent(workflowFilter)}`)
       setDailyTotal(data)
     } catch {
       // silent — chip is purely informational, not a hard requirement
@@ -280,9 +266,7 @@ function RunsPage() {
       return
     }
     try {
-      const res = await fetch(`${API_BASE}/api/v1/workflow_runs/daily_totals`)
-      if (!res.ok) return
-      const data: DailyTotalsBundle = await res.json()
+      const data = await api.get<DailyTotalsBundle>('/api/v1/workflow_runs/daily_totals')
       setDailyTotals(data)
     } catch {
       // silent — informational rollup, not blocking

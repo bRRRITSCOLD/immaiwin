@@ -4,8 +4,7 @@ import { Sparkles, ChevronDown, ChevronRight, RefreshCcw } from 'lucide-react'
 import { Textarea } from '~/components/ui/textarea'
 import { Button } from '~/components/ui/button'
 import { toast } from 'sonner'
-
-const API_BASE = import.meta.env['VITE_API_URL'] ?? 'http://localhost:8080'
+import { api, ApiError } from '~/lib/api'
 
 interface Props {
   nodeId: string
@@ -86,32 +85,21 @@ export function SkillsPanel({ nodeId, data }: Props) {
 
   async function loadAvailable() {
     try {
-      const res = await fetch(`${API_BASE}/api/v1/skills`)
-      if (!res.ok) {
-        toast.error('Failed to load installed skills')
-        return
-      }
-      const recs: RegistryRecord[] = await res.json()
+      const recs = await api.get<RegistryRecord[]>('/api/v1/skills')
       setAvailable(recs)
       setLoaded(true)
-    } catch {
-      toast.error('Network error loading skills')
+    } catch (err) {
+      toast.error(err instanceof ApiError ? 'Failed to load installed skills' : 'Network error loading skills')
     }
   }
 
   async function handleRefresh() {
     try {
-      const res = await fetch(`${API_BASE}/api/v1/skills/refresh`, { method: 'POST' })
-      if (!res.ok) {
-        const d = await res.json().catch(() => ({}))
-        toast.error(d.error ?? 'Refresh failed')
-        return
-      }
-      const body = await res.json()
+      const body = await api.post<{ imported?: number }>('/api/v1/skills/refresh')
       toast.success(`Imported ${body.imported ?? 0} skill version(s) from sources`)
       await loadAvailable()
-    } catch {
-      toast.error('Network error refreshing skills')
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : 'Network error refreshing skills')
     }
   }
 

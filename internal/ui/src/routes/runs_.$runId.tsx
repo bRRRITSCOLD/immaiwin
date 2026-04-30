@@ -19,6 +19,7 @@ import { toast } from 'sonner'
 import { ArrowLeft, Play } from 'lucide-react'
 import { Badge } from '~/components/ui/badge'
 import { Button } from '~/components/ui/button'
+import { api, ApiError } from '~/lib/api'
 import {
   Collapsible,
   CollapsibleContent,
@@ -30,7 +31,6 @@ export const Route = createFileRoute('/runs_/$runId')({
   component: RunDetailPage,
 })
 
-const API_BASE = import.meta.env['VITE_API_URL'] ?? 'http://localhost:8080'
 
 type RunStatus = 'running' | 'success' | 'error' | 'cancelled' | 'paused' | 'pending_approval'
 
@@ -219,13 +219,7 @@ function RunDetailPage() {
       return prev
     })
     try {
-      const res = await fetch(`${API_BASE}/api/v1/workflow_runs/${runId}`)
-      if (!res.ok) {
-        const err = await res.json()
-        toast.error(`Failed to load run: ${err.error}`)
-        return
-      }
-      const next = (await res.json()) as RunDetailResponse
+      const next = await api.get<RunDetailResponse>(`/api/v1/workflow_runs/${runId}`)
       // Skip the setState when the new payload is byte-equivalent to
       // the current one. Polling otherwise rebuilds the entire run-
       // detail subtree every 2s and the user sees a noticeable
@@ -237,8 +231,8 @@ function RunDetailPage() {
         }
         return next
       })
-    } catch {
-      toast.error('Network error loading run')
+    } catch (err) {
+      toast.error(err instanceof ApiError ? `Failed to load run: ${err.message}` : 'Network error loading run')
     } finally {
       setLoading(false)
     }
@@ -277,30 +271,18 @@ function RunDetailPage() {
           data.run.pending_approval.kind === 'node'
             ? data.run.pending_approval.node_id
             : data.run.pending_approval.tool_call_id
-        const res = await fetch(
-          `${API_BASE}/api/v1/workflow_runs/${data.run.id}/approval`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              tool_call_id: correlationID,
-              approved,
-              reason,
-            }),
-          },
-        )
-        if (!res.ok) {
-          const body = await res.json().catch(() => ({}))
-          toast.error(`Approval submit failed: ${body.error ?? res.statusText}`)
-          return
-        }
+        await api.post(`/api/v1/workflow_runs/${data.run.id}/approval`, {
+          tool_call_id: correlationID,
+          approved,
+          reason,
+        })
         toast.success(approved ? 'Approved — run resuming' : 'Rejected — run resuming')
         // Refresh once immediately; the polling effect picks up from
         // there. Server still has to flush state writes, so initial
         // refresh may show pending — the poll covers that.
         load()
-      } catch {
-        toast.error('Network error submitting approval')
+      } catch (err) {
+        toast.error(err instanceof ApiError ? `Approval submit failed: ${err.message}` : 'Network error submitting approval')
       } finally {
         setSubmittingApproval(false)
       }
@@ -313,19 +295,11 @@ function RunDetailPage() {
     if (!confirm('Force-cancel this run? The run record will be marked as cancelled. If a worker is still alive somewhere, it will receive a reject signal and unblock.')) return
     setCancelling(true)
     try {
-      const res = await fetch(
-        `${API_BASE}/api/v1/workflow_runs/${data.run.id}/cancel`,
-        { method: 'POST' },
-      )
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}))
-        toast.error(`Cancel failed: ${body.error ?? res.statusText}`)
-        return
-      }
+      await api.post(`/api/v1/workflow_runs/${data.run.id}/cancel`)
       toast.success('Run cancelled')
       load()
-    } catch {
-      toast.error('Network error cancelling run')
+    } catch (err) {
+      toast.error(err instanceof ApiError ? `Cancel failed: ${err.message}` : 'Network error cancelling run')
     } finally {
       setCancelling(false)
     }
@@ -335,20 +309,13 @@ function RunDetailPage() {
     if (!data?.run) return
     setReplaying(true)
     try {
-      const res = await fetch(`${API_BASE}/api/v1/workflows/${data.run.workflow_id}/run`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ input: data.run.trigger_input ?? null }),
+      const body = await api.post<{ run_id?: string }>(`/api/v1/workflows/${data.run.workflow_id}/run`, {
+        input: data.run.trigger_input ?? null,
       })
-      const body = await res.json()
-      if (!res.ok) {
-        toast.error(`Replay failed: ${body.error ?? 'unknown'}`)
-        return
-      }
       // POST /workflows/:id/run is synchronous — when this resolves the
       // executor has finished (or paused). Open the new run's detail in a
       // fresh tab so the current view stays parked on the original run.
-      const newID = body.run_id as string | undefined
+      const newID = body.run_id
       if (newID) {
         toast.success('Replay completed')
         window.open(`/runs/${newID}`, '_blank', 'noopener,noreferrer')
