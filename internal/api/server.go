@@ -355,6 +355,13 @@ func (s *Server) Start(ctx context.Context) error {
 	return s.server.ListenAndServe()
 }
 
+// Handler returns the wired-up gin router. Exposed so integration
+// tests can mount the full server (real routes + middleware chain)
+// behind an httptest.NewServer without binding a port via Start.
+func (s *Server) Handler() http.Handler {
+	return s.server.Handler
+}
+
 func (s *Server) Shutdown(ctx context.Context) error {
 	return s.server.Shutdown(ctx)
 }
