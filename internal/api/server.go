@@ -333,6 +333,21 @@ func NewServer(
 			handler.ListAuditLog(handler.AuditLogDeps{Audit: audit, Tenants: tenants}))
 	}
 
+	// Run-level metrics dashboard payload. Owner/admin only — cost
+	// burn + activity counts are sensitive to non-admin members.
+	if wfRunStore != nil && tenants != nil {
+		runRepo, _ := wfRunStore.(*mongodb.WorkflowRunRepository)
+		wfRepoConcrete, _ := wfStore.(*mongodb.WorkflowRepository)
+		if runRepo != nil {
+			r.GET("/api/v1/runs/metrics", requireAuth,
+				handler.GetRunMetrics(handler.RunMetricsDeps{
+					Runs:      runRepo,
+					Tenants:   tenants,
+					Workflows: wfRepoConcrete,
+				}))
+		}
+	}
+
 	// Evals (P-eval). Disabled when EvalDeps is empty; handlers respond
 	// with 503 so the UI can fail open.
 	r.GET("/api/v1/evals", requireAuth, handler.ListEvals(evalDeps))

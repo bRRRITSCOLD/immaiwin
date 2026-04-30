@@ -8,7 +8,7 @@
 //   - On switch: calls /auth/switch_tenant which mints a new JWT cookie
 //     w/ the new active tenant; store re-hydrates via /auth/me.
 
-import { ChevronsUpDown, Check, Building2, LogOut, Settings } from 'lucide-react'
+import { ChevronsUpDown, Check, Building2, LogOut, Settings, BarChart3 } from 'lucide-react'
 import { useNavigate } from '@tanstack/react-router'
 import { toast } from 'sonner'
 import {
@@ -78,6 +78,10 @@ export function TenantSwitcher() {
           </DropdownMenuItem>
         ))}
         <DropdownMenuSeparator />
+        <DropdownMenuItem onSelect={() => void navigate({ to: '/admin' })} className="gap-2">
+          <BarChart3 className="size-4" />
+          Admin
+        </DropdownMenuItem>
         <DropdownMenuItem onSelect={() => void navigate({ to: '/settings' })} className="gap-2">
           <Settings className="size-4" />
           Settings
