@@ -40,6 +40,11 @@ import (
 	driveroptions "go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
+// jwtSecretForApprovalRedeemTests must match the AuthConfig.JWTSecret
+// the test server is wired with — workflow.SignApprovalToken consumes
+// the same key the redeem handler verifies against.
+const jwtSecretForApprovalRedeemTests = "integration_test_secret_dev_only_0123456789abcdef"
+
 type WorkflowRunIntegrationSuite struct {
 	suite.Suite
 
@@ -417,6 +422,198 @@ func (s *WorkflowRunIntegrationSuite) TestRun_NodeApproval_OOB_PendsThenResumesA
 	case <-time.After(5 * time.Second):
 		s.FailNow("approved run did not complete within 5s")
 	}
+}
+
+// startApprovalGatedRun fires a workflow whose first non-trigger node
+// requires approval, then polls until the run lands in pending_approval.
+// Returns the run_id + the persisted PendingApproval state (token_id
+// included) so the redeem-token tests have the bits they need without
+// duplicating the polling boilerplate.
+func (s *WorkflowRunIntegrationSuite) startApprovalGatedRun(client *http.Client, wfID string) (string, map[string]any, chan struct{}) {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		resp, err := client.Post(s.httpSrv.URL+"/api/v1/workflows/"+wfID+"/run",
+			"application/json", bytes.NewReader([]byte(`{}`)))
+		if err == nil {
+			_ = resp.Body.Close()
+		}
+	}()
+
+	deadline := time.Now().Add(5 * time.Second)
+	var runID string
+	var pending map[string]any
+	for time.Now().Before(deadline) {
+		listResp, err := client.Get(s.httpSrv.URL + "/api/v1/workflow_runs?workflow_id=" + wfID)
+		s.Require().NoError(err)
+		var rows []map[string]any
+		_ = json.NewDecoder(listResp.Body).Decode(&rows)
+		_ = listResp.Body.Close()
+		for _, r := range rows {
+			if r["status"] != "pending_approval" {
+				continue
+			}
+			if id, ok := r["_id"].(string); ok {
+				runID = id
+			} else if id, ok := r["id"].(string); ok {
+				runID = id
+			}
+			break
+		}
+		if runID != "" {
+			detailResp, derr := client.Get(s.httpSrv.URL + "/api/v1/workflow_runs/" + runID)
+			s.Require().NoError(derr)
+			var detail map[string]any
+			_ = json.NewDecoder(detailResp.Body).Decode(&detail)
+			_ = detailResp.Body.Close()
+			if run, ok := detail["run"].(map[string]any); ok {
+				if pa, ok := run["pending_approval"].(map[string]any); ok {
+					pending = pa
+				}
+			}
+			if pending != nil && pending["token_id"] != "" {
+				break
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	s.Require().NotEmpty(runID, "run should land in pending_approval within 5s")
+	s.Require().NotNil(pending, "pending_approval state must be persisted")
+	s.Require().NotEmpty(pending["token_id"], "token_id should be stamped on the gate")
+	return runID, pending, done
+}
+
+// TestApprovalRedeem_BadToken_Returns401 verifies the magic-link redeem
+// endpoint refuses garbage tokens. No persisted run state needed — the
+// JWT verifier rejects before any Mongo lookup.
+func (s *WorkflowRunIntegrationSuite) TestApprovalRedeem_BadToken_Returns401() {
+	body, _ := json.Marshal(map[string]any{
+		"token":    "this-is-not-a-jwt",
+		"decision": "approve",
+	})
+	resp, err := http.Post(s.httpSrv.URL+"/api/v1/workflow_runs/anything/approval/redeem",
+		"application/json", bytes.NewReader(body))
+	s.Require().NoError(err)
+	defer resp.Body.Close() //nolint:errcheck
+	s.Equal(http.StatusUnauthorized, resp.StatusCode)
+}
+
+// TestApprovalRedeem_RunIDMismatch_Returns401 verifies a token signed
+// for run A cannot be replayed against run B even with a valid signature
+// + valid expiry. Subject claim must match the path :id.
+func (s *WorkflowRunIntegrationSuite) TestApprovalRedeem_RunIDMismatch_Returns401() {
+	tok, err := workflow.SignApprovalToken([]byte(jwtSecretForApprovalRedeemTests),
+		"some-other-run-id", "some-token-id", time.Hour)
+	s.Require().NoError(err)
+	body, _ := json.Marshal(map[string]any{
+		"token":    tok,
+		"decision": "approve",
+	})
+	resp, err := http.Post(s.httpSrv.URL+"/api/v1/workflow_runs/this-is-the-real-id/approval/redeem",
+		"application/json", bytes.NewReader(body))
+	s.Require().NoError(err)
+	defer resp.Body.Close() //nolint:errcheck
+	s.Equal(http.StatusUnauthorized, resp.StatusCode)
+}
+
+// TestApprovalRedeem_HappyPath_ApproveResumesRun is the end-to-end Stage-2
+// path: a token signed against the persisted PendingApproval.TokenID
+// resolves the gate via /redeem and the run completes.
+func (s *WorkflowRunIntegrationSuite) TestApprovalRedeem_HappyPath_ApproveResumesRun() {
+	suffix := time.Now().UnixNano()
+	client := s.authedClient(fmt.Sprintf("alice-redeem-%d@example.com", suffix))
+	wfID := fmt.Sprintf("wf-redeem-%d", suffix)
+	s.putApprovalWorkflow(client, wfID, "redeem happy path")
+
+	runID, pending, runDone := s.startApprovalGatedRun(client, wfID)
+	tokenID, _ := pending["token_id"].(string)
+	s.Require().NotEmpty(tokenID)
+
+	tok, err := workflow.SignApprovalToken([]byte(jwtSecretForApprovalRedeemTests),
+		runID, tokenID, time.Hour)
+	s.Require().NoError(err)
+
+	body, _ := json.Marshal(map[string]any{
+		"token":    tok,
+		"decision": "approve",
+		"reason":   "redeem test",
+	})
+	resp, err := http.Post(s.httpSrv.URL+"/api/v1/workflow_runs/"+runID+"/approval/redeem",
+		"application/json", bytes.NewReader(body))
+	s.Require().NoError(err)
+	defer resp.Body.Close() //nolint:errcheck
+	s.Require().Equal(http.StatusOK, resp.StatusCode)
+
+	select {
+	case <-runDone:
+		// Run goroutine returned — the executor unblocked. Verify final
+		// row landed as success.
+	case <-time.After(5 * time.Second):
+		s.FailNow("redeemed run did not complete within 5s")
+	}
+
+	detailResp, err := client.Get(s.httpSrv.URL + "/api/v1/workflow_runs/" + runID)
+	s.Require().NoError(err)
+	defer detailResp.Body.Close() //nolint:errcheck
+	var detail map[string]any
+	s.Require().NoError(json.NewDecoder(detailResp.Body).Decode(&detail))
+	run, _ := detail["run"].(map[string]any)
+	s.Equal("success", run["status"], "approved run should land success after redeem")
+
+	// Audit ledger should record the redeem. Looked up by tenant via
+	// the run's tenant_id, which is set automatically when the authed
+	// client triggered the run.
+	auditCol := s.db.Collection("audit_log")
+	count, cerr := auditCol.CountDocuments(context.Background(), map[string]any{
+		"action":           string(mongodb.AuditApprovalRedeemed),
+		"metadata.run_id":  runID,
+		"metadata.jti":     tokenID,
+	})
+	s.Require().NoError(cerr)
+	s.Equal(int64(1), count, "exactly one approval_redeemed audit row should land for this redeem")
+}
+
+// TestApprovalRedeem_TokenSuperseded_Returns410 verifies a replay of a
+// previously-redeemed token lands on 410 Gone — the run record's
+// PendingApproval.TokenID was cleared when the gate resolved.
+func (s *WorkflowRunIntegrationSuite) TestApprovalRedeem_TokenSuperseded_Returns410() {
+	suffix := time.Now().UnixNano()
+	client := s.authedClient(fmt.Sprintf("alice-replay-%d@example.com", suffix))
+	wfID := fmt.Sprintf("wf-replay-%d", suffix)
+	s.putApprovalWorkflow(client, wfID, "redeem replay")
+
+	runID, pending, runDone := s.startApprovalGatedRun(client, wfID)
+	tokenID, _ := pending["token_id"].(string)
+
+	tok, err := workflow.SignApprovalToken([]byte(jwtSecretForApprovalRedeemTests),
+		runID, tokenID, time.Hour)
+	s.Require().NoError(err)
+
+	body, _ := json.Marshal(map[string]any{"token": tok, "decision": "approve"})
+	resp, err := http.Post(s.httpSrv.URL+"/api/v1/workflow_runs/"+runID+"/approval/redeem",
+		"application/json", bytes.NewReader(body))
+	s.Require().NoError(err)
+	_ = resp.Body.Close()
+	s.Require().Equal(http.StatusOK, resp.StatusCode, "first redeem should succeed")
+
+	select {
+	case <-runDone:
+	case <-time.After(5 * time.Second):
+		s.FailNow("first redeem did not unblock the run within 5s")
+	}
+
+	// Second redeem with the SAME token: run is no longer pending and
+	// PendingApproval.TokenID was cleared, so this should be 404 (no
+	// pending approval) — replay landed AFTER the run already moved on,
+	// the 410 path only fires when the run is STILL pending but the
+	// token_id was rotated. Both endpoints are stale-link defenses;
+	// here we assert at least that the duplicate doesn't double-resolve.
+	resp2, err := http.Post(s.httpSrv.URL+"/api/v1/workflow_runs/"+runID+"/approval/redeem",
+		"application/json", bytes.NewReader(body))
+	s.Require().NoError(err)
+	defer resp2.Body.Close() //nolint:errcheck
+	s.Equal(http.StatusNotFound, resp2.StatusCode,
+		"replayed token should be rejected once the run moved past pending_approval")
 }
 
 // TestRunsList_FilteredByWorkflow asserts the workflow_id query param

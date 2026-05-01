@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/bRRRITSCOLD/burrow/internal/llm"
+	"github.com/oklog/ulid/v2"
 )
 
 // Agent run defaults — overridable via node data fields.
@@ -440,6 +441,7 @@ func (e *WorkflowExecutor) runAIAgent(ctx context.Context, node Node, data map[s
 								ToolName:    call.Name,
 								ToolArgs:    rawJSONToAny(call.Input),
 								RequestedAt: time.Now().UTC(),
+								TokenID:     ulid.Make().String(),
 							}
 							if uerr := e.RunRepo.Update(ctx, rec); uerr != nil {
 								slog.Warn("ai_agent: persist pending_approval failed", "run_id", env.runID, "err", uerr)

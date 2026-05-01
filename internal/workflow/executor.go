@@ -237,6 +237,10 @@ func (e *WorkflowExecutor) waitNodeApproval(ctx context.Context, env *runEnv, no
 	}
 
 	// Persist pending state so the run-detail UI surfaces the gate.
+	// TokenID is a per-gate nonce that the magic-link redeem endpoint
+	// matches against the inbound JWT's `jti` — once cleared (decision
+	// landed, run cancelled, ctx died) a stale link can't resurrect
+	// the gate.
 	if rec, gerr := e.RunRepo.Get(ctx, env.runID); gerr == nil {
 		rec.Status = RunStatusPendingApproval
 		rec.PendingApproval = &PendingApprovalState{
@@ -246,6 +250,7 @@ func (e *WorkflowExecutor) waitNodeApproval(ctx context.Context, env *runEnv, no
 			NodeName:    name,
 			NodeInput:   input,
 			RequestedAt: time.Now().UTC(),
+			TokenID:     ulid.Make().String(),
 		}
 		if uerr := e.RunRepo.Update(ctx, rec); uerr != nil {
 			slog.Warn("workflow: persist pending_approval (node) failed", "run_id", env.runID, "node", node.ID, "err", uerr)

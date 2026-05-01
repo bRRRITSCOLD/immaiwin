@@ -160,6 +160,22 @@ func UpsertWorkflow(store WorkflowStore) gin.HandlerFunc {
 			}
 		}
 
+		// Validate ApprovalChannel — type allowlist + non-empty Target
+		// for transports that need one. Empty target on "none" type is
+		// fine (it's the explicit "no routing" signal).
+		if wf.ApprovalChannel != nil {
+			validApprovalTypes := map[string]bool{"smtp": true, "slack_webhook": true, "none": true}
+			t := wf.ApprovalChannel.Type
+			if !validApprovalTypes[t] {
+				c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("approval_channel.type must be one of smtp|slack_webhook|none, got %q", t)})
+				return
+			}
+			if (t == "smtp" || t == "slack_webhook") && wf.ApprovalChannel.Target == "" {
+				c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("approval_channel.target required when type=%q", t)})
+				return
+			}
+		}
+
 		// Validate cron expressions on trigger nodes w/ trigger_type=cron
 		// 6-field parser w/ optional seconds — must mirror the worker's
 		// scheduler bits or expressions valid here would still reject at

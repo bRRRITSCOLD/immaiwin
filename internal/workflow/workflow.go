@@ -89,6 +89,12 @@ type Workflow struct {
 	// Switch, etc.) and the API validates Params on save. Empty falls
 	// back to the legacy untyped key/value editor — fully back-compat.
 	ParamsSchema []ParamEntry `bson:"params_schema,omitempty" json:"params_schema,omitempty"`
+	// ApprovalChannel routes pending_approval events out-of-band when
+	// the gate fires (Stage 2 of OOB approvals). Nil = no channel; the
+	// run still pauses and is resolvable from /runs/:id, but no email
+	// or webhook is sent. The dispatcher (PR-b) reads this field on
+	// gate fire and posts the magic-link to the configured target.
+	ApprovalChannel *ApprovalChannel `bson:"approval_channel,omitempty" json:"approval_channel,omitempty"`
 	// Version increments on every server-side Upsert via Mongo `$inc`.
 	// Server-controlled — clients do not set it. Value is 1 after the
 	// first save; "Save as new" / Duplicate resets it to 1 on the new
@@ -109,6 +115,25 @@ type ParamEntry struct {
 	Default     string   `bson:"default,omitempty"     json:"default,omitempty"`
 	Required    bool     `bson:"required,omitempty"    json:"required,omitempty"`
 	Enum        []string `bson:"enum,omitempty"        json:"enum,omitempty"`
+}
+
+// ApprovalChannel describes where the OOB-approval dispatcher should
+// post the magic-link prompt when this workflow's `require_node_approval`
+// or `require_approval` gates fire. Per-workflow rather than per-node
+// or per-tenant — workflow author owns the routing decision. PR-a stores
+// the field; PR-b adds the dispatcher.
+type ApprovalChannel struct {
+	// Type selects the transport. Supported in PR-b: "smtp" (templated
+	// email) and "slack_webhook" (Slack incoming-webhook URL POST).
+	// "none" stores intent-to-disable without removing the field; the
+	// dispatcher treats it as a no-op.
+	Type string `bson:"type"           json:"type"`
+	// Target is the destination — recipient email for "smtp", webhook
+	// URL for "slack_webhook", empty for "none".
+	Target string `bson:"target,omitempty" json:"target,omitempty"`
+	// From is the optional sender override for the "smtp" transport;
+	// empty falls back to the SMTP-config-level default `From:` header.
+	From string `bson:"from,omitempty"   json:"from,omitempty"`
 }
 
 // CostLimits is the per-workflow cap config.
