@@ -242,6 +242,15 @@ func NewServer(
 	r.GET("/api/v1/workflow_runs/daily_totals", requireAuth, handler.DailyTotals(wfRunStore, wfStore))
 	r.GET("/api/v1/workflow_runs/:id", requireAuth, handler.GetWorkflowRun(wfRunStore, wfStore))
 	r.POST("/api/v1/workflow_runs/:id/approval", requireAuth, handler.SubmitRunApproval(wfExec, wfRunStore))
+	// Magic-link redeem path — no auth gate; the signed token IS the
+	// authorization. Used by the Stage-2 dispatcher (PR-b) when
+	// approval prompts go out via email or Slack.
+	r.POST("/api/v1/workflow_runs/:id/approval/redeem", handler.SubmitRunApprovalByToken(handler.RunApprovalRedeemDeps{
+		Exec:      wfExec,
+		RunStore:  wfRunStore,
+		Audit:     audit,
+		JWTSecret: []byte(authCfg.JWTSecret),
+	}))
 	r.POST("/api/v1/workflow_runs/:id/cancel", requireAuth, handler.CancelRun(wfExec, wfRunStore))
 
 	// Webhook trigger — POST /api/v1/webhooks/:slug runs the workflow

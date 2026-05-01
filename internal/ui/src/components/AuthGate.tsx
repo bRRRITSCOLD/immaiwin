@@ -13,7 +13,7 @@ import { useEffect } from 'react'
 import { useLocation, useNavigate } from '@tanstack/react-router'
 import { useAuthStore } from '~/lib/auth-store'
 
-const PUBLIC_PATHS = new Set<string>(['/login', '/register', '/forgot', '/reset'])
+const PUBLIC_PATHS = new Set<string>(['/login', '/register', '/forgot', '/reset', '/approve'])
 // Prefixes that are also public — used for path-param routes like
 // /invite/:token where the preview endpoint serves unauth.
 const PUBLIC_PREFIXES = ['/invite/']

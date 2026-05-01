@@ -150,6 +150,14 @@ func (r *WorkflowRepository) Upsert(ctx context.Context, wf workflow.Workflow) (
 	} else {
 		unsetFields["params_schema"] = ""
 	}
+	// ApprovalChannel — same nil-vs-set treatment as cost_limits. Empty
+	// channel cleared from existing docs so the dispatcher can't resurrect
+	// stale routing after the user removes the field.
+	if wf.ApprovalChannel != nil {
+		setFields["approval_channel"] = wf.ApprovalChannel
+	} else {
+		unsetFields["approval_channel"] = ""
+	}
 	if len(unsetFields) > 0 {
 		update["$unset"] = unsetFields
 	}

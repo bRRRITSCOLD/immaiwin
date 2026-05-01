@@ -6,6 +6,15 @@ export interface CostLimits {
   max_daily_usd: number
 }
 
+// ApprovalChannel routes pending_approval events out-of-band when the
+// gate fires. PR-a stores the field; PR-b adds the dispatcher + the
+// per-workflow channel-picker UI. None = stored intent-to-disable.
+export interface ApprovalChannel {
+  type: 'smtp' | 'slack_webhook' | 'none'
+  target?: string
+  from?: string
+}
+
 export interface ParamEntry {
   name: string
   type: 'string' | 'number' | 'boolean' | 'enum'
@@ -23,6 +32,7 @@ export interface Workflow {
   edges: Edge[]
   cost_limits?: CostLimits | null
   params_schema?: ParamEntry[]
+  approval_channel?: ApprovalChannel | null
   // version is server-stamped (`$inc` on every Upsert). Newly-created
   // and duplicated workflows start at 1; clients must never set this.
   version?: number

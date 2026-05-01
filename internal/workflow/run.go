@@ -57,6 +57,15 @@ type PendingApprovalState struct {
 	NodeName    string    `bson:"node_name,omitempty"   json:"node_name,omitempty"`
 	NodeInput   any       `bson:"node_input,omitempty"  json:"node_input,omitempty"`
 	RequestedAt time.Time `bson:"requested_at"          json:"requested_at"`
+	// TokenID is a server-stamped ULID used as the binding nonce for the
+	// magic-link approval token (Stage 2). Set when the gate fires;
+	// cleared when the decision lands. The HMAC-signed token carries
+	// (run_id, token_id, decision, expires_at). The redeem handler
+	// rejects mismatched / expired / cleared token IDs so a stale link
+	// can't resurrect a closed gate. Empty means "no magic link
+	// configured yet" — the /runs/:id UI Approve/Reject path still
+	// works in that case.
+	TokenID string `bson:"token_id,omitempty"    json:"token_id,omitempty"`
 }
 
 // AgentPauseState is the snapshot persisted on a paused workflow run so
