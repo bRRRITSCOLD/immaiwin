@@ -616,6 +616,26 @@ Current behaviour: the `/approval` endpoint detects the zero-subscriber case, au
 
 If you hit it on an old build, force-cancel the run from `/runs/:id` and re-trigger the workflow. Permanent fix (lease-based stateless workers + checkpoint-per-step execution) is the next architectural milestone.
 
+### My agent's tool errored but the run badge says `success` — why?
+
+Default agent behaviour is **resilient**: a tool error (skill / `as_tool` / sandbox) is fed back to the LLM as a `tool_result(is_error=true)` observation, and the model can pivot or retry within `max_iterations`. If the model then emits `end_turn`, the agent finished — run lands `success` with the error visible in the agent trace but NOT in the run-level badge.
+
+This is the right default for agents that wrap flaky upstream APIs. It's the wrong default for agents where any tool failure should halt the workflow + flip the badge.
+
+**To make tool errors terminal, flip `stop_on_tool_error: true` on the AI Agent node** (UI: AIAgentNode → "Stop run on tool error" toggle). With the flag on, the first tool error returns from the agent loop, BFS follows the agent's `error` edge, and the run lands `error`.
+
+**Sandbox-engine errors are always terminal** regardless of the flag. Anything prefixed with `sandbox/k3s:` / `sandbox/docker:` / `sandbox/dap:` / `sandbox/cdp:` aborts the agent — the LLM has no plausible recovery path when the runtime itself is broken.
+
+| Scenario | `stop_on_tool_error` | Result |
+|---|---|---|
+| `as_tool` returns 500 | `false` (default) | LLM observes error, can pivot → run `success` |
+| `as_tool` returns 500 | `true` | Agent aborts → run `error` |
+| Skill tool throws | `false` | LLM observes error, can pivot → run `success` |
+| Skill tool throws | `true` | Agent aborts → run `error` |
+| `sandbox/k3s: pod ... Failed before attach` | either | Agent aborts → run `error` |
+
+`as_tool` target nodes carry their own red badge on the canvas regardless of the flag (via the `step_done(IsError)` event), but their `StepResult` is marked `via_agent_tool=true` so the run-status promotion logic only counts the AGENT's own error, not the per-tool dispatch error. Without that distinction, a tool error the agent successfully recovered from would retroactively flip the run to `error`.
+
 ### Why does an approval-gated agent run pay an extra LLM call when I approve?
 
 The lease-based executor yields the worker's lease the moment an `as_tool` target's `require_node_approval` gate fires — BEFORE the tool runs. The agent's mid-loop snapshot (current iteration, message history so far, accumulated usage + trace) is persisted to Mongo so a later worker can pick up exactly where this one paused.
