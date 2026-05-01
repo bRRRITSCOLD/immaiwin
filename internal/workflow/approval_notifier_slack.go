@@ -48,10 +48,8 @@ func postSlackWebhook(ctx context.Context, client *http.Client, webhookURL strin
 
 func slackApprovalBody(req ApprovalRequest) string {
 	link := req.MagicLinkURL()
-	wfName := req.Workflow.Name
-	if wfName == "" {
-		wfName = req.Workflow.ID
-	}
+	// Workflow name shows up via req.HumanSubject(); no separate
+	// var needed here.
 	var detail string
 	switch req.Pending.Kind {
 	case "tool_call":
