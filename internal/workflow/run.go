@@ -58,6 +58,72 @@ type WorkflowRun struct {
 	// runs + by ops dashboards to spot runs whose worker is alive but
 	// not making progress.
 	LastCheckpointAt *time.Time `bson:"last_checkpoint_at,omitempty" json:"last_checkpoint_at,omitempty"`
+
+	// ExecutionState carries the BFS frontier + visited set + named-
+	// node context map needed to resume mid-run after a worker death
+	// or an approval-gate yield. nil = run never checkpointed (legacy
+	// in-process executor path) OR run has not yielded yet. Workers
+	// that claim a run with non-nil ExecutionState rehydrate from it
+	// and resume BFS from `Queue` rather than re-executing from
+	// trigger nodes. See PR 3.2 in
+	// .private/ai-automation/DURABLE-EXECUTION-PLAN.md.
+	ExecutionState *ExecutionState `bson:"execution_state,omitempty" json:"execution_state,omitempty"`
+}
+
+// ExecutionState is the durable BFS snapshot persisted at every step
+// boundary so a run can resume cleanly after worker death or an
+// approval-gate yield. Mirrors the in-memory state held by
+// RunWithEvents: Visited (already-executed node IDs), Queue (BFS
+// frontier with carried inputs), WfCtx (named-node {input, output}
+// map exposed to JS transforms), and Pending (the active gate, when
+// the run is paused waiting on a decision).
+type ExecutionState struct {
+	// Visited is the set of node IDs that have already been executed
+	// in this run. Stored as a slice for deterministic bson encoding;
+	// rehydrated to a map[string]bool on resume.
+	Visited []string `bson:"visited,omitempty" json:"visited,omitempty"`
+	// Queue is the BFS frontier — the next batch of nodes to execute,
+	// each carrying the input passed in by its source node. Resume
+	// rehydrates this directly into the executor's local queue.
+	Queue []QueuedNode `bson:"queue,omitempty" json:"queue,omitempty"`
+	// WfCtx is the named-node context map (`{name -> StepContext}`)
+	// that JS transforms reference as the `context` global. Persisted
+	// so resumed runs see the same context their pre-yield BFS saw.
+	WfCtx map[string]StepContext `bson:"wf_ctx,omitempty" json:"wf_ctx,omitempty"`
+	// Pending is set when the BFS yielded at an approval gate. Carries
+	// the gated node + the input it was about to receive; once the
+	// approval handler writes Decision into it, the next worker that
+	// claims the run applies the decision (success edge on approve,
+	// error edge on reject) and continues. nil = run is freely
+	// claimable (no gate active) OR the gate has already been applied.
+	Pending *PendingExecutionGate `bson:"pending,omitempty" json:"pending,omitempty"`
+}
+
+// QueuedNode is one entry in the BFS frontier — the node ID to execute
+// next plus the input value its source produced. Persisted as part of
+// ExecutionState so the resumed run dispatches the same node with the
+// same input it would have without the yield.
+type QueuedNode struct {
+	NodeID string `bson:"node_id" json:"node_id"`
+	Input  any    `bson:"input,omitempty" json:"input,omitempty"`
+}
+
+// PendingExecutionGate captures an approval gate that the BFS yielded
+// on. The worker persists this + releases its lease + returns from
+// the BFS loop; the approval handler later writes Decision into the
+// same struct + clears the run's lease + publishes a wakeup. The next
+// worker that claims the run sees Decision != nil, applies it
+// (replays Pending.Input through the success or error edge of
+// Pending.NodeID), and continues BFS from the rest of Queue.
+//
+// Distinct from PendingApprovalState (which mirrors the gate for the
+// /runs UI to render) — PendingExecutionGate is the executor's
+// internal yield record. They co-exist on the run record while a gate
+// is active and clear together when the decision lands.
+type PendingExecutionGate struct {
+	NodeID   string            `bson:"node_id" json:"node_id"`
+	Input    any               `bson:"input,omitempty" json:"input,omitempty"`
+	Decision *ApprovalDecision `bson:"decision,omitempty" json:"decision,omitempty"`
 }
 
 // PendingApprovalState mirrors the active require_approval gate so the
@@ -219,6 +285,28 @@ type WorkflowRunStore interface {
 	// caller currently holds the lease. Foreign release is a no-op
 	// (returns nil) — defensive against double-release on cleanup.
 	ReleaseLease(ctx context.Context, runID, workerID string) error
+
+	// CheckpointExecutionState atomically persists the BFS snapshot at
+	// a step boundary, but only when the caller still holds the lease.
+	// On lease loss returns ErrLeaseNotHeld so the caller aborts
+	// without overwriting state another worker is now responsible for.
+	// Bumps last_checkpoint_at on every successful write; ops uses
+	// it to spot live-but-stuck runs.
+	//
+	// Steps is optional — pass non-nil to also persist the running
+	// step results, nil to leave them as-is. Status is optional —
+	// pass empty to leave unchanged. Phase 3 PR 3.2.
+	CheckpointExecutionState(ctx context.Context, runID, workerID string, state ExecutionState, steps []StepResult, status RunStatus) error
+
+	// ApplyApprovalDecision writes the user's decision into the run's
+	// execution-state pending gate, clears any active lease, flips
+	// status back to `running`, and bumps last_checkpoint_at. Caller
+	// (HTTP approval handler) follows up with a Redis wakeup publish
+	// so a worker can claim. Returns nil even when the run already
+	// has a decision (idempotent on duplicate clicks); returns an
+	// error only on Mongo I/O failures or when the run record is
+	// missing. Phase 3 PR 3.2.
+	ApplyApprovalDecision(ctx context.Context, runID string, decision ApprovalDecision) error
 }
 
 // ErrLeaseNotHeld is returned by ExtendLease (and may be returned by
@@ -227,6 +315,14 @@ type WorkflowRunStore interface {
 // this as a fatal "your work is now stale; abort + don't write any
 // further state" signal.
 var ErrLeaseNotHeld = errLeaseNotHeld{}
+
+// WakeupChannel is the Redis pub/sub channel name used by run
+// dispatchers + approval handlers to nudge idle executor workers
+// (Phase 3 PR 3.2) into a claim attempt without waiting for the
+// next periodic tick. Centralised in the workflow package so both
+// the api/handler producers and the worker subscribers reference
+// the same string without one importing the other.
+const WakeupChannel = "burrow:wakeup"
 
 type errLeaseNotHeld struct{}
 

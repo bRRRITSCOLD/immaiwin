@@ -78,34 +78,63 @@ func SubmitRunApproval(exec *workflow.WorkflowExecutor, runStore workflow.Workfl
 			return
 		}
 
-		// Need the registry shape that exposes Submit. Lazy-init via
-		// the executor so the api process has its own registry too.
-		// Even though only the worker pid registers a subscription,
-		// Submit just publishes — registering a sub here would be a
-		// waste, so we go directly through the broker.
 		decision := workflow.ApprovalDecision{
 			ToolCallID: req.ToolCallID,
 			Approved:   req.Approved,
 			Reason:     req.Reason,
 		}
-		// Reuse the registry's Submit so the channel/payload format
-		// stays identical to what the worker subscribed to. The api-
-		// side registry never holds local state beyond this call.
-		// Submit returns the Redis subscriber count: 0 means the in-
-		// process waiter is gone (api restart while paused) and the
-		// run is unrecoverable — see orphan-cancel branch below.
-		reg := workflow.NewApprovalRegistry(exec.ApprovalBroker)
-		count, perr := reg.Submit(c.Request.Context(), runID, decision)
-		if perr != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": perr.Error()})
+		if applied, derr := applyDecisionAcrossPaths(c, exec, runStore, rec, decision); derr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": derr.Error()})
 			return
-		}
-		if count == 0 {
+		} else if !applied {
 			cancelOrphanedApproval(c, runStore, rec)
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"ok": true})
 	}
+}
+
+// applyDecisionAcrossPaths routes a decision to the right resume
+// mechanism based on whether the run is on the legacy in-process
+// approval-channel path (block-on-Redis) or the new lease-yield path
+// (decision persisted into ExecutionState.Pending; worker claims
+// post-wakeup).
+//
+// Returns (true, nil) when the decision landed somewhere a worker can
+// pick up. Returns (false, nil) only on the legacy path when no
+// in-process listener exists — caller treats that as orphan + 410.
+// I/O errors surface as (false, err).
+//
+// Yield-path detection: a non-nil ExecutionState.Pending on the run
+// record means the executor yielded its lease + persisted the gate.
+// The decision goes through ApplyApprovalDecision (writes into state
+// + clears lease) + a wakeup publish; legacy Submit is skipped (no
+// live waiter would ever see it).
+func applyDecisionAcrossPaths(c *gin.Context, exec *workflow.WorkflowExecutor, runStore workflow.WorkflowRunStore, rec workflow.WorkflowRun, decision workflow.ApprovalDecision) (bool, error) {
+	ctx := c.Request.Context()
+	if rec.ExecutionState != nil && rec.ExecutionState.Pending != nil {
+		// Yield path. Persist decision into state, publish wakeup.
+		// Skip the legacy Submit — there's no in-process subscriber
+		// for this run (the worker released its lease + exited the
+		// BFS loop on yield).
+		if err := runStore.ApplyApprovalDecision(ctx, rec.ID, decision); err != nil {
+			return false, err
+		}
+		if exec != nil && exec.ApprovalBroker != nil {
+			_, _ = exec.ApprovalBroker.PublishWithCount(ctx, workflow.WakeupChannel, []byte("1"))
+		}
+		return true, nil
+	}
+	// Legacy in-process path: publish on the per-run channel; the
+	// agent loop's goroutine pumps it into the local approveCh. A
+	// zero-subscriber publish means the api process restarted while
+	// the run was paused — caller treats that as orphan.
+	reg := workflow.NewApprovalRegistry(exec.ApprovalBroker)
+	count, perr := reg.Submit(ctx, rec.ID, decision)
+	if perr != nil {
+		return false, perr
+	}
+	return count > 0, nil
 }
 
 // cancelOrphanedApproval marks a pending_approval run as errored when
