@@ -233,6 +233,20 @@ func (s *WorkflowCRUDIntegrationSuite) listWorkflows(client *http.Client) (int, 
 	return resp.StatusCode, out
 }
 
+// duplicateWorkflow POSTs the duplicate endpoint and returns parsed body.
+func (s *WorkflowCRUDIntegrationSuite) duplicateWorkflow(client *http.Client, id string, payload map[string]any) (int, map[string]any) {
+	body, _ := json.Marshal(payload)
+	req, _ := http.NewRequest(http.MethodPost, s.httpSrv.URL+"/api/v1/workflows/"+id+"/duplicate", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	s.Require().NoError(err)
+	defer resp.Body.Close() //nolint:errcheck
+	raw, _ := io.ReadAll(resp.Body)
+	var out map[string]any
+	_ = json.Unmarshal(raw, &out)
+	return resp.StatusCode, out
+}
+
 func (s *WorkflowCRUDIntegrationSuite) deleteWorkflow(client *http.Client, id string) int {
 	req, _ := http.NewRequest(http.MethodDelete, s.httpSrv.URL+"/api/v1/workflows/"+id, nil)
 	resp, err := client.Do(req)
@@ -343,4 +357,134 @@ func (s *WorkflowCRUDIntegrationSuite) TestWorkflows_ForeignTenant_AreInvisibleA
 	_, aliceList := s.listWorkflows(alice)
 	s.Len(aliceList, 1)
 	s.Equal("alice's private wf", aliceList[0]["name"])
+}
+
+// TestWorkflowVersion_RepeatedSaves_IncrementsServerSide verifies the
+// server-stamped `version` field starts at 1 on first save and bumps
+// by 1 on each subsequent Upsert via Mongo `$inc`. Clients cannot
+// influence the value — any version they send is ignored.
+func (s *WorkflowCRUDIntegrationSuite) TestWorkflowVersion_RepeatedSaves_IncrementsServerSide() {
+	suffix := time.Now().UnixNano()
+	client, _ := s.authedClient(fmt.Sprintf("alice-version-%d@example.com", suffix))
+
+	wfID := fmt.Sprintf("wf-version-%d", suffix)
+	payload := map[string]any{
+		"name":   "version test",
+		"params": map[string]any{},
+		"nodes":  []any{},
+		"edges":  []any{},
+		// Client tries to inject version=999; server should ignore.
+		"version": 999,
+	}
+
+	status, body := s.putWorkflow(client, wfID, payload)
+	s.Require().Equal(http.StatusOK, status)
+	s.Require().Equal(float64(1), body["version"], "first save should land at version 1, not the injected 999")
+
+	status, body = s.putWorkflow(client, wfID, payload)
+	s.Require().Equal(http.StatusOK, status)
+	s.Require().Equal(float64(2), body["version"], "second save should bump to 2")
+
+	status, body = s.putWorkflow(client, wfID, payload)
+	s.Require().Equal(http.StatusOK, status)
+	s.Require().Equal(float64(3), body["version"], "third save should bump to 3")
+}
+
+// TestWorkflowDuplicate_OwnTenant_CreatesIndependentCopy verifies the
+// duplicate endpoint forks a workflow into a new ID under the same
+// tenant: name carries " (copy)" suffix, version resets to 1, the new
+// doc is independent (further saves on either side don't bleed), and
+// the action lands in the audit log.
+func (s *WorkflowCRUDIntegrationSuite) TestWorkflowDuplicate_OwnTenant_CreatesIndependentCopy() {
+	suffix := time.Now().UnixNano()
+	client, tenantID := s.authedClient(fmt.Sprintf("alice-dup-%d@example.com", suffix))
+
+	srcID := fmt.Sprintf("wf-dup-src-%d", suffix)
+	payload := map[string]any{
+		"name":   "Original",
+		"params": map[string]any{"foo": "bar"},
+		"nodes": []map[string]any{
+			{
+				"id":       "trigger-1",
+				"type":     "trigger",
+				"position": map[string]any{"x": 0, "y": 0},
+				"data":     map[string]any{"trigger_type": "manual"},
+			},
+		},
+		"edges": []any{},
+	}
+	status, _ := s.putWorkflow(client, srcID, payload)
+	s.Require().Equal(http.StatusOK, status)
+
+	// Duplicate w/o body — server generates new ID.
+	status, dup := s.duplicateWorkflow(client, srcID, nil)
+	s.Require().Equal(http.StatusCreated, status)
+	dupID, _ := dup["id"].(string)
+	s.Require().NotEmpty(dupID)
+	s.Require().NotEqual(srcID, dupID, "duplicate must have a new id")
+	s.Equal("Original (copy)", dup["name"])
+	s.Equal(float64(1), dup["version"], "fresh duplicate should start at version 1")
+	s.Equal(tenantID, dup["tenant_id"])
+
+	// Source's params + nodes survived unchanged through the copy.
+	dupParams, _ := dup["params"].(map[string]any)
+	s.Equal("bar", dupParams["foo"])
+	dupNodes, _ := dup["nodes"].([]any)
+	s.Len(dupNodes, 1)
+
+	// List shows two workflows, both belonging to alice.
+	_, list := s.listWorkflows(client)
+	s.Len(list, 2)
+
+	// Updating the duplicate shouldn't affect the source.
+	updated := payload
+	updated["name"] = "Duplicate edited"
+	status, _ = s.putWorkflow(client, dupID, updated)
+	s.Require().Equal(http.StatusOK, status)
+
+	_, list = s.listWorkflows(client)
+	names := map[string]bool{}
+	for _, w := range list {
+		names[w["name"].(string)] = true
+	}
+	s.True(names["Original"], "source name survived")
+	s.True(names["Duplicate edited"], "duplicate rename took effect")
+
+	// Audit ledger captured the duplicate action.
+	auditCol := s.db.Collection("audit_log")
+	count, err := auditCol.CountDocuments(context.Background(), map[string]any{
+		"action":           string(mongodb.AuditWorkflowDuplicated),
+		"target.source_id": srcID,
+	})
+	s.Require().NoError(err)
+	s.Equal(int64(1), count, "duplicate action should record exactly one audit entry")
+}
+
+// TestWorkflowDuplicate_ForeignTenant_Returns404 verifies bob cannot
+// duplicate alice's workflow — the endpoint returns 404 (not 403) so
+// callers can't probe existence cross-tenant.
+func (s *WorkflowCRUDIntegrationSuite) TestWorkflowDuplicate_ForeignTenant_Returns404() {
+	suffix := time.Now().UnixNano()
+	alice, _ := s.authedClient(fmt.Sprintf("alice-dup-iso-%d@example.com", suffix))
+	bob, _ := s.authedClient(fmt.Sprintf("bob-dup-iso-%d@example.com", suffix))
+
+	srcID := fmt.Sprintf("wf-dup-iso-%d", suffix)
+	payload := map[string]any{
+		"name":   "alice secret",
+		"params": map[string]any{},
+		"nodes":  []any{},
+		"edges":  []any{},
+	}
+	status, _ := s.putWorkflow(alice, srcID, payload)
+	s.Require().Equal(http.StatusOK, status)
+
+	// Bob attempts to duplicate alice's workflow — endpoint returns 404.
+	status, _ = s.duplicateWorkflow(bob, srcID, nil)
+	s.Equal(http.StatusNotFound, status, "cross-tenant duplicate must read as not-found")
+
+	// Bob's tenant remains empty; alice still owns one workflow.
+	_, bobList := s.listWorkflows(bob)
+	s.Empty(bobList)
+	_, aliceList := s.listWorkflows(alice)
+	s.Len(aliceList, 1)
 }

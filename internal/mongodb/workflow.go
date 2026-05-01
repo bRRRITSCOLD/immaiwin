@@ -101,8 +101,14 @@ func (r *WorkflowRepository) GetByIDForTenant(ctx context.Context, id, tenantID 
 	return wf, err
 }
 
-// Upsert saves or updates a workflow by its ID.
-// If CreatedAt is zero it is set to now on first insert.
+// Upsert saves or updates a workflow by its ID. Returns the post-write
+// document so callers (and the UI) see the server-stamped Version.
+//
+// Version semantics: Mongo `$inc: {version: 1}` runs on every write.
+// Against a missing field (insert path) the operator creates it at 1;
+// against an existing doc it bumps by 1. Server-controlled — any
+// `version` value the client sent on the wire is ignored, the
+// `$set` whitelist below intentionally omits it.
 func (r *WorkflowRepository) Upsert(ctx context.Context, wf workflow.Workflow) (workflow.Workflow, error) {
 	now := time.Now().UTC()
 	if wf.CreatedAt.IsZero() {
@@ -113,7 +119,8 @@ func (r *WorkflowRepository) Upsert(ctx context.Context, wf workflow.Workflow) (
 	// $set explicit-whitelists fields so unrelated docs don't pick up
 	// schema drift. Whenever you add a Workflow field that should round-
 	// trip via Upsert, add it here too — silent-drop bugs from this
-	// list have bitten us twice.
+	// list have bitten us twice. `version` is intentionally excluded:
+	// it is server-controlled via `$inc` below.
 	setFields := bson.M{
 		"tenant_id":  wf.TenantID,
 		"name":       wf.Name,
@@ -122,14 +129,15 @@ func (r *WorkflowRepository) Upsert(ctx context.Context, wf workflow.Workflow) (
 		"edges":      wf.Edges,
 		"updated_at": wf.UpdatedAt,
 	}
-	// Pointer field — when nil (caps cleared) we want $unset rather than
-	// $set: nil so existing docs don't carry a stale value. Mongo doesn't
-	// allow $set + $unset on the same field in one update, so branch.
 	update := bson.M{
 		"$set":         setFields,
+		"$inc":         bson.M{"version": 1},
 		"$setOnInsert": bson.M{"created_at": wf.CreatedAt},
 	}
 	unsetFields := bson.M{}
+	// Pointer field — when nil (caps cleared) we want $unset rather than
+	// $set: nil so existing docs don't carry a stale value. Mongo doesn't
+	// allow $set + $unset on the same field in one update, so branch.
 	if wf.CostLimits != nil {
 		setFields["cost_limits"] = wf.CostLimits
 	} else {
@@ -146,13 +154,19 @@ func (r *WorkflowRepository) Upsert(ctx context.Context, wf workflow.Workflow) (
 		update["$unset"] = unsetFields
 	}
 
-	_, err := r.col.UpdateOne(
+	var saved workflow.Workflow
+	err := r.col.FindOneAndUpdate(
 		ctx,
 		bson.M{"_id": wf.ID},
 		update,
-		options.UpdateOne().SetUpsert(true),
-	)
-	return wf, err
+		options.FindOneAndUpdate().
+			SetUpsert(true).
+			SetReturnDocument(options.After),
+	).Decode(&saved)
+	if err != nil {
+		return wf, err
+	}
+	return saved, nil
 }
 
 // Delete removes the workflow with the given ID.

@@ -23,6 +23,9 @@ export interface Workflow {
   edges: Edge[]
   cost_limits?: CostLimits | null
   params_schema?: ParamEntry[]
+  // version is server-stamped (`$inc` on every Upsert). Newly-created
+  // and duplicated workflows start at 1; clients must never set this.
+  version?: number
   created_at: string
   updated_at: string
 }
