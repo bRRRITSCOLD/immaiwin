@@ -59,6 +59,16 @@ type WorkflowRunIntegrationSuite struct {
 	// email sender / HTTP client per-test (capture vs no-op) without
 	// rebuilding the executor.
 	notifier *workflow.MultiplexApprovalNotifier
+
+	// In-test workflow-executor worker harness (PR 3.3): /run is now
+	// async — it persists a run rec + publishes wakeup + returns 202.
+	// The actual BFS execution happens in a worker. The full
+	// `cmd/worker -name workflow-executor` daemon is too heavy for
+	// these tests, so we spin a minimal claim-loop here that uses
+	// the same WorkflowRunRepository / WorkflowRepository / executor
+	// the server is wired with. Cancelled in TearDownSuite.
+	workerCancel context.CancelFunc
+	workerDone   chan struct{}
 }
 
 func TestWorkflowRunIntegrationSuite(t *testing.T) {
@@ -153,9 +163,66 @@ func (s *WorkflowRunIntegrationSuite) SetupSuite() {
 		nil,
 	)
 	s.httpSrv = httptest.NewServer(srv.Handler())
+
+	// Spin the in-test worker. claim → RunFromCheckpoint → release in
+	// a tight loop with a short tick so async /run dispatches finish
+	// in <1s. ctx cancels in TearDownSuite.
+	workerCtx, workerCancel := context.WithCancel(context.Background())
+	s.workerCancel = workerCancel
+	s.workerDone = make(chan struct{})
+	go func() {
+		defer close(s.workerDone)
+		runInTestExecutorWorker(workerCtx, "test-executor", runRepo, wfRepo, wfExec)
+	}()
+}
+
+// runInTestExecutorWorker is a minimal claim-loop standing in for
+// internal/worker.WorkflowExecutorWorker so the api/handler tests
+// can drive async /run end-to-end without spinning the full worker
+// daemon (which loads its own config + connects its own Mongo +
+// Redis). Each tick: claim one run, drive RunFromCheckpoint,
+// release. Lease + heartbeat omitted; tests run fast enough that
+// the 30s default lease never expires mid-execution.
+func runInTestExecutorWorker(
+	ctx context.Context,
+	workerID string,
+	runRepo *mongodb.WorkflowRunRepository,
+	wfRepo *mongodb.WorkflowRepository,
+	exec *workflow.WorkflowExecutor,
+) {
+	tick := time.NewTicker(50 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+		}
+		rec, ok, err := runRepo.ClaimLease(ctx, workerID, 30*time.Second,
+			[]workflow.RunStatus{workflow.RunStatusRunning})
+		if err != nil || !ok {
+			continue
+		}
+		wf, gerr := wfRepo.GetByID(ctx, rec.WorkflowID)
+		if gerr != nil {
+			now := time.Now().UTC()
+			rec.Status = workflow.RunStatusError
+			rec.Error = "test worker: workflow not found: " + gerr.Error()
+			rec.FinishedAt = &now
+			_ = runRepo.Update(ctx, rec)
+			_ = runRepo.ReleaseLease(ctx, rec.ID, workerID)
+			continue
+		}
+		_, _ = exec.RunFromCheckpoint(ctx, wf, rec, workerID, exec.Events)
+		_ = runRepo.ReleaseLease(ctx, rec.ID, workerID)
+	}
 }
 
 func (s *WorkflowRunIntegrationSuite) TearDownSuite() {
+	if s.workerCancel != nil {
+		s.workerCancel()
+		<-s.workerDone
+	}
 	if s.httpSrv != nil {
 		s.httpSrv.Close()
 	}
@@ -180,6 +247,33 @@ func (s *WorkflowRunIntegrationSuite) SetupTest() {
 }
 
 func (s *WorkflowRunIntegrationSuite) TearDownTest() {}
+
+// waitForRunStatus polls GET /workflow_runs/:id until the run's status
+// equals `expected` or `timeout` elapses. Fails the test on timeout +
+// reports the last-observed status so failures are easy to diagnose.
+// Used by all async /run tests post-PR-3.3 since the handler returns
+// before the worker has executed the BFS.
+func (s *WorkflowRunIntegrationSuite) waitForRunStatus(client *http.Client, runID, expected string, timeout time.Duration) {
+	deadline := time.Now().Add(timeout)
+	last := ""
+	for time.Now().Before(deadline) {
+		resp, err := client.Get(s.httpSrv.URL + "/api/v1/workflow_runs/" + runID)
+		if err == nil {
+			var detail map[string]any
+			_ = json.NewDecoder(resp.Body).Decode(&detail)
+			_ = resp.Body.Close()
+			if run, ok := detail["run"].(map[string]any); ok {
+				if st, _ := run["status"].(string); st == expected {
+					return
+				} else {
+					last = st
+				}
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	s.FailNow("waitForRunStatus timeout", "run %s never reached %q (last=%q)", runID, expected, last)
+}
 
 // authedClient registers + returns a cookie-jar client bound to that
 // session.
@@ -224,21 +318,21 @@ func (s *WorkflowRunIntegrationSuite) putWorkflow(client *http.Client, id, name 
 }
 
 // TestRun_TriggerOnly_PersistsSuccessRow asserts that running a
-// trigger-only workflow returns 200 with a non-empty run_id, status
-// "success", and that the row shows up in GET /api/v1/workflow_runs
-// scoped to the caller's tenant.
+// trigger-only workflow lands in success state. POST /run is now
+// async (PR 3.3): the handler returns 202 + run_id immediately and
+// the in-test workflow-executor worker drives the BFS to completion.
+// We poll the run-detail endpoint until status flips to success.
 func (s *WorkflowRunIntegrationSuite) TestRun_TriggerOnly_PersistsSuccessRow() {
 	suffix := time.Now().UnixNano()
 	client := s.authedClient(fmt.Sprintf("alice-run-%d@example.com", suffix))
 	wfID := fmt.Sprintf("wf-run-%d", suffix)
 	s.putWorkflow(client, wfID, "trigger-only run smoke")
 
-	// POST /run
 	resp, err := client.Post(s.httpSrv.URL+"/api/v1/workflows/"+wfID+"/run",
 		"application/json", bytes.NewReader([]byte(`{}`)))
 	s.Require().NoError(err)
 	defer resp.Body.Close() //nolint:errcheck
-	s.Require().Equal(http.StatusOK, resp.StatusCode)
+	s.Require().Equal(http.StatusAccepted, resp.StatusCode, "/run is async — expect 202")
 
 	var runOut struct {
 		RunID  string `json:"run_id"`
@@ -247,7 +341,9 @@ func (s *WorkflowRunIntegrationSuite) TestRun_TriggerOnly_PersistsSuccessRow() {
 	body, _ := io.ReadAll(resp.Body)
 	s.Require().NoError(json.Unmarshal(body, &runOut))
 	s.NotEmpty(runOut.RunID, "run_id must be returned")
-	s.Equal("success", runOut.Status, "trigger-only workflow should succeed")
+	s.Equal("running", runOut.Status, "fresh dispatch enqueues with status=running")
+
+	s.waitForRunStatus(client, runOut.RunID, "success", 5*time.Second)
 
 	// Run row is visible via list. Tenant-scoped (handler filters by
 	// ctx tenant), so the same client sees it.
@@ -353,58 +449,27 @@ func (s *WorkflowRunIntegrationSuite) TestRun_NodeApproval_OOB_PendsThenResumesA
 	wfID := fmt.Sprintf("wf-approval-%d", suffix)
 	s.putApprovalWorkflow(client, wfID, "approval gate smoke")
 
-	// /run is synchronous — it blocks until the executor finishes. With
-	// a node-approval gate it'll block waiting on Redis. Fire it from a
-	// goroutine so the main test loop can poll status + post the verdict.
-	type runResp struct {
-		RunID  string                   `json:"run_id"`
-		Status string                   `json:"status"`
-		Steps  []map[string]any         `json:"steps"`
+	// POST /run is async (PR 3.3). The handler returns 202 + run_id;
+	// the in-test workflow-executor worker claims the run, BFS hits
+	// the gate, yields the lease + persists pending_approval state.
+	resp, err := client.Post(s.httpSrv.URL+"/api/v1/workflows/"+wfID+"/run",
+		"application/json", bytes.NewReader([]byte(`{}`)))
+	s.Require().NoError(err)
+	defer resp.Body.Close() //nolint:errcheck
+	s.Require().Equal(http.StatusAccepted, resp.StatusCode)
+	var dispatch struct {
+		RunID  string `json:"run_id"`
+		Status string `json:"status"`
 	}
-	runDone := make(chan runResp, 1)
-	runErr := make(chan error, 1)
-	go func() {
-		resp, err := client.Post(s.httpSrv.URL+"/api/v1/workflows/"+wfID+"/run",
-			"application/json", bytes.NewReader([]byte(`{}`)))
-		if err != nil {
-			runErr <- err
-			return
-		}
-		defer resp.Body.Close() //nolint:errcheck
-		body, _ := io.ReadAll(resp.Body)
-		var out runResp
-		_ = json.Unmarshal(body, &out)
-		runDone <- out
-	}()
+	body, _ := io.ReadAll(resp.Body)
+	s.Require().NoError(json.Unmarshal(body, &dispatch))
+	s.Require().NotEmpty(dispatch.RunID)
 
-	// Poll workflow_runs list until we see a row in pending_approval for
-	// this workflow. RunResumable mints + persists the run on entry, so
-	// the row appears almost immediately, but the gate may not have
-	// flipped status to pending_approval yet.
-	deadline := time.Now().Add(5 * time.Second)
-	var pendingRunID string
-	for time.Now().Before(deadline) {
-		listResp, err := client.Get(s.httpSrv.URL + "/api/v1/workflow_runs?workflow_id=" + wfID)
-		s.Require().NoError(err)
-		var rows []map[string]any
-		_ = json.NewDecoder(listResp.Body).Decode(&rows)
-		_ = listResp.Body.Close()
-		for _, r := range rows {
-			if r["status"] == "pending_approval" {
-				if id, ok := r["_id"].(string); ok {
-					pendingRunID = id
-				} else if id, ok := r["id"].(string); ok {
-					pendingRunID = id
-				}
-				break
-			}
-		}
-		if pendingRunID != "" {
-			break
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	s.Require().NotEmpty(pendingRunID, "run should land in pending_approval within 5s")
+	// Poll until the worker has yielded on the gate (status flips to
+	// pending_approval). Use the run-detail endpoint to also confirm
+	// the PendingApproval mirror landed for the UI.
+	pendingRunID := dispatch.RunID
+	s.waitForRunStatus(client, pendingRunID, "pending_approval", 5*time.Second)
 
 	// Detail endpoint should also show the pending_approval state with
 	// the node kind populated.
@@ -429,76 +494,55 @@ func (s *WorkflowRunIntegrationSuite) TestRun_NodeApproval_OOB_PendsThenResumesA
 	defer approveResp.Body.Close() //nolint:errcheck
 	s.Require().Equal(http.StatusOK, approveResp.StatusCode)
 
-	// Run goroutine should now unblock + return. Wait up to 5s.
-	select {
-	case out := <-runDone:
-		s.Equal(pendingRunID, out.RunID, "run_id should match the pending one")
-		s.Equal("success", out.Status, "approved run should complete with success")
-		s.NotEmpty(out.Steps, "completed run should have step results")
-	case err := <-runErr:
-		s.FailNow("run goroutine errored", err.Error())
-	case <-time.After(5 * time.Second):
-		s.FailNow("approved run did not complete within 5s")
-	}
+	// Approval handler wrote the decision into ExecutionState.Pending +
+	// flipped status back to running + cleared the lease. The worker's
+	// next claim picks up the run, applies the decision, and finishes.
+	s.waitForRunStatus(client, pendingRunID, "success", 5*time.Second)
 }
 
 // startApprovalGatedRun fires a workflow whose first non-trigger node
-// requires approval, then polls until the run lands in pending_approval.
-// Returns the run_id + the persisted PendingApproval state (token_id
-// included) so the redeem-token tests have the bits they need without
-// duplicating the polling boilerplate.
-func (s *WorkflowRunIntegrationSuite) startApprovalGatedRun(client *http.Client, wfID string) (string, map[string]any, chan struct{}) {
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		resp, err := client.Post(s.httpSrv.URL+"/api/v1/workflows/"+wfID+"/run",
-			"application/json", bytes.NewReader([]byte(`{}`)))
-		if err == nil {
-			_ = resp.Body.Close()
-		}
-	}()
+// requires approval (POST /run is async — handler returns 202+run_id
+// immediately, the in-test worker drives the BFS and yields on the
+// gate), then polls until the run lands in pending_approval. Returns
+// the run_id + the persisted PendingApproval state (token_id
+// included) so the redeem-token + dispatcher tests have the bits
+// they need without duplicating the polling boilerplate.
+func (s *WorkflowRunIntegrationSuite) startApprovalGatedRun(client *http.Client, wfID string) (string, map[string]any) {
+	resp, err := client.Post(s.httpSrv.URL+"/api/v1/workflows/"+wfID+"/run",
+		"application/json", bytes.NewReader([]byte(`{}`)))
+	s.Require().NoError(err)
+	defer resp.Body.Close() //nolint:errcheck
+	s.Require().Equal(http.StatusAccepted, resp.StatusCode)
+	var dispatch struct {
+		RunID string `json:"run_id"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&dispatch)
+	s.Require().NotEmpty(dispatch.RunID)
+	runID := dispatch.RunID
 
 	deadline := time.Now().Add(5 * time.Second)
-	var runID string
 	var pending map[string]any
 	for time.Now().Before(deadline) {
-		listResp, err := client.Get(s.httpSrv.URL + "/api/v1/workflow_runs?workflow_id=" + wfID)
-		s.Require().NoError(err)
-		var rows []map[string]any
-		_ = json.NewDecoder(listResp.Body).Decode(&rows)
-		_ = listResp.Body.Close()
-		for _, r := range rows {
-			if r["status"] != "pending_approval" {
-				continue
-			}
-			if id, ok := r["_id"].(string); ok {
-				runID = id
-			} else if id, ok := r["id"].(string); ok {
-				runID = id
-			}
-			break
-		}
-		if runID != "" {
-			detailResp, derr := client.Get(s.httpSrv.URL + "/api/v1/workflow_runs/" + runID)
-			s.Require().NoError(derr)
-			var detail map[string]any
-			_ = json.NewDecoder(detailResp.Body).Decode(&detail)
-			_ = detailResp.Body.Close()
-			if run, ok := detail["run"].(map[string]any); ok {
+		detailResp, derr := client.Get(s.httpSrv.URL + "/api/v1/workflow_runs/" + runID)
+		s.Require().NoError(derr)
+		var detail map[string]any
+		_ = json.NewDecoder(detailResp.Body).Decode(&detail)
+		_ = detailResp.Body.Close()
+		if run, ok := detail["run"].(map[string]any); ok {
+			if run["status"] == "pending_approval" {
 				if pa, ok := run["pending_approval"].(map[string]any); ok {
 					pending = pa
 				}
 			}
-			if pending != nil && pending["token_id"] != "" {
-				break
-			}
+		}
+		if pending != nil && pending["token_id"] != "" {
+			break
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	s.Require().NotEmpty(runID, "run should land in pending_approval within 5s")
-	s.Require().NotNil(pending, "pending_approval state must be persisted")
+	s.Require().NotNil(pending, "pending_approval state must be persisted within 5s")
 	s.Require().NotEmpty(pending["token_id"], "token_id should be stamped on the gate")
-	return runID, pending, done
+	return runID, pending
 }
 
 // TestApprovalRedeem_BadToken_Returns401 verifies the magic-link redeem
@@ -543,7 +587,7 @@ func (s *WorkflowRunIntegrationSuite) TestApprovalRedeem_HappyPath_ApproveResume
 	wfID := fmt.Sprintf("wf-redeem-%d", suffix)
 	s.putApprovalWorkflow(client, wfID, "redeem happy path")
 
-	runID, pending, runDone := s.startApprovalGatedRun(client, wfID)
+	runID, pending := s.startApprovalGatedRun(client, wfID)
 	tokenID, _ := pending["token_id"].(string)
 	s.Require().NotEmpty(tokenID)
 
@@ -562,13 +606,7 @@ func (s *WorkflowRunIntegrationSuite) TestApprovalRedeem_HappyPath_ApproveResume
 	defer resp.Body.Close() //nolint:errcheck
 	s.Require().Equal(http.StatusOK, resp.StatusCode)
 
-	select {
-	case <-runDone:
-		// Run goroutine returned — the executor unblocked. Verify final
-		// row landed as success.
-	case <-time.After(5 * time.Second):
-		s.FailNow("redeemed run did not complete within 5s")
-	}
+	s.waitForRunStatus(client, runID, "success", 5*time.Second)
 
 	detailResp, err := client.Get(s.httpSrv.URL + "/api/v1/workflow_runs/" + runID)
 	s.Require().NoError(err)
@@ -600,7 +638,7 @@ func (s *WorkflowRunIntegrationSuite) TestApprovalRedeem_TokenSuperseded_Returns
 	wfID := fmt.Sprintf("wf-replay-%d", suffix)
 	s.putApprovalWorkflow(client, wfID, "redeem replay")
 
-	runID, pending, runDone := s.startApprovalGatedRun(client, wfID)
+	runID, pending := s.startApprovalGatedRun(client, wfID)
 	tokenID, _ := pending["token_id"].(string)
 
 	tok, err := workflow.SignApprovalToken([]byte(jwtSecretForApprovalRedeemTests),
@@ -614,11 +652,7 @@ func (s *WorkflowRunIntegrationSuite) TestApprovalRedeem_TokenSuperseded_Returns
 	_ = resp.Body.Close()
 	s.Require().Equal(http.StatusOK, resp.StatusCode, "first redeem should succeed")
 
-	select {
-	case <-runDone:
-	case <-time.After(5 * time.Second):
-		s.FailNow("first redeem did not unblock the run within 5s")
-	}
+	s.waitForRunStatus(client, runID, "success", 5*time.Second)
 
 	// Second redeem with the SAME token: run is no longer pending and
 	// PendingApproval.TokenID was cleared, so this should be 404 (no
@@ -715,7 +749,7 @@ func (s *WorkflowRunIntegrationSuite) TestApprovalDispatch_SMTPChannel_SendsAppr
 		"from":   "burrow@example.com",
 	})
 
-	runID, pending, runDone := s.startApprovalGatedRun(client, wfID)
+	runID, pending := s.startApprovalGatedRun(client, wfID)
 	tokenID, _ := pending["token_id"].(string)
 	s.Require().NotEmpty(tokenID)
 
@@ -758,11 +792,7 @@ func (s *WorkflowRunIntegrationSuite) TestApprovalDispatch_SMTPChannel_SendsAppr
 	s.Require().NoError(err)
 	_ = resp.Body.Close()
 
-	select {
-	case <-runDone:
-	case <-time.After(5 * time.Second):
-		s.FailNow("run did not complete after manual approve")
-	}
+	s.waitForRunStatus(client, runID, "success", 5*time.Second)
 }
 
 // TestApprovalDispatch_SlackChannel_PostsWebhookWithMagicLink does the
@@ -796,7 +826,7 @@ func (s *WorkflowRunIntegrationSuite) TestApprovalDispatch_SlackChannel_PostsWeb
 		"target": fakeSlack.URL + "/services/test/webhook",
 	})
 
-	runID, _, runDone := s.startApprovalGatedRun(client, wfID)
+	runID, _ := s.startApprovalGatedRun(client, wfID)
 
 	deadline := time.Now().Add(2 * time.Second)
 	var posts []capturedPost
@@ -824,11 +854,7 @@ func (s *WorkflowRunIntegrationSuite) TestApprovalDispatch_SlackChannel_PostsWeb
 	s.Require().NoError(err)
 	_ = resp.Body.Close()
 
-	select {
-	case <-runDone:
-	case <-time.After(5 * time.Second):
-		s.FailNow("run did not complete after manual approve")
-	}
+	s.waitForRunStatus(client, runID, "success", 5*time.Second)
 }
 
 // TestApprovalDispatch_SlackBotChannel_PostsViaChatPostMessageWithBotToken
@@ -891,7 +917,7 @@ func (s *WorkflowRunIntegrationSuite) TestApprovalDispatch_SlackBotChannel_Posts
 		"channel": "C01EXPLICIT",
 	})
 
-	runID, _, runDone := s.startApprovalGatedRun(client, wfID)
+	runID, _ := s.startApprovalGatedRun(client, wfID)
 
 	deadline := time.Now().Add(2 * time.Second)
 	var posts []capturedPost
@@ -924,11 +950,7 @@ func (s *WorkflowRunIntegrationSuite) TestApprovalDispatch_SlackBotChannel_Posts
 	s.Require().NoError(err)
 	_ = resp.Body.Close()
 
-	select {
-	case <-runDone:
-	case <-time.After(5 * time.Second):
-		s.FailNow("run did not complete after manual approve")
-	}
+	s.waitForRunStatus(client, runID, "success", 5*time.Second)
 }
 
 // TestApprovalDispatch_ChannelNone_NoEmailSent confirms the dispatcher
@@ -948,7 +970,7 @@ func (s *WorkflowRunIntegrationSuite) TestApprovalDispatch_ChannelNone_NoEmailSe
 	// target to mirror the UI's "off" representation.
 	s.putApprovalGatedWorkflowWithChannel(client, wfID, map[string]any{"type": "none"})
 
-	runID, _, runDone := s.startApprovalGatedRun(client, wfID)
+	runID, _ := s.startApprovalGatedRun(client, wfID)
 
 	// Give any potential dispatch goroutine time to (incorrectly) fire.
 	time.Sleep(300 * time.Millisecond)
@@ -960,11 +982,7 @@ func (s *WorkflowRunIntegrationSuite) TestApprovalDispatch_ChannelNone_NoEmailSe
 	s.Require().NoError(err)
 	_ = resp.Body.Close()
 
-	select {
-	case <-runDone:
-	case <-time.After(5 * time.Second):
-		s.FailNow("run did not complete")
-	}
+	s.waitForRunStatus(client, runID, "success", 5*time.Second)
 }
 
 // TestApprovalSubmit_OrphanedPendingRun_AutoCancelsAndReturns410 verifies

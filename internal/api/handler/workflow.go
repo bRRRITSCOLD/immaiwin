@@ -346,18 +346,31 @@ func DuplicateWorkflow(deps WorkflowDuplicateDeps) gin.HandlerFunc {
 	}
 }
 
-// RunWorkflow executes the workflow graph and returns per-step results.
+// RunWorkflow dispatches the workflow asynchronously: a run record is
+// persisted with status=running, a wakeup is published on the
+// burrow:wakeup channel, and the handler returns 202 + run_id
+// immediately. The workflow-executor worker (Phase 3 PR 3.2) claims
+// the run via Mongo lease and drives the BFS to completion. The UI
+// (or any caller) reads run-detail / runs-history / WS streams for
+// progress + final status.
 //
 // Body fields:
-//   - stop_at:        node ID to halt after (debug breakpoint)
 //   - input:          optional initial input passed to trigger nodes
-//   - resume_run_id:  when non-empty, resume the previously paused run
-//                     (agent loop hydrates from saved messages/iter; non-
-//                     agent nodes already executed are skipped).
+//   - resume_run_id:  when non-empty, resume a previously paused run.
+//                     This branch keeps the legacy synchronous
+//                     RunResumable path because paused-agent resume
+//                     reuses an in-memory PausedAgent snapshot that
+//                     hasn't been migrated to the lease/checkpoint
+//                     model yet.
+//   - stop_at:        DEPRECATED on the async path. Breakpoints are a
+//                     canvas-WS concern; the headless `/run` endpoint
+//                     ignores it.
 //
-// Response includes run_id + status so the UI can switch the Run button
-// to "Continue" while the run is paused.
-func RunWorkflow(store WorkflowStore, exec *workflow.WorkflowExecutor) gin.HandlerFunc {
+// Response codes:
+//   - 202: run dispatched (async). Body: `{run_id, status:"running"}`.
+//   - 200: legacy sync resume completed. Body: `{run_id, status, steps}`.
+//   - 4xx/5xx: validation / I/O failure as before.
+func RunWorkflow(store WorkflowStore, runStore workflow.WorkflowRunStore, wakeup workflow.WakeupPublisher, exec *workflow.WorkflowExecutor) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id := c.Param("id")
 		if id == "" {
@@ -382,25 +395,59 @@ func RunWorkflow(store WorkflowStore, exec *workflow.WorkflowExecutor) gin.Handl
 			return
 		}
 
-		outcome, err := exec.RunResumable(c.Request.Context(), wf, workflow.RunOpts{
-			StopAt:      req.StopAt,
-			Input:       req.Input,
-			ResumeRunID: req.ResumeRunID,
-		})
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error":  err.Error(),
+		// Legacy sync resume path: paused-agent runs still complete
+		// in-process via RunResumable. Migration of resume to the lease
+		// path is a follow-up; in the meantime callers can still wake
+		// a paused run from this endpoint.
+		if req.ResumeRunID != "" {
+			outcome, rerr := exec.RunResumable(c.Request.Context(), wf, workflow.RunOpts{
+				StopAt:      req.StopAt,
+				Input:       req.Input,
+				ResumeRunID: req.ResumeRunID,
+			})
+			if rerr != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{
+					"error":  rerr.Error(),
+					"run_id": outcome.RunID,
+					"status": outcome.Status,
+					"steps":  outcome.Steps,
+				})
+				return
+			}
+			c.JSON(http.StatusOK, gin.H{
+				"steps":  outcome.Steps,
 				"run_id": outcome.RunID,
 				"status": outcome.Status,
-				"steps":  outcome.Steps,
 			})
 			return
 		}
 
-		c.JSON(http.StatusOK, gin.H{
-			"steps":  outcome.Steps,
-			"run_id": outcome.RunID,
-			"status": outcome.Status,
+		if runStore == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "run store not configured"})
+			return
+		}
+
+		runID := ulid.Make().String()
+		now := time.Now().UTC()
+		rec := workflow.WorkflowRun{
+			ID:           runID,
+			WorkflowID:   wf.ID,
+			TenantID:     wf.TenantID,
+			Status:       workflow.RunStatusRunning,
+			StartedAt:    now,
+			Params:       wf.Params,
+			TriggerInput: req.Input,
+		}
+		if _, cerr := runStore.Create(c.Request.Context(), rec); cerr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "create run: " + cerr.Error()})
+			return
+		}
+		// Best-effort wakeup; nil publisher = no Redis wired = worker
+		// picks it up on next tick instead.
+		workflow.PublishWakeup(c.Request.Context(), wakeup)
+		c.JSON(http.StatusAccepted, gin.H{
+			"run_id": runID,
+			"status": workflow.RunStatusRunning,
 		})
 	}
 }

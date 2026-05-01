@@ -38,18 +38,6 @@ import (
 	"github.com/oklog/ulid/v2"
 )
 
-// PublishWakeup broadcasts a wakeup so any idle executor worker
-// drops its sleep and tries to claim. Best-effort: errors logged
-// at warn so a Redis blip doesn't fail the calling handler.
-func PublishWakeup(ctx context.Context, rc *rediss.Client) {
-	if rc == nil {
-		return
-	}
-	if _, err := rc.PublishWithCount(ctx, workflow.WakeupChannel, []byte("1")); err != nil {
-		slog.Warn("workflow-executor: wakeup publish failed", "err", err)
-	}
-}
-
 // Tunables — kept conservative; expose via env later if ops want to tune.
 var (
 	executorLeaseDur     = 30 * time.Second // matches DURABLE-EXECUTION-PLAN default
