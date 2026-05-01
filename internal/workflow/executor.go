@@ -102,10 +102,21 @@ type MongoClient interface {
 
 // StepResult holds the outcome of a single node execution.
 type StepResult struct {
-	NodeID   string   `json:"node_id"`
-	NodeType NodeType `json:"node_type"`
-	Output   any      `json:"output,omitempty"`
-	Error    string   `json:"error,omitempty"`
+	NodeID   string   `bson:"node_id"            json:"node_id"`
+	NodeType NodeType `bson:"node_type"          json:"node_type"`
+	Output   any      `bson:"output,omitempty"   json:"output,omitempty"`
+	Error    string   `bson:"error,omitempty"    json:"error,omitempty"`
+	// ViaAgentTool marks step results produced by an agent-driven
+	// `as_tool` dispatch rather than the main BFS. The run-status
+	// promotion scan in RunFromCheckpoint ignores Error on these
+	// steps: the agent itself decides whether the run aborts
+	// (via `stop_on_tool_error` or sandbox-infra classification),
+	// so a tool error that the agent fed back to the LLM and
+	// recovered from must not promote the run to error
+	// retroactively. The canvas + run-detail UI still surface the
+	// red badge via the step_done(IsError) event, which is
+	// independent of this flag.
+	ViaAgentTool bool `bson:"via_agent_tool,omitempty" json:"via_agent_tool,omitempty"`
 }
 
 // StepContext holds the input, output, and (for for_each) current item of a named step.
@@ -993,6 +1004,15 @@ func (e *WorkflowExecutor) RunResumable(ctx context.Context, wf Workflow, opts R
 	}
 	if status == RunStatusSuccess {
 		for _, s := range steps {
+			// Agent-tool dispatch errors are agent-loop concerns, not
+			// run-level outcomes. The agent's own StepResult carries
+			// the terminal err when it aborts (stop_on_tool_error /
+			// sandbox-infra); that's what should promote the run to
+			// error. Tool errors the agent recovered from via LLM
+			// retry must not retroactively flip the run.
+			if s.ViaAgentTool {
+				continue
+			}
 			if s.Error != "" {
 				status = RunStatusError
 				stepErr = s.Error
@@ -1078,6 +1098,15 @@ func (e *WorkflowExecutor) RunFromCheckpoint(ctx context.Context, wf Workflow, r
 	}
 	if status == RunStatusSuccess {
 		for _, s := range steps {
+			// Agent-tool dispatch errors are agent-loop concerns, not
+			// run-level outcomes. The agent's own StepResult carries
+			// the terminal err when it aborts (stop_on_tool_error /
+			// sandbox-infra); that's what should promote the run to
+			// error. Tool errors the agent recovered from via LLM
+			// retry must not retroactively flip the run.
+			if s.ViaAgentTool {
+				continue
+			}
 			if s.Error != "" {
 				status = RunStatusError
 				stepErr = s.Error

@@ -13,6 +13,25 @@ import (
 	"github.com/oklog/ulid/v2"
 )
 
+// isInfraToolError reports whether a tool-handler error originates
+// from sandbox infrastructure (k3s pod attach, docker daemon, image
+// pull, etc.) rather than from user-space tool logic. The agent loop
+// treats infra failures as terminal regardless of `stop_on_tool_error`
+// because the LLM has no plausible recovery path — retrying / pivoting
+// won't bring the sandbox back. Detection by string prefix is brittle
+// but matches every internal/sandbox emit-site (`fmt.Errorf("sandbox/<engine>: …")`)
+// + needs no API change to the sandbox package.
+func isInfraToolError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "sandbox/k3s:") ||
+		strings.Contains(msg, "sandbox/docker:") ||
+		strings.Contains(msg, "sandbox/dap:") ||
+		strings.Contains(msg, "sandbox/cdp:")
+}
+
 // Agent run defaults — overridable via node data fields.
 const (
 	defaultMaxIterations       = 8
@@ -95,6 +114,19 @@ func (e *WorkflowExecutor) runAIAgent(ctx context.Context, node Node, data map[s
 	temperature := getFloat64Data(data, "temperature")
 	model, _ := data["model_override"].(string)
 	requireApproval := getBoolData(data, "require_approval")
+	// stopOnToolError: when set, any tool-handler error from
+	// catalog.Execute aborts the agent loop instead of feeding the
+	// error back to the LLM as a tool_result. The agent's StepResult
+	// then carries Error, which the run-status logic in
+	// RunFromCheckpoint promotes to the run-level `error` badge.
+	// Default false preserves the LLM's ability to self-correct on
+	// transient tool failures (e.g. a flaky upstream API). Strict
+	// agents that should NOT hallucinate around infra errors set
+	// `stop_on_tool_error: true` in node data. Sandbox-engine
+	// failures (k3s pod attach failed, docker daemon down, etc.)
+	// abort regardless because the LLM has no way to recover from
+	// them — we treat any err prefixed with `sandbox/` as terminal.
+	stopOnToolError := getBoolData(data, "stop_on_tool_error")
 
 	// 3. Resolve templates in prompt + user input
 	systemPrompt := applyTemplate(getStringData(data, "system_prompt"), input, wfCtx)
@@ -619,6 +651,27 @@ func (e *WorkflowExecutor) runAIAgent(ctx context.Context, node Node, data map[s
 					} else {
 						obs = obs + "\nerror: " + err.Error()
 					}
+					// Terminal-error classification: if the agent was
+					// configured to stop on any tool error, OR the
+					// underlying error is a sandbox-engine failure
+					// (k3s pod failed, docker daemon down, …) which
+					// the LLM has no path to recover from, surface
+					// the trace + return error from runAIAgent. The
+					// BFS picks up the err on the agent's runNode
+					// return → agent's StepResult.Error populated →
+					// RunFromCheckpoint's status-promotion scan
+					// flips the run badge to `error`.
+					if stopOnToolError || isInfraToolError(err) {
+						emitTrace(TraceEvent{
+							Type:     "tool_result",
+							Iter:     iter,
+							ToolName: call.Name,
+							ToolID:   call.ID,
+							Result:   obs,
+							IsError:  true,
+						})
+						return nil, fmt.Errorf("ai_agent: tool %q errored (terminal): %w", call.Name, err)
+					}
 				}
 				results = append(results, llm.ToolResultBlock(call.ID, obs, isErr))
 				emitTrace(TraceEvent{
@@ -797,8 +850,11 @@ func (e *WorkflowExecutor) buildAgentToolCatalog(agent Node, env *runEnv,
 
 			// Record a StepResult for the tool-invoked node so the UI shows
 			// success/error on it (otherwise NodeDebugPanel renders "not executed").
+			// ViaAgentTool=true keeps this Error from being scanned by the
+			// run-status promotion logic — the agent itself owns the abort
+			// decision (`stop_on_tool_error` or sandbox-infra classification).
 			if env, ok := envFromCtx(ctx); ok && env.toolSteps != nil {
-				sr := StepResult{NodeID: targetNode.ID, NodeType: targetNode.Type, Output: out}
+				sr := StepResult{NodeID: targetNode.ID, NodeType: targetNode.Type, Output: out, ViaAgentTool: true}
 				if err != nil {
 					sr.Error = err.Error()
 				}

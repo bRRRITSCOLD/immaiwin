@@ -81,6 +81,7 @@ const defaultNodeData: Record<string, Record<string, unknown>> = {
     temperature: 1,
     timeout_seconds: 300,
     require_approval: false,
+    stop_on_tool_error: false,
     output_schema: '',
     skills: [],
   },
