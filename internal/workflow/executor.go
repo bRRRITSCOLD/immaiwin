@@ -836,7 +836,8 @@ var checkpointKey = checkpointKeyT{}
 // matching fields onto runEnv so the BFS loop knows it's executing
 // under a lease.
 type checkpointBundle struct {
-	workerID  string
+	runID      string
+	workerID   string
 	priorState *ExecutionState
 }
 
@@ -1040,7 +1041,7 @@ func (e *WorkflowExecutor) RunResumable(ctx context.Context, wf Workflow, opts R
 // rec by whoever queued the run). No PreallocRunID etc — the run rec
 // is the source of truth.
 func (e *WorkflowExecutor) RunFromCheckpoint(ctx context.Context, wf Workflow, rec WorkflowRun, workerID string, emitter EventEmitter) (RunOutcome, error) {
-	bundle := &checkpointBundle{workerID: workerID, priorState: rec.ExecutionState}
+	bundle := &checkpointBundle{runID: rec.ID, workerID: workerID, priorState: rec.ExecutionState}
 	ctx = context.WithValue(ctx, checkpointKey, bundle)
 	if emitter == nil {
 		emitter = e.Events
@@ -1220,6 +1221,7 @@ func (e *WorkflowExecutor) RunWithEvents(ctx context.Context, wf Workflow, stopA
 	// re-entering the loop. Empty priorState (fresh lease-claimed
 	// run) falls through to the trigger path.
 	if cb, ok := ctx.Value(checkpointKey).(*checkpointBundle); ok && cb != nil {
+		env.runID = cb.runID
 		env.workerID = cb.workerID
 		env.checkpoint = true
 		env.yieldOnApproval = true

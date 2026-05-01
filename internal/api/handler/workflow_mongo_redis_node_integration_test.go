@@ -17,7 +17,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
@@ -45,6 +44,9 @@ type WorkflowMongoRedisNodeIntegrationSuite struct {
 	dbName      string
 	redis       *rediss.Client
 	apiSrv      *httptest.Server
+
+	workerCancel context.CancelFunc
+	workerDone   chan struct{}
 }
 
 func TestWorkflowMongoRedisNodeIntegrationSuite(t *testing.T) {
@@ -116,9 +118,21 @@ func (s *WorkflowMongoRedisNodeIntegrationSuite) SetupSuite() {
 		nil,
 	)
 	s.apiSrv = httptest.NewServer(srv.Handler())
+
+	workerCtx, workerCancel := context.WithCancel(context.Background())
+	s.workerCancel = workerCancel
+	s.workerDone = make(chan struct{})
+	go func() {
+		defer close(s.workerDone)
+		runInTestExecutorWorker(workerCtx, "test-executor-mongo-redis", runRepo, wfRepo, wfExec)
+	}()
 }
 
 func (s *WorkflowMongoRedisNodeIntegrationSuite) TearDownSuite() {
+	if s.workerCancel != nil {
+		s.workerCancel()
+		<-s.workerDone
+	}
 	if s.apiSrv != nil {
 		s.apiSrv.Close()
 	}
@@ -199,18 +213,47 @@ func (s *WorkflowMongoRedisNodeIntegrationSuite) putRequestNodeWorkflow(client *
 	return wfID
 }
 
+// runWorkflow POSTs /run (async) and polls the run-detail endpoint
+// until the in-test worker finishes. Returns the terminal steps + status.
 func (s *WorkflowMongoRedisNodeIntegrationSuite) runWorkflow(client *http.Client, wfID string) (steps []map[string]any, status string) {
 	resp, err := client.Post(s.apiSrv.URL+"/api/v1/workflows/"+wfID+"/run",
 		"application/json", bytes.NewReader([]byte(`{}`)))
 	s.Require().NoError(err)
 	defer resp.Body.Close() //nolint:errcheck
-	raw, _ := io.ReadAll(resp.Body)
-	var out struct {
-		Steps  []map[string]any `json:"steps"`
-		Status string           `json:"status"`
+	if resp.StatusCode != http.StatusAccepted {
+		return nil, ""
 	}
-	_ = json.Unmarshal(raw, &out)
-	return out.Steps, out.Status
+	var dispatch struct {
+		RunID string `json:"run_id"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&dispatch)
+	if dispatch.RunID == "" {
+		return nil, ""
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		dResp, derr := client.Get(s.apiSrv.URL + "/api/v1/workflow_runs/" + dispatch.RunID)
+		if derr == nil {
+			var detail map[string]any
+			_ = json.NewDecoder(dResp.Body).Decode(&detail)
+			_ = dResp.Body.Close()
+			if run, ok := detail["run"].(map[string]any); ok {
+				if st, _ := run["status"].(string); st == "success" || st == "error" || st == "cancelled" {
+					if rawSteps, ok := run["steps"].([]any); ok {
+						for _, sv := range rawSteps {
+							if m, ok := sv.(map[string]any); ok {
+								steps = append(steps, m)
+							}
+						}
+					}
+					return steps, st
+				}
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	s.FailNow("runWorkflow timeout", "run %s never reached terminal state in 10s", dispatch.RunID)
+	return nil, "timeout"
 }
 
 // ---- mongo_request tests ----

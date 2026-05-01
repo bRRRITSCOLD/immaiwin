@@ -231,7 +231,7 @@ func NewServer(
 	r.PUT("/api/v1/workflows/:id", requireAuth, handler.UpsertWorkflow(wfStore))
 	r.POST("/api/v1/workflows/:id/duplicate", requireAuth, handler.DuplicateWorkflow(handler.WorkflowDuplicateDeps{Store: wfStore, Audit: audit}))
 	r.DELETE("/api/v1/workflows/:id", requireAuth, handler.DeleteWorkflow(wfStore))
-	r.POST("/api/v1/workflows/:id/run", requireAuth, handler.RunWorkflow(wfStore, wfExec))
+	r.POST("/api/v1/workflows/:id/run", requireAuth, handler.RunWorkflow(wfStore, wfRunStore, rc, wfExec))
 	r.GET("/api/v1/workflows/:id/run/stream", requireAuth, handler.RunWorkflowWS(wfStore, wfExec))
 
 	// Workflow runs (history page). Register the static `daily_total`

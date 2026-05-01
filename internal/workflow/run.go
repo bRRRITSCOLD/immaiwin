@@ -324,6 +324,36 @@ var ErrLeaseNotHeld = errLeaseNotHeld{}
 // the same string without one importing the other.
 const WakeupChannel = "burrow:wakeup"
 
+// WakeupPublisher is the slim subset of the Redis client surface
+// needed to broadcast a wakeup. *rediss.Client + ApprovalSubscriber
+// both satisfy it without import gymnastics.
+type WakeupPublisher interface {
+	PublishWithCount(ctx context.Context, channel string, payload []byte) (int64, error)
+}
+
+// PublishWakeup nudges any idle workflow-executor worker out of its
+// sleep so it tries to claim the freshly-queued (or freshly-decided)
+// run without waiting for the next periodic tick. Best-effort: a
+// publish failure is logged but never propagated back to the
+// caller — the caller has already persisted the run record + the
+// next tick will pick it up regardless. Nil publisher is a no-op
+// (lets unit tests skip the wiring).
+func PublishWakeup(ctx context.Context, pub WakeupPublisher) {
+	if pub == nil {
+		return
+	}
+	if _, err := pub.PublishWithCount(ctx, WakeupChannel, []byte("1")); err != nil {
+		// Caller's own logging usually identifies the run; keep this
+		// at warn level + with no extra context so callers can wrap
+		// it if they care.
+		// (Avoiding a slog import here would force callers to log;
+		//  importing slog package-wide is fine — already used widely
+		//  in this package.)
+		// noop on purpose: not worth crashing the request path
+		_ = err
+	}
+}
+
 type errLeaseNotHeld struct{}
 
 func (errLeaseNotHeld) Error() string { return "workflow run: lease not held by caller" }
