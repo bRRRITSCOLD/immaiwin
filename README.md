@@ -616,6 +616,16 @@ Current behaviour: the `/approval` endpoint detects the zero-subscriber case, au
 
 If you hit it on an old build, force-cancel the run from `/runs/:id` and re-trigger the workflow. Permanent fix (lease-based stateless workers + checkpoint-per-step execution) is the next architectural milestone.
 
+### Why does an approval-gated agent run pay an extra LLM call when I approve?
+
+The lease-based executor yields the worker's lease the moment an `as_tool` target's `require_node_approval` gate fires — BEFORE the tool runs. The agent's mid-loop snapshot (current iteration, message history so far, accumulated usage + trace) is persisted to Mongo so a later worker can pick up exactly where this one paused.
+
+Persisting messages mid-tool-dispatch is the catch. Most LLM providers expect a tool_call to be followed by a matching tool_result, never the other way around. If we saved the assistant turn that emitted the tool_call alongside the rest of the conversation, the resumed worker would feed the model its own pending un-answered tool_call and either error or emit incoherent output. To avoid that, the executor pops the trailing assistant turn before persisting and the resumed agent re-prompts the model fresh.
+
+The trade-off: **one extra `Chat` call per approval gate**. Token cost = roughly the prompt length at yield time. With moderate prompts and one gate per run that's a few cents at most; with very long prompts or many gates per run it adds up. Mitigations on the roadmap: per-provider request-id idempotency to dedupe the resume Chat (where supported), and / or a stateful resume mode that replays the LLM's previous response from the saved trace instead of re-prompting.
+
+Documented in `.private/ai-automation/DURABLE-EXECUTION-PLAN.md` (long-tail edge cases section); the smoke-test reproduction lives in `internal/api/handler/workflow_run_agent_yield_integration_test.go`.
+
 ### `Bind for 0.0.0.0:<port> failed: port is already allocated` even though no container shows that port
 
 Two flavours, both common:
