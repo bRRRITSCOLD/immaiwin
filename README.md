@@ -46,6 +46,7 @@ The long game: add AI agents that can write and execute code as part of their re
   - [Webhooks](#webhooks)
 - [Roadmap](#roadmap)
 - [Development](#development)
+- [Troubleshooting / FAQ](#troubleshooting--faq)
 - [License](#license)
 
 ### Other docs
@@ -535,6 +536,96 @@ make dev-teardown          # Stop docker compose + k3s + local registry (state p
 make dev-teardown-sandbox  # Delete pods in the sandbox namespace (cluster stays up)
 make dev-teardown-full     # DESTRUCTIVE: uninstall k3s, remove registry + gVisor
 ```
+
+---
+
+## Troubleshooting / FAQ
+
+A short list of traps we've hit ourselves; each one cost an hour-plus the first time. Skim before opening an issue.
+
+### Sandbox pod fails immediately with "entered terminal phase Failed before attach"
+
+The k3s backend pulled an image that doesn't exist in your local registry. Most often after upgrading or rebranding, the code expects e.g. `burrow/sandbox-python:3.12` but only the previous tag was ever pushed.
+
+```sh
+# First, make sure you're on the native Docker daemon (NOT Docker Desktop's VM):
+docker context use default
+
+# Rebuild + push every sandbox image to the configured registry (default localhost:5000):
+make sandbox-images-push
+
+# Verify:
+curl -s http://localhost:5000/v2/_catalog
+```
+
+The k3s API server force-deletes the failed pod almost immediately, so `kubectl describe pod` rarely catches anything in time. Expect the image-mismatch case as the default explanation.
+
+### `make sandbox-images-push` hangs then errors `dial tcp [::1]:5000: i/o timeout`
+
+You're on Docker Desktop. Docker Desktop runs the engine inside a Linux VM, and from inside that VM `localhost:5000` does **not** reach the host's port 5000 where the local registry listens. Switch contexts:
+
+```sh
+docker context use default      # native daemon shares the host network
+make sandbox-images-push
+```
+
+`docker context ls` will show a `*` next to whichever context is active. Launching Docker Desktop silently flips the active context to `desktop-linux`; `docker context use default` flips it back.
+
+### I rebuilt a sandbox image with the same tag but k3s still runs the old one
+
+k3s' embedded containerd caches images by content digest. `imagePullPolicy: PullAlways` only re-pulls when the local digest doesn't match remote, and containerd doesn't always refresh its remote-digest cache fast enough.
+
+```sh
+sudo k3s crictl rmi <image>     # clear the cached image; next pull is forced
+sudo systemctl restart k3s      # bigger hammer for multiple stuck images
+```
+
+### `$PWD` (or any other `$VAR`) in `.env` doesn't expand
+
+The `.env` loader only substitutes variables that are defined inside the `.env` file itself. `$PWD` lives in the process environment, so an unquoted reference silently expands to empty:
+
+```sh
+# wrong — godotenv eats the $PWD before the API ever sees it:
+SKILLS_DIR=$PWD/skills/bundled
+
+# right — single quotes preserve the literal; the API expands $PWD against
+# the process environment at boot:
+SKILLS_DIR='$PWD/skills/bundled'
+```
+
+This applies to any path-style env var you want resolved against the process environment.
+
+### Slack approval channel rejects with `not_allowed_token_type` or `invalid_auth`
+
+The OOB approval dispatcher uses Slack's `chat.postMessage` API, which requires a Bot User OAuth Token — `xoxb-*`. Common mistakes:
+
+| Token prefix | What it is | Works for `chat.postMessage`? |
+|---|---|---|
+| `xoxb-` | Bot User OAuth Token | **Yes — what you want** |
+| `xoxp-` | User OAuth Token (acts as the installing user) | No |
+| `xapp-` | App-Level Token (Socket Mode connections only) | No |
+
+Fix: Slack app dashboard → **OAuth & Permissions** → add `chat:write` (+ `im:write`, `chat:write.public` if needed) under **Bot Token Scopes** → Install (or Reinstall) to Workspace → copy the **Bot User OAuth Token** at the top of the page.
+
+The connection's Test button + the dispatcher itself both detect the wrong-token-type case and return a remediation hint inline, so the bare error is rare on current builds.
+
+### Run paused on `pending_approval` — restarted the API, now Approve does nothing
+
+The approval wait used to live in an in-process Go goroutine that died with the previous API process. The new process didn't re-subscribe to the per-run Redis channel, so the publish from `/approval` landed on a closed channel and the run sat forever.
+
+Current behaviour: the `/approval` endpoint detects the zero-subscriber case, auto-cancels the orphan run, and returns 410 so the UI can surface "abandoned during a restart — re-trigger to retry." The API also runs a boot-time sweep that flips any non-terminal run older than 30s into a terminal `error` state on startup.
+
+If you hit it on an old build, force-cancel the run from `/runs/:id` and re-trigger the workflow. Permanent fix (lease-based stateless workers + checkpoint-per-step execution) is the next architectural milestone.
+
+### Skills page says "No skills installed" even though `skills/bundled/` has bundles
+
+The API auto-imports every bundle in `SKILLS_DIR` on boot. If the registry is empty after start-up, either:
+
+- `SKILLS_DIR` doesn't point at the directory you think (check the boot log: `INFO skills system enabled dir=...`). Likely culprit is the unquoted-`$PWD` trap from above.
+- The bundles aren't on disk yet at the configured path.
+- `SKILLS_ENABLED=false`. Set it to `true`.
+
+`Refresh from sources` on the `/skills` page rescans without an API restart.
 
 ---
 
