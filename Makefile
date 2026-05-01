@@ -102,11 +102,33 @@ sandbox-images-push: sandbox-images sandbox-images-debug
 SANDBOX_NS ?= burrow-sandbox
 KUBECONFIG_K3S ?= /etc/rancher/k3s/k3s.yaml
 
-dev-teardown: ## stop docker compose, k3s, and the local registry (state preserved)
+dev-teardown: ## stop docker compose, k3s, local registry, reap orphans by name + kill orphan docker-proxy procs
 	@echo "==> stopping docker compose stack"
 	-@$(MAKE) --no-print-directory docker-compose-down
+	@echo "==> reaping by-name orphans (legacy compose project names + cross-context drift)"
+	@# `docker compose down` only reaps containers labelled with the
+	@# CURRENT compose project name. Renaming the project (immaiwin →
+	@# burrow) leaves the old containers labelled with the old name,
+	@# invisible to compose. Reaping by name regex catches them so a
+	@# port-already-allocated boot loop can't form on the next dev-up.
+	-@for prefix in burrow- immaiwin-; do \
+	  ids=$$(docker ps -aq --filter "name=$$prefix" 2>/dev/null); \
+	  if [ -n "$$ids" ]; then \
+	    echo "    removing $$prefix* containers ($$(echo $$ids | wc -w) found)"; \
+	    docker rm -f $$ids >/dev/null 2>&1 || true; \
+	  fi; \
+	done
 	@echo "==> stopping local registry container (if running)"
 	-@docker stop registry >/dev/null 2>&1 || true
+	@docker rm -f registry >/dev/null 2>&1 || true
+	@echo "==> killing orphan docker-proxy procs holding our dev ports"
+	@# When dockerd kills a container ungracefully (compose race, daemon
+	@# restart mid-rm), the userland docker-proxy children get reparented
+	@# to PID 1 and keep holding the host port. Container is gone but the
+	@# next dev-up gets `Bind for 0.0.0.0:<port> failed: port is already
+	@# allocated`. Reap by host-port; ports must match the published
+	@# ports in docker-compose.yml + scripts/registry.
+	-@sudo pkill -f 'docker-proxy.*-host-port (6379|5672|27017|5000|1025|8025|15672|15692)' 2>/dev/null || true
 	@echo "==> stopping k3s service"
 	-@if systemctl list-unit-files k3s.service >/dev/null 2>&1; then \
 	  sudo systemctl stop k3s; \
