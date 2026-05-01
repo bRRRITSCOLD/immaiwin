@@ -6,10 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/bRRRITSCOLD/burrow/internal/auth"
+	"github.com/bRRRITSCOLD/burrow/internal/mongodb"
 	"github.com/bRRRITSCOLD/burrow/internal/workflow"
 	"github.com/gin-gonic/gin"
+	"github.com/oklog/ulid/v2"
 	cronlib "github.com/robfig/cron/v3"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 )
@@ -238,6 +241,92 @@ func DeleteWorkflow(store WorkflowStore) gin.HandlerFunc {
 			return
 		}
 		c.Status(http.StatusNoContent)
+	}
+}
+
+// WorkflowDuplicateDeps wraps the dependencies needed by the
+// workflow-duplicate handler so we can audit-log the privileged
+// action without expanding the existing WorkflowStore signature.
+type WorkflowDuplicateDeps struct {
+	Store WorkflowStore
+	Audit *mongodb.AuditRepository
+}
+
+// DuplicateWorkflow forks the workflow at :id into a brand-new
+// workflow within the caller's tenant. The new doc's ID is a fresh
+// ULID, name carries a " (copy)" suffix, version resets to 1 (Mongo's
+// `$inc` initialises it on insert), created_at / updated_at are
+// stamped server-side. Run history isn't copied — runs are keyed by
+// workflow_id and stay with the source. Audit-logged.
+//
+// Optional body: `{"new_id": "<ulid>"}` overrides the generated ID
+// (lets the UI pre-allocate it for navigation).
+func DuplicateWorkflow(deps WorkflowDuplicateDeps) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		id := c.Param("id")
+		if id == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "id required"})
+			return
+		}
+
+		tenantID, hasTenant := auth.TenantFromCtx(c.Request.Context())
+		if !hasTenant {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "auth required"})
+			return
+		}
+
+		src, err := deps.Store.GetByIDForTenant(c.Request.Context(), id, tenantID)
+		if err != nil {
+			if errors.Is(err, mongo.ErrNoDocuments) {
+				c.JSON(http.StatusNotFound, gin.H{"error": "workflow not found"})
+				return
+			}
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
+		var body struct {
+			NewID string `json:"new_id"`
+		}
+		_ = json.NewDecoder(c.Request.Body).Decode(&body)
+		newID := body.NewID
+		if newID == "" {
+			newID = ulid.Make().String()
+		}
+
+		// Defensive: if the caller supplied a new_id that already exists
+		// (re-tries, races, or a malicious attempt to overwrite somebody
+		// else's doc), refuse rather than silently merging into it.
+		if _, gerr := deps.Store.GetByID(c.Request.Context(), newID); gerr == nil {
+			c.JSON(http.StatusConflict, gin.H{"error": "new_id already in use"})
+			return
+		} else if !errors.Is(gerr, mongo.ErrNoDocuments) {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": gerr.Error()})
+			return
+		}
+
+		dup := src
+		dup.ID = newID
+		dup.Name = src.Name + " (copy)"
+		dup.Version = 0 // server-stamped via $inc to 1 on insert
+		dup.CreatedAt = time.Time{}
+		dup.UpdatedAt = time.Time{}
+
+		saved, err := deps.Store.Upsert(c.Request.Context(), dup)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
+		recordAudit(c, deps.Audit, mongodb.AuditWorkflowDuplicated,
+			map[string]any{
+				"source_id":    id,
+				"duplicate_id": saved.ID,
+			},
+			map[string]any{"name": saved.Name},
+		)
+
+		c.JSON(http.StatusCreated, saved)
 	}
 }
 

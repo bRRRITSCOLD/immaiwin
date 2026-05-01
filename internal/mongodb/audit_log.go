@@ -51,6 +51,7 @@ const (
 	AuditInviteAccepted       AuditAction = "invite_accepted"
 	AuditMemberRemoved        AuditAction = "member_removed"
 	AuditOwnershipTransferred AuditAction = "tenant_ownership_transferred"
+	AuditWorkflowDuplicated   AuditAction = "workflow_duplicated"
 )
 
 // AuditEntry is the persisted shape.

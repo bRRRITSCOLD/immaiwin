@@ -1,4 +1,4 @@
-import { Globe, Play, Container, Database, Bell, RefreshCw, Radio, ChevronDown, ChevronUp, CheckCircle2, XCircle, Circle, Plus, Pencil, Trash2, Plug, Download, Bot, Wrench } from 'lucide-react'
+import { Globe, Play, Container, Database, Bell, RefreshCw, Radio, ChevronDown, ChevronUp, CheckCircle2, XCircle, Circle, Plus, Pencil, Trash2, Plug, Download, Bot, Wrench, Copy } from 'lucide-react'
 import { useState } from 'react'
 import { toast } from 'sonner'
 import { Separator } from '~/components/ui/separator'
@@ -52,6 +52,18 @@ export function WorkflowSidebar({ onSelect, onReload }: Props) {
     }
   }
 
+  async function handleDuplicateWorkflow(e: React.MouseEvent, id: string) {
+    e.stopPropagation()
+    try {
+      const dup = await api.post<Workflow>(`/api/v1/workflows/${id}/duplicate`)
+      toast.success(`Duplicated as "${dup.name}"`)
+      onReload()
+      setActive(dup.id)
+    } catch {
+      toast.error('Failed to duplicate workflow')
+    }
+  }
+
   function handleExportWorkflow(e: React.MouseEvent, wf: Workflow) {
     e.stopPropagation()
     const bundle = { version: 1, workflow: wf }
@@ -97,11 +109,23 @@ export function WorkflowSidebar({ onSelect, onReload }: Props) {
             <Button
               variant={activeId === wf.id ? 'secondary' : 'ghost'}
               size="sm"
-              className="flex-1 justify-start text-sm truncate"
+              className="flex-1 justify-start text-sm truncate gap-1"
               onClick={() => onSelect(wf.id)}
             >
-              {wf.name}
+              <span className="truncate">{wf.name}</span>
+              {typeof wf.version === 'number' && wf.version > 0 && (
+                <span className="text-[10px] text-muted-foreground font-mono shrink-0" title={`Saved revision ${wf.version}`}>
+                  v{wf.version}
+                </span>
+              )}
             </Button>
+            <button
+              className="opacity-0 group-hover:opacity-100 p-1 hover:text-foreground text-muted-foreground transition-opacity shrink-0"
+              onClick={(e) => handleDuplicateWorkflow(e, wf.id)}
+              title="Save as new workflow"
+            >
+              <Copy className="h-3.5 w-3.5" />
+            </button>
             <button
               className="opacity-0 group-hover:opacity-100 p-1 hover:text-foreground text-muted-foreground transition-opacity shrink-0"
               onClick={(e) => handleExportWorkflow(e, wf)}

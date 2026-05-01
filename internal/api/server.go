@@ -229,6 +229,7 @@ func NewServer(
 	r.GET("/api/v1/workflows", requireAuth, handler.ListWorkflows(wfStore))
 	r.GET("/api/v1/workflows/:id", requireAuth, handler.GetWorkflow(wfStore))
 	r.PUT("/api/v1/workflows/:id", requireAuth, handler.UpsertWorkflow(wfStore))
+	r.POST("/api/v1/workflows/:id/duplicate", requireAuth, handler.DuplicateWorkflow(handler.WorkflowDuplicateDeps{Store: wfStore, Audit: audit}))
 	r.DELETE("/api/v1/workflows/:id", requireAuth, handler.DeleteWorkflow(wfStore))
 	r.POST("/api/v1/workflows/:id/run", requireAuth, handler.RunWorkflow(wfStore, wfExec))
 	r.GET("/api/v1/workflows/:id/run/stream", requireAuth, handler.RunWorkflowWS(wfStore, wfExec))

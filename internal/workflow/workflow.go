@@ -89,8 +89,13 @@ type Workflow struct {
 	// Switch, etc.) and the API validates Params on save. Empty falls
 	// back to the legacy untyped key/value editor — fully back-compat.
 	ParamsSchema []ParamEntry `bson:"params_schema,omitempty" json:"params_schema,omitempty"`
-	CreatedAt    time.Time    `bson:"created_at"    json:"created_at"`
-	UpdatedAt    time.Time    `bson:"updated_at"    json:"updated_at"`
+	// Version increments on every server-side Upsert via Mongo `$inc`.
+	// Server-controlled — clients do not set it. Value is 1 after the
+	// first save; "Save as new" / Duplicate resets it to 1 on the new
+	// doc. Foundation for optimistic concurrency / git-style diff later.
+	Version   int       `bson:"version,omitempty" json:"version,omitempty"`
+	CreatedAt time.Time `bson:"created_at"    json:"created_at"`
+	UpdatedAt time.Time `bson:"updated_at"    json:"updated_at"`
 }
 
 // ParamEntry is the typed declaration for one workflow Params key.
