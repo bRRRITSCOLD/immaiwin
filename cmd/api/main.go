@@ -253,6 +253,19 @@ func main() {
 	if cfg.Email.Provider != "smtp" && cfg.Email.Provider != "log" && cfg.Email.Provider != "" {
 		slog.Warn("EMAIL_PROVIDER unrecognised, falling back to log-only sender", "provider", cfg.Email.Provider)
 	}
+
+	// Wire OOB approval dispatcher (Stage 2). The notifier reads each
+	// workflow's `ApprovalChannel` and forwards to email.Sender (SMTP)
+	// or a Slack webhook URL. Best-effort + async — see
+	// dispatchApprovalNotification. Worker-side executor (cmd/worker)
+	// gets the same wiring via BuildWorkerExecutor.
+	wfExec.ApprovalNotifier = &workflow.MultiplexApprovalNotifier{
+		Email:      emailSender,
+		HTTPClient: &http.Client{Timeout: 5 * time.Second},
+	}
+	wfExec.ApprovalTokenSecret = []byte(cfg.Auth.JWTSecret)
+	wfExec.ApprovalUIBaseURL = cfg.Auth.UIBaseURL
+
 	srv := api.NewServer(cfg.API, cfg.Auth, rc, wfRepo, runStore, wfExec, connRepo, connResolver, skillBackend, evalDeps, userRepo, tenantRepo, apiKeyRepo, workerHealthRepo, inviteRepo, auditRepo, emailSender, mc.DB(), sandboxRT)
 
 	go func() {

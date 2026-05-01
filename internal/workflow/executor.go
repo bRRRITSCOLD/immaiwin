@@ -148,9 +148,78 @@ type WorkflowExecutor struct {
 	Approvals     *ApprovalRegistry
 	approvalsOnce sync.Once
 
+	// ApprovalNotifier dispatches a magic-link prompt out-of-band when
+	// a gate fires. nil = no dispatch (gate still pauses, /runs UI is
+	// the only way to resolve it). The dispatcher is best-effort —
+	// failures are logged + swallowed so a flaky SMTP relay or
+	// unreachable Slack webhook can't strand a workflow.
+	ApprovalNotifier ApprovalNotifier
+	// ApprovalTokenSecret is the HMAC key for magic-link tokens. Same
+	// secret the user-session JWT path uses; reusing avoids a second
+	// key in deployments. nil disables magic-link dispatch even when
+	// the notifier is configured (the redeem endpoint would 503 anyway
+	// without a verifier-side secret).
+	ApprovalTokenSecret []byte
+	// ApprovalUIBaseURL is the externally-reachable base URL the
+	// dispatcher embeds in the magic-link. Empty falls back to a
+	// relative `/approve?...` link, useful in dev where the UI proxies
+	// the API.
+	ApprovalUIBaseURL string
+
 	// cursor cache for find/aggregate pagination. Lazy-initialised on first mongo_request use.
 	cursors     *cursorCache
 	cursorsOnce sync.Once
+}
+
+// dispatchApprovalNotification fires the configured channel notifier
+// for a freshly-stamped pending_approval gate. Best-effort: each call
+// runs in its own goroutine with a 5s timeout so a slow channel can't
+// stall the gate's caller. Failures land in slog.Warn — the /runs UI
+// fallback is always available regardless of dispatch outcome.
+//
+// Skipped when the notifier OR the token secret is unwired: a
+// half-configured deploy is treated identically to "feature off."
+func (e *WorkflowExecutor) dispatchApprovalNotification(wf Workflow, runID string, pending PendingApprovalState) {
+	if e.ApprovalNotifier == nil || len(e.ApprovalTokenSecret) == 0 {
+		return
+	}
+	if pending.TokenID == "" {
+		// Defensive — a freshly-fired gate stamps TokenID. Nil means
+		// some caller mutated the state mid-flight; skip rather than
+		// emit an unverifiable link.
+		slog.Warn("approval dispatch: skipped (token_id empty)", "run_id", runID)
+		return
+	}
+	tok, err := SignApprovalToken(e.ApprovalTokenSecret, runID, pending.TokenID, 0)
+	if err != nil {
+		slog.Warn("approval dispatch: sign token failed", "run_id", runID, "err", err)
+		return
+	}
+	req := ApprovalRequest{
+		RunID:     runID,
+		Token:     tok,
+		Workflow:  wf,
+		Pending:   pending,
+		UIBaseURL: e.ApprovalUIBaseURL,
+	}
+	go func(req ApprovalRequest) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := e.ApprovalNotifier.NotifyApprovalRequested(ctx, req); err != nil {
+			slog.Warn("approval dispatch: notifier failed (gate still resolvable via /runs)",
+				"run_id", req.RunID, "workflow_id", req.Workflow.ID,
+				"channel_type", channelType(req.Workflow.ApprovalChannel),
+				"err", err)
+		}
+	}(req)
+}
+
+// channelType is a nil-safe accessor for logging.
+func channelType(ch *ApprovalChannel) string {
+	if ch == nil {
+		return ""
+	}
+	return ch.Type
 }
 
 // approvalRegistryFor returns the executor's lazy-initialised approval
@@ -241,20 +310,29 @@ func (e *WorkflowExecutor) waitNodeApproval(ctx context.Context, env *runEnv, no
 	// matches against the inbound JWT's `jti` — once cleared (decision
 	// landed, run cancelled, ctx died) a stale link can't resurrect
 	// the gate.
+	pending := PendingApprovalState{
+		Kind:        "node",
+		NodeID:      node.ID,
+		NodeType:    node.Type,
+		NodeName:    name,
+		NodeInput:   input,
+		RequestedAt: time.Now().UTC(),
+		TokenID:     ulid.Make().String(),
+	}
 	if rec, gerr := e.RunRepo.Get(ctx, env.runID); gerr == nil {
 		rec.Status = RunStatusPendingApproval
-		rec.PendingApproval = &PendingApprovalState{
-			Kind:        "node",
-			NodeID:      node.ID,
-			NodeType:    node.Type,
-			NodeName:    name,
-			NodeInput:   input,
-			RequestedAt: time.Now().UTC(),
-			TokenID:     ulid.Make().String(),
-		}
+		rec.PendingApproval = &pending
 		if uerr := e.RunRepo.Update(ctx, rec); uerr != nil {
 			slog.Warn("workflow: persist pending_approval (node) failed", "run_id", env.runID, "node", node.ID, "err", uerr)
 		}
+	}
+	// Dispatch OOB channel notification (Stage 2). Async, best-effort;
+	// the gate still resolves through the /runs UI if the notifier
+	// fails or is unwired. The workflow value already carries the
+	// configured `ApprovalChannel` so the dispatcher can read it
+	// without a second Mongo lookup.
+	if env.wf != nil {
+		e.dispatchApprovalNotification(*env.wf, env.runID, pending)
 	}
 
 	// Block until decision or ctx cancel.

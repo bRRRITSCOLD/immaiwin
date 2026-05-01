@@ -73,6 +73,7 @@ interface WorkflowStore {
   updateActiveGraph(nodes: Node[], edges: Edge[], params: Record<string, string>): void
   updateActiveCostLimits(cost_limits: CostLimits | null): void
   updateActiveParamsSchema(params_schema: ParamEntry[]): void
+  updateActiveApprovalChannel(approval_channel: ApprovalChannel | null): void
   activeWorkflow(): Workflow | null
 }
 
@@ -120,6 +121,16 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
     set({
       workflows: workflows.map((w) =>
         w.id === activeId ? { ...w, cost_limits } : w,
+      ),
+    })
+  },
+
+  updateActiveApprovalChannel(approval_channel) {
+    const { activeId, workflows } = get()
+    if (!activeId) return
+    set({
+      workflows: workflows.map((w) =>
+        w.id === activeId ? { ...w, approval_channel } : w,
       ),
     })
   },

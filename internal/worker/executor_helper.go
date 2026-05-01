@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/bRRRITSCOLD/burrow/internal/config"
+	"github.com/bRRRITSCOLD/burrow/internal/email"
 	"github.com/bRRRITSCOLD/burrow/internal/mongodb"
 	"github.com/bRRRITSCOLD/burrow/internal/rediss"
 	"github.com/bRRRITSCOLD/burrow/internal/workflow"
@@ -57,16 +58,32 @@ func BuildWorkerExecutor(
 	skillRes := buildSkillResolver(ctx, cfg, db)
 	sandboxRT := buildSandboxRT(ctx, cfg)
 
+	// OOB approval dispatcher (Stage 2). Workers run gates the same way
+	// as the API; without this wiring a cron / event-trigger run would
+	// pause silently with no Slack / email prompt — the user would have
+	// to find the run in /runs by hand. Empty JWT secret = magic-link
+	// dispatch is effectively off; the dispatcher in workflow.go
+	// short-circuits cleanly so a misconfigured deploy just falls back
+	// to the /runs UI flow.
+	emailSender := email.NewFromConfig(cfg.Email)
+	approvalNotifier := &workflow.MultiplexApprovalNotifier{
+		Email:      emailSender,
+		HTTPClient: &http.Client{Timeout: 5 * time.Second},
+	}
+
 	exec := &workflow.WorkflowExecutor{
-		HTTPClient:     &http.Client{Timeout: 30 * time.Second},
-		DB:             defaultDB,
-		Redis:          rc,
-		ConnResolver:   connResolver,
-		SandboxRT:      sandboxRT,
-		ApprovalBroker: rc,
-		Memory:         chatMem,
-		RunRepo:        runStore,
-		SkillRes:       skillRes,
+		HTTPClient:          &http.Client{Timeout: 30 * time.Second},
+		DB:                  defaultDB,
+		Redis:               rc,
+		ConnResolver:        connResolver,
+		SandboxRT:           sandboxRT,
+		ApprovalBroker:      rc,
+		Memory:              chatMem,
+		RunRepo:             runStore,
+		SkillRes:            skillRes,
+		ApprovalNotifier:    approvalNotifier,
+		ApprovalTokenSecret: []byte(cfg.Auth.JWTSecret),
+		ApprovalUIBaseURL:   cfg.Auth.UIBaseURL,
 	}
 
 	cleanup := func() {
