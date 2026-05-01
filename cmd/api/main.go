@@ -260,8 +260,9 @@ func main() {
 	// dispatchApprovalNotification. Worker-side executor (cmd/worker)
 	// gets the same wiring via BuildWorkerExecutor.
 	wfExec.ApprovalNotifier = &workflow.MultiplexApprovalNotifier{
-		Email:      emailSender,
-		HTTPClient: &http.Client{Timeout: 5 * time.Second},
+		Email:        emailSender,
+		HTTPClient:   &http.Client{Timeout: 5 * time.Second},
+		ConnResolver: connResolver,
 	}
 	wfExec.ApprovalTokenSecret = []byte(cfg.Auth.JWTSecret)
 	wfExec.ApprovalUIBaseURL = cfg.Auth.UIBaseURL

@@ -67,8 +67,9 @@ func BuildWorkerExecutor(
 	// to the /runs UI flow.
 	emailSender := email.NewFromConfig(cfg.Email)
 	approvalNotifier := &workflow.MultiplexApprovalNotifier{
-		Email:      emailSender,
-		HTTPClient: &http.Client{Timeout: 5 * time.Second},
+		Email:        emailSender,
+		HTTPClient:   &http.Client{Timeout: 5 * time.Second},
+		ConnResolver: connResolver,
 	}
 
 	exec := &workflow.WorkflowExecutor{

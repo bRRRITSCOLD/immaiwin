@@ -115,8 +115,14 @@ func (s *WorkflowRunIntegrationSuite) SetupSuite() {
 	// ApprovalBroker = Redis so the OOB approval gate (require_node_approval)
 	// has the cross-process pub/sub channel it needs — without it the
 	// gate degrades to auto-approve.
+	// ConnectionResolver lets the dispatcher resolve `slack_bot`
+	// channel's Target (a connection_id) into the actual bot_token.
+	// Tests that don't touch slack_bot ignore it; the resolver is
+	// wired generically so subsequent tests don't need to re-plumb.
+	connResolver := workflow.NewConnectionResolver(connRepo, mongodb.NewMongoClient(s.db), nil)
 	s.notifier = &workflow.MultiplexApprovalNotifier{
-		HTTPClient: &http.Client{Timeout: 5 * time.Second},
+		HTTPClient:   &http.Client{Timeout: 5 * time.Second},
+		ConnResolver: connResolver,
 	}
 	wfExec := &workflow.WorkflowExecutor{
 		HTTPClient:          &http.Client{Timeout: 10 * time.Second},
@@ -811,6 +817,106 @@ func (s *WorkflowRunIntegrationSuite) TestApprovalDispatch_SlackChannel_PostsWeb
 	s.Contains(text, "Approval needed", "slack body should carry the human-friendly subject")
 	s.Contains(text, runID, "slack body should include run_id")
 	s.Contains(text, "/approve?", "slack body should embed the approve URL")
+
+	approveBody, _ := json.Marshal(map[string]any{"approved": true})
+	resp, err := client.Post(s.httpSrv.URL+"/api/v1/workflow_runs/"+runID+"/approval",
+		"application/json", bytes.NewReader(approveBody))
+	s.Require().NoError(err)
+	_ = resp.Body.Close()
+
+	select {
+	case <-runDone:
+	case <-time.After(5 * time.Second):
+		s.FailNow("run did not complete after manual approve")
+	}
+}
+
+// TestApprovalDispatch_SlackBotChannel_PostsViaChatPostMessageWithBotToken
+// covers the bot-token path (slack_bot transport): a `slack`-typed
+// Connection holds the encrypted xoxb-* token, ApprovalChannel.target
+// references the connection_id, dispatcher resolves + POSTs to
+// chat.postMessage with `Authorization: Bearer xoxb-*`.
+func (s *WorkflowRunIntegrationSuite) TestApprovalDispatch_SlackBotChannel_PostsViaChatPostMessageWithBotToken() {
+	suffix := time.Now().UnixNano()
+	client := s.authedClient(fmt.Sprintf("alice-dispatch-slackbot-%d@example.com", suffix))
+
+	type capturedPost struct {
+		url   string
+		auth  string
+		body  []byte
+	}
+	var (
+		capMu    sync.Mutex
+		captured []capturedPost
+	)
+	fakeSlackAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		capMu.Lock()
+		captured = append(captured, capturedPost{
+			url:  r.URL.Path,
+			auth: r.Header.Get("Authorization"),
+			body: body,
+		})
+		capMu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true,"channel":"C0123","ts":"1.0"}`))
+	}))
+	defer fakeSlackAPI.Close()
+
+	// Point the dispatcher at the fake Slack API for the duration of
+	// this test; restore after.
+	s.notifier.SlackAPIBase = fakeSlackAPI.URL
+	defer func() { s.notifier.SlackAPIBase = "" }()
+
+	// Create a slack-typed connection via the API. Tenant scoping is
+	// derived from the authed cookie.
+	connID := fmt.Sprintf("conn-slack-%d", suffix)
+	connBody, _ := json.Marshal(map[string]any{
+		"name":   "test slack",
+		"type":   "slack",
+		"config": map[string]string{"bot_token": "xoxb-test-token-abc", "default_channel": "C0DEFAULT"},
+	})
+	connReq, _ := http.NewRequest(http.MethodPut, s.httpSrv.URL+"/api/v1/connections/"+connID, bytes.NewReader(connBody))
+	connReq.Header.Set("Content-Type", "application/json")
+	connResp, err := client.Do(connReq)
+	s.Require().NoError(err)
+	_ = connResp.Body.Close()
+	s.Require().Equal(http.StatusOK, connResp.StatusCode, "slack connection create should succeed")
+
+	wfID := fmt.Sprintf("wf-dispatch-slackbot-%d", suffix)
+	s.putApprovalGatedWorkflowWithChannel(client, wfID, map[string]any{
+		"type":    "slack_bot",
+		"target":  connID,
+		"channel": "C01EXPLICIT",
+	})
+
+	runID, _, runDone := s.startApprovalGatedRun(client, wfID)
+
+	deadline := time.Now().Add(2 * time.Second)
+	var posts []capturedPost
+	for time.Now().Before(deadline) {
+		capMu.Lock()
+		posts = append(posts[:0], captured...)
+		capMu.Unlock()
+		if len(posts) > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	s.Require().Len(posts, 1, "dispatcher should POST exactly one chat.postMessage per gate")
+
+	post := posts[0]
+	s.Equal("/chat.postMessage", post.url, "dispatcher should hit chat.postMessage")
+	s.Equal("Bearer xoxb-test-token-abc", post.auth, "Authorization header should carry the bot token")
+
+	var payload map[string]any
+	s.Require().NoError(json.Unmarshal(post.body, &payload))
+	s.Equal("C01EXPLICIT", payload["channel"], "explicit ApprovalChannel.channel should win over default_channel")
+	text, _ := payload["text"].(string)
+	s.Contains(text, "Approval needed", "body should carry the human-friendly subject")
+	s.Contains(text, runID, "body should include run_id")
+	s.Contains(text, "/approve?", "body should embed the approve URL")
 
 	approveBody, _ := json.Marshal(map[string]any{"approved": true})
 	resp, err := client.Post(s.httpSrv.URL+"/api/v1/workflow_runs/"+runID+"/approval",

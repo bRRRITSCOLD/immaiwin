@@ -165,6 +165,7 @@ export function ConnectionDialog({ open, onOpenChange, connection, onSaved }: Pr
                       <SelectItem value="anthropic">Anthropic</SelectItem>
                       <SelectItem value="openai">OpenAI</SelectItem>
                       <SelectItem value="ollama">Ollama</SelectItem>
+                      <SelectItem value="slack">Slack</SelectItem>
                     </SelectContent>
                   </Select>
                 </Field>
@@ -190,6 +191,7 @@ export function ConnectionDialog({ open, onOpenChange, connection, onSaved }: Pr
                     if (type === 'rabbitmq') return <RabbitMQFields config={config} setField={setField} />
                     if (type === 'anthropic') return <AnthropicFields config={config} setField={setField} />
                     if (type === 'openai') return <OpenAIFields config={config} setField={setField} />
+                    if (type === 'slack') return <SlackFields config={config} setField={setField} />
                     return <OllamaFields config={config} setField={setField} />
 
                   }}
@@ -378,6 +380,32 @@ function OpenAIFields({ config, setField }: { config: Record<string, string>; se
         <ConfigInput label="Project" configKey="project" config={config} setField={setField} placeholder="proj_…" description="Sent as OpenAI-Project header" />
         <ConfigInput label="Timeout" configKey="timeout" config={config} setField={setField} placeholder="60s" description="Go duration: 30s, 5m, 1h" />
       </Section>
+    </FieldGroup>
+  )
+}
+
+// ── Slack fields ─────────────────────────────────────────────────────────────
+
+function SlackFields({ config, setField }: { config: Record<string, string>; setField: (k: string, v: string) => void }) {
+  return (
+    <FieldGroup>
+      <ConfigInput
+        label="Bot Token"
+        configKey="bot_token"
+        config={config}
+        setField={setField}
+        placeholder="xoxb-..."
+        description="Slack bot OAuth token. Required scopes: chat:write, im:write, chat:write.public. Stored encrypted via ENCRYPTION_KEY."
+        type="password"
+      />
+      <ConfigInput
+        label="Default Channel"
+        configKey="default_channel"
+        config={config}
+        setField={setField}
+        placeholder="C01234ABCDE"
+        description="Channel ID (or DM user ID) used when the workflow's approval channel doesn't override it. Leave empty to require per-workflow override."
+      />
     </FieldGroup>
   )
 }

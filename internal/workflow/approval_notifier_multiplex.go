@@ -21,11 +21,16 @@ import (
 //
 // Email + Slack senders are constructed at boot from the same config
 // (SMTP credentials live in `email.Sender`; Slack uses a plain
-// http.Client). Both are nil-safe — the multiplexer logs + returns nil
+// http.Client). All are nil-safe — the multiplexer logs + returns nil
 // when its dependency for the requested transport isn't wired.
 type MultiplexApprovalNotifier struct {
-	Email      email.Sender
-	HTTPClient *http.Client // for slack_webhook POSTs; nil falls back to http.DefaultClient.
+	Email        email.Sender
+	HTTPClient   *http.Client         // for slack_webhook + slack_bot POSTs; nil falls back to http.DefaultClient.
+	ConnResolver *ConnectionResolver  // resolves slack_bot's Target connection_id → bot_token. nil disables slack_bot.
+	// SlackAPIBase overrides the Slack API base URL (default
+	// "https://slack.com/api"). Tests point this at an httptest server;
+	// production deployments should leave it empty.
+	SlackAPIBase string
 }
 
 // NotifyApprovalRequested dispatches according to the workflow's
@@ -42,6 +47,8 @@ func (n *MultiplexApprovalNotifier) NotifyApprovalRequested(ctx context.Context,
 		return n.sendSMTP(ctx, req, ch)
 	case "slack_webhook":
 		return n.sendSlack(ctx, req, ch)
+	case "slack_bot":
+		return n.sendSlackBot(ctx, req, ch)
 	default:
 		slog.Warn("approval notifier: unknown channel type — no dispatch",
 			"workflow_id", req.Workflow.ID, "type", ch.Type)
@@ -70,6 +77,43 @@ func (n *MultiplexApprovalNotifier) sendSlack(ctx context.Context, req ApprovalR
 		return fmt.Errorf("slack_webhook channel: empty target")
 	}
 	return postSlackWebhook(ctx, n.HTTPClient, ch.Target, req)
+}
+
+// sendSlackBot resolves the configured `slack`-typed Connection,
+// pulls the encrypted bot_token + optional default_channel out of its
+// config, and calls chat.postMessage. Falls back to a no-op + warn
+// when the resolver isn't wired (dev / eval) so a misconfigured deploy
+// doesn't strand a workflow.
+func (n *MultiplexApprovalNotifier) sendSlackBot(ctx context.Context, req ApprovalRequest, ch *ApprovalChannel) error {
+	if n.ConnResolver == nil {
+		slog.Warn("approval notifier: slack_bot channel configured but no ConnResolver wired",
+			"workflow_id", req.Workflow.ID)
+		return nil
+	}
+	if ch.Target == "" {
+		return fmt.Errorf("slack_bot channel: empty target (must be a slack-connection_id)")
+	}
+	conn, err := n.ConnResolver.ResolveConnection(ctx, ch.Target)
+	if err != nil {
+		return fmt.Errorf("slack_bot: resolve connection %s: %w", ch.Target, err)
+	}
+	if conn.Type != ConnectionTypeSlack {
+		return fmt.Errorf("slack_bot: connection %s has type %q (expected %q)",
+			ch.Target, conn.Type, ConnectionTypeSlack)
+	}
+	botToken := conn.Config["bot_token"]
+	channel := ch.Channel
+	if channel == "" {
+		channel = conn.Config["default_channel"]
+	}
+	if n.HTTPClient == nil {
+		n.HTTPClient = http.DefaultClient
+	}
+	apiBase := n.SlackAPIBase
+	if apiBase == "" {
+		apiBase = "https://slack.com/api"
+	}
+	return postSlackBotMessage(ctx, n.HTTPClient, apiBase, botToken, channel, req)
 }
 
 // smtpApprovalBody renders the email body. Plain-text only — the

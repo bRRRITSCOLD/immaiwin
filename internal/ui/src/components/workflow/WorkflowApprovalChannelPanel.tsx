@@ -17,7 +17,7 @@ import { useState } from 'react'
 import { ChevronDown, ChevronUp, Bell, Save } from 'lucide-react'
 import { Button } from '~/components/ui/button'
 import { Input } from '~/components/ui/input'
-import type { ApprovalChannel } from './useWorkflowStore'
+import { useWorkflowStore, type ApprovalChannel } from './useWorkflowStore'
 
 interface Props {
   channel: ApprovalChannel | null | undefined
@@ -28,11 +28,13 @@ interface Props {
 const CHANNEL_TYPES: { value: ApprovalChannel['type']; label: string; targetLabel: string; targetPlaceholder: string }[] = [
   { value: 'none', label: 'None (paused, no notification)', targetLabel: '', targetPlaceholder: '' },
   { value: 'smtp', label: 'Email (SMTP)', targetLabel: 'Recipient email', targetPlaceholder: 'ops@example.com' },
-  { value: 'slack_webhook', label: 'Slack incoming-webhook', targetLabel: 'Webhook URL', targetPlaceholder: 'https://hooks.slack.com/services/...' },
+  { value: 'slack_webhook', label: 'Slack incoming-webhook (legacy)', targetLabel: 'Webhook URL', targetPlaceholder: 'https://hooks.slack.com/services/...' },
+  { value: 'slack_bot', label: 'Slack bot (chat.postMessage)', targetLabel: 'Slack connection', targetPlaceholder: 'select a slack connection' },
 ]
 
 export function WorkflowApprovalChannelPanel({ channel, onChange, onSave }: Props) {
   const [open, setOpen] = useState(false)
+  const connections = useWorkflowStore((s) => s.connections)
   const type = channel?.type ?? 'none'
   const active = type !== 'none'
 
@@ -46,6 +48,7 @@ export function WorkflowApprovalChannelPanel({ channel, onChange, onSave }: Prop
         type: next,
         target: channel?.target ?? '',
         from: channel?.from,
+        channel: channel?.channel,
       })
     }
   }
@@ -60,7 +63,13 @@ export function WorkflowApprovalChannelPanel({ channel, onChange, onSave }: Prop
     onChange({ ...channel, from: from || undefined })
   }
 
+  function setChannel(slackChannel: string) {
+    if (!channel || channel.type === 'none') return
+    onChange({ ...channel, channel: slackChannel || undefined })
+  }
+
   const meta = CHANNEL_TYPES.find((c) => c.value === type) ?? CHANNEL_TYPES[0]
+  const slackConnections = connections.filter((c) => c.type === 'slack')
 
   return (
     <div
@@ -99,7 +108,7 @@ export function WorkflowApprovalChannelPanel({ channel, onChange, onSave }: Prop
             </select>
           </label>
 
-          {active && (
+          {active && type !== 'slack_bot' && (
             <>
               <label className="flex items-center justify-between gap-2 text-[11px]">
                 <span className="shrink-0 w-[60px]">{meta?.targetLabel ?? 'Target'}</span>
@@ -122,6 +131,41 @@ export function WorkflowApprovalChannelPanel({ channel, onChange, onSave }: Prop
                   />
                 </label>
               )}
+            </>
+          )}
+
+          {active && type === 'slack_bot' && (
+            <>
+              <label className="flex items-center justify-between gap-2 text-[11px]">
+                <span className="shrink-0 w-[60px]">Connection</span>
+                <select
+                  className="h-6 text-[11px] flex-1 px-2 rounded border bg-background"
+                  value={channel?.target ?? ''}
+                  onChange={(e) => setTarget(e.target.value)}
+                >
+                  <option value="">— select a Slack connection —</option>
+                  {slackConnections.map((c) => (
+                    <option key={c.id} value={c.id}>{c.name}</option>
+                  ))}
+                </select>
+              </label>
+              {slackConnections.length === 0 && (
+                <p className="text-[10px] text-amber-600 dark:text-amber-400">
+                  No Slack connections yet. Add one via Connections sidebar (type: Slack).
+                </p>
+              )}
+              <label className="flex items-center justify-between gap-2 text-[11px]">
+                <span className="shrink-0 w-[60px]">Channel</span>
+                <Input
+                  className="h-6 text-[11px] flex-1 px-2"
+                  value={channel?.channel ?? ''}
+                  placeholder="C01234ABCDE (or DM user ID)"
+                  onChange={(e) => setChannel(e.target.value)}
+                />
+              </label>
+              <p className="text-[10px] text-muted-foreground">
+                Empty channel falls back to the Slack connection's <code className="text-[10px]">default_channel</code>.
+              </p>
             </>
           )}
 
