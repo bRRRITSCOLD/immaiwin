@@ -263,6 +263,12 @@ interface Props {
   // an agent's ReAct loop). Truthy flips the Run button into "Continue"
   // mode; the parent passes the run_id back via onRun on the next click.
   pausedRunID?: string | null
+  // Set when an OOB approval gate fires during the live run. The
+  // dispatcher (Slack / email) may still deliver a magic-link, but
+  // when it fails the user has no inline path to resolve the gate
+  // — surface a banner pointing at /runs/:id so they always have a
+  // way out. Cleared by run_done / reset.
+  pendingApprovalRunID?: string | null
   // Set when the most-recent run terminated with a pre-step error (cost
   // cap, missing config, etc) — there's no per-node step_done to attach
   // the message to, so we render a canvas-level banner instead. Cleared
@@ -312,7 +318,7 @@ interface EdgeMenuState {
   flowY: number
 }
 
-function WorkflowCanvasInner({ workflow, onSave, onRun, onCancel, onContinue, onClearRun, lastRun, runRunning, agentRuns, pausedRunID, hasLivePause, runError, onApproveTool, onSetBreakpoints }: Props) {
+function WorkflowCanvasInner({ workflow, onSave, onRun, onCancel, onContinue, onClearRun, lastRun, runRunning, agentRuns, pausedRunID, pendingApprovalRunID, hasLivePause, runError, onApproveTool, onSetBreakpoints }: Props) {
   const { updateActiveGraph, updateActiveCostLimits, updateActiveParamsSchema, updateActiveApprovalChannel, selectedEdgeType, setSelectedEdgeType, attachingFrom, setAttachingFrom } = useWorkflowStore()
   const { screenToFlowPosition } = useReactFlow()
   const [nodes, setNodes, onNodesChange] = useNodesState(workflow.nodes)
@@ -587,6 +593,31 @@ function WorkflowCanvasInner({ workflow, onSave, onRun, onCancel, onContinue, on
             >
               ✕
             </button>
+          </div>
+        )}
+
+        {/* Pending-approval banner — fires while the run is paused on
+            a require_node_approval gate or per-tool agent gate. Even if
+            the OOB dispatcher (Slack / email) succeeded, surfacing a
+            direct link lets the user resolve the gate from the canvas
+            without having to navigate the Runs tab manually. When the
+            dispatcher FAILED (token type wrong, channel unreachable,
+            etc.), this banner is the only visible recovery path. */}
+        {pendingApprovalRunID && runRunning && (
+          <div className="absolute top-16 right-3 z-20 max-w-[480px] text-xs bg-amber-600 text-white px-3 py-2 rounded-md border border-amber-300 shadow-lg flex items-start gap-2">
+            <span className="font-semibold shrink-0">Awaiting approval:</span>
+            <span className="flex-1 break-words">
+              Run paused on an approval gate.{' '}
+              <a
+                href={`/runs/${pendingApprovalRunID}`}
+                target="_blank"
+                rel="noreferrer"
+                className="underline font-medium hover:text-amber-100"
+              >
+                Open /runs/{pendingApprovalRunID.slice(0, 8)}…
+              </a>{' '}
+              to Approve / Reject.
+            </span>
           </div>
         )}
 

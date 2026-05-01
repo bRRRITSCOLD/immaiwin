@@ -79,9 +79,14 @@ interface PendingApproval {
   // node kind
   node_id?: string
   node_type?: string
-  node_name?: string
   node_input?: unknown
+  node_name?: string
   requested_at: string
+  // Populated when the OOB dispatcher (Slack / SMTP) failed to deliver
+  // the magic-link prompt. The gate still resolves through the
+  // Approve/Reject buttons below; this string explains why no email or
+  // Slack message arrived.
+  dispatch_error?: string
 }
 
 interface WorkflowRun {
@@ -441,6 +446,13 @@ function RunDetailPage() {
                         : `Agent requested at iter ${data.run.pending_approval.iter} · `}
                       {new Date(data.run.pending_approval.requested_at).toLocaleString()}
                     </p>
+                    {data.run.pending_approval.dispatch_error && (
+                      <div className="rounded border border-amber-300 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-700 px-2 py-1.5 text-[11px] leading-snug text-amber-900 dark:text-amber-100">
+                        <span className="font-semibold">Channel delivery failed.</span>{' '}
+                        Resolve the gate below — no email or Slack message arrived.
+                        <p className="mt-0.5 font-mono text-[10px] opacity-80 break-words">{data.run.pending_approval.dispatch_error}</p>
+                      </div>
+                    )}
                     {data.run.pending_approval.kind === 'node'
                       ? data.run.pending_approval.node_input !== undefined && (
                           <div>

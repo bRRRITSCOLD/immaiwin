@@ -16,6 +16,7 @@ import { useState } from 'react'
 import { Button } from '~/components/ui/button'
 import { Input } from '~/components/ui/input'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '~/components/ui/card'
+import { api, ApiError } from '~/lib/api'
 
 export const Route = createFileRoute('/approve')({
   component: ApprovePage,
@@ -43,27 +44,22 @@ function ApprovePage() {
     }
     setState({ kind: 'submitting' })
     try {
-      // Use a raw fetch — the typed `api.post` helper assumes the
-      // session cookie path; this endpoint is unauthenticated and
-      // shouldn't have any cookie tossed at it.
-      const res = await fetch(`/api/v1/workflow_runs/${encodeURIComponent(runID)}/approval/redeem`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token, decision, reason }),
+      // Goes through `api.post` so the call lands on API_BASE (not the
+      // UI dev server) and the typed ApiError carries status + parsed
+      // body for the failure branch. The endpoint ignores cookies —
+      // signed token is the only auth — so credentials:'include' is a
+      // no-op here, not a leak.
+      await api.post(`/api/v1/workflow_runs/${encodeURIComponent(runID)}/approval/redeem`, {
+        token,
+        decision,
+        reason,
       })
-      if (!res.ok) {
-        let msg = `HTTP ${res.status}`
-        try {
-          const body = await res.json()
-          if (body && typeof body.error === 'string') msg = body.error
-        } catch {
-          // Body wasn't JSON — keep the HTTP status as the message.
-        }
-        setState({ kind: 'error', status: res.status, message: msg })
-        return
-      }
       setState({ kind: 'success', decision })
     } catch (err) {
+      if (err instanceof ApiError) {
+        setState({ kind: 'error', status: err.status, message: err.message })
+        return
+      }
       setState({ kind: 'error', status: 0, message: err instanceof Error ? err.message : 'Network error' })
     }
   }

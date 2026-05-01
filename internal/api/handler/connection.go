@@ -356,6 +356,16 @@ func testSlack(ctx context.Context, cfg map[string]string) error {
 		return fmt.Errorf("decode slack response: %w", err)
 	}
 	if !body.OK {
+		// Friendlier message for the most common token-type mistake:
+		// users often paste an App-Level Token (xapp-*) which is for
+		// Socket Mode, not chat.postMessage. Bot tokens (xoxb-*) are
+		// what we need.
+		if body.Error == "not_allowed_token_type" || strings.HasPrefix(token, "xapp-") {
+			return fmt.Errorf("slack rejected token (%s) — chat.postMessage requires a Bot User OAuth Token (xoxb-*) from your Slack app's \"OAuth & Permissions\" page, NOT an App-Level Token (xapp-*) which is for Socket Mode only. Add the chat:write scope, install/reinstall the app, then copy the Bot User OAuth Token at the top of the page", body.Error)
+		}
+		if strings.HasPrefix(token, "xoxp-") {
+			return fmt.Errorf("slack rejected token — looks like a User OAuth Token (xoxp-*); use a Bot User OAuth Token (xoxb-*) instead so messages post as your bot rather than the installing user (%s)", body.Error)
+		}
 		if body.Error != "" {
 			return fmt.Errorf("slack auth.test: %s", body.Error)
 		}

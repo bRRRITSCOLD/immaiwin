@@ -30,6 +30,7 @@ const (
 	EventAgentToolCall       EventType = "agent_tool_call"
 	EventAgentToolResult     EventType = "agent_tool_result"
 	EventAgentToolApproval   EventType = "agent_tool_approval" // require_approval gate awaiting user decision
+	EventNodeApprovalPending EventType = "node_approval_pending" // require_node_approval gate awaiting user decision (OOB / non-live path)
 	EventAgentFinal          EventType = "agent_final"
 	EventRunDone             EventType = "run_done"
 )
