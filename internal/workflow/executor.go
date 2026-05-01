@@ -210,6 +210,23 @@ func (e *WorkflowExecutor) dispatchApprovalNotification(wf Workflow, runID strin
 				"run_id", req.RunID, "workflow_id", req.Workflow.ID,
 				"channel_type", channelType(req.Workflow.ApprovalChannel),
 				"err", err)
+			// Persist the failure on PendingApproval so /runs/:id can
+			// render "<channel> delivery failed: <err>" — the user
+			// otherwise has no signal beyond an absent email/Slack.
+			// Use a fresh ctx (the dispatch ctx may have just timed
+			// out) bounded short so a Mongo blip doesn't strand this
+			// goroutine.
+			if e.RunRepo != nil {
+				upCtx, upCancel := context.WithTimeout(context.Background(), 2*time.Second)
+				defer upCancel()
+				if rec, gerr := e.RunRepo.Get(upCtx, req.RunID); gerr == nil && rec.PendingApproval != nil {
+					rec.PendingApproval.DispatchError = err.Error()
+					if uerr := e.RunRepo.Update(upCtx, rec); uerr != nil {
+						slog.Warn("approval dispatch: persist dispatch_error failed",
+							"run_id", req.RunID, "err", uerr)
+					}
+				}
+			}
 		}
 	}(req)
 }
@@ -325,6 +342,17 @@ func (e *WorkflowExecutor) waitNodeApproval(ctx context.Context, env *runEnv, no
 		if uerr := e.RunRepo.Update(ctx, rec); uerr != nil {
 			slog.Warn("workflow: persist pending_approval (node) failed", "run_id", env.runID, "node", node.ID, "err", uerr)
 		}
+	}
+	// Stream the gate to live UI clients so the canvas / runs page
+	// flips the node from "running" to "awaiting approval" without
+	// having to poll. Independent of OOB dispatch outcome.
+	if env.events != nil {
+		env.events.Emit(stampNow(RunEvent{
+			Type:     EventNodeApprovalPending,
+			NodeID:   node.ID,
+			NodeType: node.Type,
+			RunID:    env.runID,
+		}))
 	}
 	// Dispatch OOB channel notification (Stage 2). Async, best-effort;
 	// the gate still resolves through the /runs UI if the notifier

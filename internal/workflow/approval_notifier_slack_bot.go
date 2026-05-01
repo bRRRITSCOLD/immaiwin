@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 )
 
 // chatPostMessageReq mirrors the subset of the Slack chat.postMessage
@@ -91,7 +92,17 @@ func postSlackBotMessage(ctx context.Context, client *http.Client, apiBase, botT
 		return fmt.Errorf("slack_bot: decode response: %w", err)
 	}
 	if !parsed.OK {
-		// Common errors: `not_in_channel`, `channel_not_found`,
+		// Most common token-type mistake: App-Level Token (xapp-*)
+		// pasted into bot_token. Slack returns `not_allowed_token_type`
+		// — surface a remediation hint inline so the operator doesn't
+		// have to grep for the right Slack docs.
+		if parsed.Error == "not_allowed_token_type" || strings.HasPrefix(botToken, "xapp-") {
+			return fmt.Errorf("slack_bot: chat.postMessage rejected (%s) — bot_token is an App-Level Token (xapp-*); chat.postMessage needs a Bot User OAuth Token (xoxb-*) from your Slack app's \"OAuth & Permissions\" page (add chat:write scope, install/reinstall, copy the xoxb token)", parsed.Error)
+		}
+		if strings.HasPrefix(botToken, "xoxp-") {
+			return fmt.Errorf("slack_bot: chat.postMessage rejected (%s) — bot_token is a User OAuth Token (xoxp-*); use a Bot User OAuth Token (xoxb-*) instead so messages post as the bot", parsed.Error)
+		}
+		// Other common errors: `not_in_channel`, `channel_not_found`,
 		// `invalid_auth`, `missing_scope`. Forward the slack error
 		// string so operators can fix the config without reading slog.
 		return fmt.Errorf("slack_bot: chat.postMessage rejected: %s", parsed.Error)

@@ -466,6 +466,11 @@ func (e *WorkflowExecutor) runAIAgent(ctx context.Context, node Node, data map[s
 							ToolName: call.Name,
 							ToolID:   call.ID,
 							ToolArgs: rawJSONToAny(call.Input),
+							// RunID lets the live UI route a "resolve via
+							// /runs/:id" banner when the OOB dispatcher
+							// (Slack / email) failed — without it the canvas
+							// would have no reference for the deep-link.
+							RunID: env.runID,
 						}))
 					}
 					decision, ok := waitForApproval(loopCtx, approveCh, call.ID)

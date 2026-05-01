@@ -66,6 +66,15 @@ type PendingApprovalState struct {
 	// configured yet" — the /runs/:id UI Approve/Reject path still
 	// works in that case.
 	TokenID string `bson:"token_id,omitempty"    json:"token_id,omitempty"`
+	// DispatchError captures the OOB notifier's failure (slack
+	// rejection, SMTP relay error, ...) when the approval prompt
+	// couldn't be delivered. The gate still pauses and is resolvable
+	// via the /runs/:id Approve/Reject path; this field gives the UI
+	// something concrete to render so the user understands why no
+	// email or Slack message arrived. Populated AFTER the dispatch
+	// goroutine resolves; cleared alongside the rest of pending
+	// state when the gate decision lands.
+	DispatchError string `bson:"dispatch_error,omitempty" json:"dispatch_error,omitempty"`
 }
 
 // AgentPauseState is the snapshot persisted on a paused workflow run so

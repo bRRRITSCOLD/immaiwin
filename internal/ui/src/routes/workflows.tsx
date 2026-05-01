@@ -233,6 +233,7 @@ function WorkflowsPage() {
               hasLivePause={Object.values(stream.nodes).some((n) => n.status === 'paused')}
               agentRuns={agentRuns}
               pausedRunID={stream.pausedRunID}
+              pendingApprovalRunID={stream.pendingApprovalRunID}
               runError={stream.error}
               onApproveTool={(toolId, approved, reason) => {
                 stream.approveTool(toolId, approved, reason)

@@ -14,6 +14,7 @@ export interface RunEvent {
     | 'agent_llm'
     | 'agent_tool_call'
     | 'agent_tool_approval'
+    | 'node_approval_pending'
     | 'agent_tool_result'
     | 'agent_final'
     | 'run_done'
@@ -87,6 +88,13 @@ export interface WorkflowRunStream {
   // to `run(..., undefined, undefined, pausedRunID)` resumes mid-loop.
   // Cleared by reset() and by the next non-paused completion.
   pausedRunID: string | null
+  // Populated when a `node_approval_pending` event lands or when an
+  // agent's per-tool approval gate fires on the OOB path. Lets the
+  // canvas surface a banner with a deep-link to `/runs/:runID` so the
+  // user can Approve/Reject when the dispatcher (Slack / email) failed
+  // or is unwired. Distinct from `pausedRunID` (breakpoint resume).
+  // Cleared by reset() and by a terminal `run_done` event.
+  pendingApprovalRunID: string | null
   lastRunID: string | null
   run(workflowId: string, input?: unknown, stopAt?: string | string[], resumeRunID?: string): void
   // Releases an in-process pre-exec breakpoint pause by sending a
@@ -125,6 +133,7 @@ export function useWorkflowRunStream(): WorkflowRunStream {
   const [nodes, setNodes] = useState<Record<string, NodeRunState>>({})
   const [error, setError] = useState<string | null>(null)
   const [pausedRunID, setPausedRunID] = useState<string | null>(null)
+  const [pendingApprovalRunID, setPendingApprovalRunID] = useState<string | null>(null)
   const [lastRunID, setLastRunID] = useState<string | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
 
@@ -222,6 +231,23 @@ export function useWorkflowRunStream(): WorkflowRunStream {
           next[id] = { ...n, iters }
           break
         }
+        case 'node_approval_pending': {
+          // Pre-exec node approval gate fired (require_node_approval).
+          // Flip the node into a `paused` state so the canvas dot turns
+          // amber/yellow instead of staying "running" while server
+          // blocks on the approval channel. Distinct from step_pending
+          // (breakpoint) — both render the same paused indicator but
+          // the run record's status differs (pending_approval vs
+          // running).
+          const n = ensure()
+          next[id] = { ...n, status: 'paused', nodeType: ev.node_type ?? n.nodeType }
+          // Also stash the run_id so the canvas can render a banner
+          // pointing at /runs/:id where the user resolves the gate.
+          if (ev.run_id) {
+            setPendingApprovalRunID(ev.run_id)
+          }
+          break
+        }
         case 'agent_tool_approval': {
           // Server is paused waiting for the user to Approve/Reject this
           // tool call. The matching agent_tool_call event has already
@@ -239,6 +265,13 @@ export function useWorkflowRunStream(): WorkflowRunStream {
               : it,
           )
           next[id] = { ...n, iters }
+          // Stash run_id so the canvas can show a "resolve via /runs/:id"
+          // banner — useful when no live approve buttons are available
+          // (e.g. live WS dropped, dispatcher failed). Live UI's inline
+          // Approve/Reject still works alongside.
+          if (ev.run_id) {
+            setPendingApprovalRunID(ev.run_id)
+          }
           break
         }
         case 'agent_tool_result': {
@@ -287,6 +320,10 @@ export function useWorkflowRunStream(): WorkflowRunStream {
           } else {
             setPausedRunID(null)
           }
+          // Pending-approval banner clears on every terminal status —
+          // the gate either resolved (success / error follow), got
+          // cancelled, or rejected.
+          setPendingApprovalRunID(null)
           break
         }
       }
@@ -455,6 +492,7 @@ export function useWorkflowRunStream(): WorkflowRunStream {
     setNodes({})
     setError(null)
     setPausedRunID(null)
+    setPendingApprovalRunID(null)
     setLastRunID(null)
   }, [cancel])
 
@@ -465,5 +503,5 @@ export function useWorkflowRunStream(): WorkflowRunStream {
     }
   }, [])
 
-  return { status, events, nodes, error, run, continue_, approveTool, setBreakpoints, cancel, reset, pausedRunID, lastRunID }
+  return { status, events, nodes, error, run, continue_, approveTool, setBreakpoints, cancel, reset, pausedRunID, pendingApprovalRunID, lastRunID }
 }
