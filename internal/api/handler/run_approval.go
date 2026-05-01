@@ -16,7 +16,9 @@
 package handler
 
 import (
+	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/bRRRITSCOLD/burrow/internal/auth"
 	"github.com/bRRRITSCOLD/burrow/internal/workflow"
@@ -89,11 +91,45 @@ func SubmitRunApproval(exec *workflow.WorkflowExecutor, runStore workflow.Workfl
 		// Reuse the registry's Submit so the channel/payload format
 		// stays identical to what the worker subscribed to. The api-
 		// side registry never holds local state beyond this call.
+		// Submit returns the Redis subscriber count: 0 means the in-
+		// process waiter is gone (api restart while paused) and the
+		// run is unrecoverable — see orphan-cancel branch below.
 		reg := workflow.NewApprovalRegistry(exec.ApprovalBroker)
-		if perr := reg.Submit(c.Request.Context(), runID, decision); perr != nil {
+		count, perr := reg.Submit(c.Request.Context(), runID, decision)
+		if perr != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": perr.Error()})
+			return
+		}
+		if count == 0 {
+			cancelOrphanedApproval(c, runStore, rec)
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"ok": true})
 	}
+}
+
+// cancelOrphanedApproval marks a pending_approval run as errored when
+// no Redis subscribers received the approval publish — symptom of an
+// API process restart between gate-fire and user click. The
+// in-process goroutine that held the wait is gone, so the decision
+// has nowhere to land. Returns 410 Gone with an explanatory message
+// + auto_cancelled=true so the UI can re-render terminal state and
+// nudge the user to re-trigger.
+//
+// Shared by both the cookie-authed `/approval` endpoint and the
+// magic-link `/approval/redeem` endpoint — both fail identically when
+// the waiter is gone.
+func cancelOrphanedApproval(c *gin.Context, runStore workflow.WorkflowRunStore, rec workflow.WorkflowRun) {
+	rec.Status = workflow.RunStatusError
+	rec.Error = "approval orphaned: api process restarted while paused; run cannot be resumed (re-trigger the workflow to retry)"
+	rec.PendingApproval = nil
+	now := time.Now().UTC()
+	rec.FinishedAt = &now
+	if uerr := runStore.Update(c.Request.Context(), rec); uerr != nil {
+		slog.Warn("approval: persist orphan cancellation failed", "run_id", rec.ID, "err", uerr)
+	}
+	c.JSON(http.StatusGone, gin.H{
+		"error":          "no live approval waiter — run was abandoned (api restarted while paused). Re-trigger the workflow to retry.",
+		"auto_cancelled": true,
+	})
 }

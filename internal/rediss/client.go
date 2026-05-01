@@ -36,6 +36,16 @@ func (c *Client) Publish(ctx context.Context, channel string, payload []byte) er
 	return c.rdb.Publish(ctx, channel, payload).Err()
 }
 
+// PublishWithCount publishes and returns the number of clients that
+// received the message. Used by the approval-registry path to detect
+// "abandoned" pending_approval runs whose in-process waiter died with
+// an old API process restart — zero subscribers + the Mongo run record
+// still pending = the run is unrecoverable, so the caller cancels it
+// instead of leaving the user clicking Approve forever.
+func (c *Client) PublishWithCount(ctx context.Context, channel string, payload []byte) (int64, error) {
+	return c.rdb.Publish(ctx, channel, payload).Result()
+}
+
 // Subscribe is retained for the news Broadcaster + future trigger nodes.
 // It is intentionally NOT part of the workflow.RedisClient interface.
 func (c *Client) Subscribe(ctx context.Context, channels ...string) *redis.PubSub {
