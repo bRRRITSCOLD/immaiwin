@@ -967,6 +967,90 @@ func (s *WorkflowRunIntegrationSuite) TestApprovalDispatch_ChannelNone_NoEmailSe
 	}
 }
 
+// TestApprovalSubmit_OrphanedPendingRun_AutoCancelsAndReturns410 verifies
+// the zero-subscriber detection path: a run record in `pending_approval`
+// with no live waiter (the API process holding the wait restarted) gets
+// auto-cancelled when the user clicks Approve. /approval publishes,
+// Redis returns subscriber count 0, handler flips the run to terminal
+// `error` state + returns 410 Gone so the UI can render a clear "this
+// run is dead, re-trigger to retry" message.
+//
+// Simulated by writing a `pending_approval` run record directly via
+// the repo + skipping the executor goroutine — same shape as a real
+// orphaned run.
+func (s *WorkflowRunIntegrationSuite) TestApprovalSubmit_OrphanedPendingRun_AutoCancelsAndReturns410() {
+	suffix := time.Now().UnixNano()
+	client := s.authedClient(fmt.Sprintf("alice-orphan-%d@example.com", suffix))
+
+	// Create + own a workflow so the orphan run can be tied to alice's
+	// tenant (run lookups are tenant-scoped).
+	wfID := fmt.Sprintf("wf-orphan-%d", suffix)
+	s.putWorkflow(client, wfID, "orphan run target")
+
+	// Look up the workflow to grab its tenant_id (alice's).
+	listResp, err := client.Get(s.httpSrv.URL + "/api/v1/workflows")
+	s.Require().NoError(err)
+	defer listResp.Body.Close() //nolint:errcheck
+	var wfs []map[string]any
+	s.Require().NoError(json.NewDecoder(listResp.Body).Decode(&wfs))
+	s.Require().NotEmpty(wfs)
+	tenantID, _ := wfs[0]["tenant_id"].(string)
+	s.Require().NotEmpty(tenantID)
+
+	// Persist an orphan pending_approval run directly via the repo.
+	// No executor goroutine = no Redis subscriber. The Approve POST
+	// will publish to a channel nobody listens on.
+	runID := fmt.Sprintf("orphan-run-%d", suffix)
+	runRepo, rerr := mongodb.NewWorkflowRunRepository(context.Background(), s.db)
+	s.Require().NoError(rerr)
+	orphan := workflow.WorkflowRun{
+		ID:         runID,
+		WorkflowID: wfID,
+		TenantID:   tenantID,
+		Status:     workflow.RunStatusPendingApproval,
+		StartedAt:  time.Now().UTC().Add(-1 * time.Hour),
+		PendingApproval: &workflow.PendingApprovalState{
+			Kind:        "node",
+			NodeID:      "notify-1",
+			NodeType:    "notify",
+			NodeName:    "notify-1",
+			RequestedAt: time.Now().UTC(),
+			TokenID:     "01ORPHANTOKEN",
+		},
+	}
+	_, cerr := runRepo.Create(context.Background(), orphan)
+	s.Require().NoError(cerr)
+
+	// POST /approval. Server publishes, sees zero subscribers, marks
+	// the run errored + returns 410.
+	approveBody, _ := json.Marshal(map[string]any{
+		"tool_call_id": "notify-1",
+		"approved":     true,
+	})
+	resp, err := client.Post(s.httpSrv.URL+"/api/v1/workflow_runs/"+runID+"/approval",
+		"application/json", bytes.NewReader(approveBody))
+	s.Require().NoError(err)
+	defer resp.Body.Close() //nolint:errcheck
+	s.Require().Equal(http.StatusGone, resp.StatusCode, "orphan should land on 410 Gone")
+
+	var body map[string]any
+	s.Require().NoError(json.NewDecoder(resp.Body).Decode(&body))
+	s.Equal(true, body["auto_cancelled"], "response should flag auto-cancellation")
+
+	// Run record flipped to error state with the explanatory message.
+	detailResp, err := client.Get(s.httpSrv.URL + "/api/v1/workflow_runs/" + runID)
+	s.Require().NoError(err)
+	defer detailResp.Body.Close() //nolint:errcheck
+	var detail map[string]any
+	s.Require().NoError(json.NewDecoder(detailResp.Body).Decode(&detail))
+	run, _ := detail["run"].(map[string]any)
+	s.Require().NotNil(run)
+	s.Equal(string(workflow.RunStatusError), run["status"])
+	errMsg, _ := run["error"].(string)
+	s.Contains(errMsg, "approval orphaned")
+	s.Nil(run["pending_approval"], "pending_approval state should be cleared")
+}
+
 // TestRunsList_FilteredByWorkflow asserts the workflow_id query param
 // narrows the run list. Running the same workflow twice should yield
 // two rows; a list query with workflow_id=other returns zero.

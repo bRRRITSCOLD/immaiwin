@@ -191,7 +191,10 @@ func (w *reaperWorker) reap(
 	// ctx times out (could be hours).
 	if run.Status == workflow.RunStatusPendingApproval && broker != nil {
 		reg := workflow.NewApprovalRegistry(broker)
-		_ = reg.Submit(ctx, run.ID, workflow.ApprovalDecision{
+		// Reaper always writes the terminal `error` state below; the
+		// publish is a best-effort nudge for any live waiter, count
+		// is irrelevant here.
+		_, _ = reg.Submit(ctx, run.ID, workflow.ApprovalDecision{
 			Approved: false,
 			Reason:   fmt.Sprintf("reaper: pending_approval TTL %s exceeded", ttl),
 		})

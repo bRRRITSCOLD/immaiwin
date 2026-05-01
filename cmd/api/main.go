@@ -160,6 +160,27 @@ func main() {
 		slog.Warn("workflow run repo init failed (agent traces will not persist)", "err", err)
 	} else {
 		runStore = runRepo
+		// Boot-time orphan sweep — every non-terminal run older than
+		// the safety window gets flipped to error state. Necessary
+		// because in-process state (BFS goroutines, approval-channel
+		// subscriptions, agent ReAct loops) doesn't survive process
+		// restarts. The safety window prevents stomping a parallel
+		// API process's fresh runs; tune up if running multi-pod.
+		// Phase 3 lease-based execution will replace this stop-gap.
+		const orphanSweepWindow = 30 * time.Second
+		sweepCtx, sweepCancel := context.WithTimeout(ctx, 10*time.Second)
+		count, sweepErr := runRepo.SweepAbandonedNonTerminal(sweepCtx,
+			"abandoned: api process restarted while non-terminal (in-process state lost)",
+			orphanSweepWindow)
+		sweepCancel()
+		if sweepErr != nil {
+			slog.Warn("boot orphan sweep failed (continuing)", "err", sweepErr)
+		} else if count > 0 {
+			slog.Warn("boot orphan sweep: flipped abandoned non-terminal runs to error",
+				"count", count, "older_than", orphanSweepWindow)
+		} else {
+			slog.Info("boot orphan sweep: no abandoned runs found", "older_than", orphanSweepWindow)
+		}
 	}
 
 	// Skill resolver. Off by default; opt-in via SKILLS_ENABLED. When enabled

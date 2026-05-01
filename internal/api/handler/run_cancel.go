@@ -62,7 +62,10 @@ func CancelRun(exec *workflow.WorkflowExecutor, runStore workflow.WorkflowRunSto
 		// the dead-worker case.
 		if rec.Status == workflow.RunStatusPendingApproval && exec != nil && exec.ApprovalBroker != nil {
 			reg := workflow.NewApprovalRegistry(exec.ApprovalBroker)
-			_ = reg.Submit(c.Request.Context(), runID, workflow.ApprovalDecision{
+			// Discard the count — force-cancel always writes the
+			// terminal `cancelled` state below regardless of whether a
+			// live waiter received the rejection.
+			_, _ = reg.Submit(c.Request.Context(), runID, workflow.ApprovalDecision{
 				Approved: false,
 				Reason:   "force-cancelled by user",
 			})

@@ -287,7 +287,16 @@ function RunDetailPage() {
         // refresh may show pending — the poll covers that.
         load()
       } catch (err) {
-        toast.error(err instanceof ApiError ? `Approval submit failed: ${err.message}` : 'Network error submitting approval')
+        // 410 Gone = orphan run (api restart while paused). The
+        // server already auto-cancelled the run; the polling effect
+        // picks up the new terminal state. Emit a friendlier toast
+        // so the user knows what happened.
+        if (err instanceof ApiError && err.status === 410) {
+          toast.error('Run was abandoned during a restart — auto-cancelled. Re-trigger the workflow to retry.', { duration: 10000 })
+          load()
+        } else {
+          toast.error(err instanceof ApiError ? `Approval submit failed: ${err.message}` : 'Network error submitting approval')
+        }
       } finally {
         setSubmittingApproval(false)
       }

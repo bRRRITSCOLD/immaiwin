@@ -61,6 +61,50 @@ func (r *WorkflowRunRepository) Update(ctx context.Context, run workflow.Workflo
 	return err
 }
 
+// SweepAbandonedNonTerminal flips every non-terminal run older than
+// `olderThan` into a terminal `error` state with the supplied reason.
+// Used by the API boot path to recover from a hard crash / restart
+// while runs were mid-flight: the in-process goroutines that held
+// their state are gone, so the runs are unrecoverable. Returns the
+// number of records flipped.
+//
+// `olderThan` is a safety window so a parallel API process that's
+// legitimately running fresh work doesn't get its records stomped.
+// Anything started AFTER (boot_time - olderThan) is assumed to belong
+// to a still-alive process and skipped. Single-pod deployments can
+// pass a near-zero window; multi-pod deployments need wider margins.
+//
+// Permanent fix is Phase 3 lease-based execution (Mongo-tracked
+// run-owner leases that auto-renew); this method is the stop-gap.
+func (r *WorkflowRunRepository) SweepAbandonedNonTerminal(ctx context.Context, reason string, olderThan time.Duration) (int64, error) {
+	cutoff := time.Now().UTC().Add(-olderThan)
+	filter := bson.M{
+		"status": bson.M{"$in": []string{
+			string(workflow.RunStatusRunning),
+			string(workflow.RunStatusPaused),
+			string(workflow.RunStatusPendingApproval),
+		}},
+		"started_at": bson.M{"$lt": cutoff},
+	}
+	now := time.Now().UTC()
+	update := bson.M{
+		"$set": bson.M{
+			"status":      string(workflow.RunStatusError),
+			"error":       reason,
+			"finished_at": now,
+		},
+		"$unset": bson.M{
+			"pending_approval": "",
+			"paused_agent":     "",
+		},
+	}
+	res, err := r.col.UpdateMany(ctx, filter, update)
+	if err != nil {
+		return 0, err
+	}
+	return res.ModifiedCount, nil
+}
+
 // List returns the most recent runs for a workflow, newest first.
 func (r *WorkflowRunRepository) List(ctx context.Context, workflowID string, limit int) ([]workflow.WorkflowRun, error) {
 	if limit <= 0 || limit > 200 {

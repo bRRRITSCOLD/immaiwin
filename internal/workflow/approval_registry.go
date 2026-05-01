@@ -14,8 +14,16 @@ import (
 // approval registry uses for cross-process messaging. Defined here so
 // the workflow package doesn't import the rediss package directly
 // (avoids a cycle when the test harness wants to fake it).
+//
+// PublishWithCount returns Redis' delivery count (number of clients
+// that received the message). Submit uses this to detect abandoned
+// pending_approval runs — the in-process waiter dies on API restart,
+// so a publish that lands with zero receivers means the Mongo record
+// is stale and the run can never resume. Caller (HTTP handler) takes
+// remediation from there (cancel the run, return 410).
 type ApprovalSubscriber interface {
 	Publish(ctx context.Context, channel string, payload []byte) error
+	PublishWithCount(ctx context.Context, channel string, payload []byte) (int64, error)
 	Subscribe(ctx context.Context, channels ...string) *redis.PubSub
 }
 
@@ -115,20 +123,20 @@ func (r *ApprovalRegistry) Unregister(runID string) {
 	}
 }
 
-// Submit publishes a decision to the run's approval channel. Cross-
-// process: any registry (in any api/worker pid) with an active sub
-// receives it. Returns an error if the publish itself failed.
-// Note: `ok` semantics from the old in-memory implementation are gone
-// — we can't tell from the producer side whether anyone is listening.
-// Caller (HTTP handler) should pre-check the run's status in Mongo
-// before calling, so a 404 is returned for non-pending runs.
-func (r *ApprovalRegistry) Submit(ctx context.Context, runID string, decision ApprovalDecision) error {
+// Submit publishes a decision to the run's approval channel. Returns
+// the Redis delivery count (number of subscribers that received it)
+// alongside any publish error. Caller can use a zero count + a Mongo
+// record still in `pending_approval` to detect an abandoned run (the
+// API process holding the wait restarted; the in-memory goroutine +
+// its Redis subscription died with it). Cancelling those runs is the
+// right move — they're unrecoverable.
+func (r *ApprovalRegistry) Submit(ctx context.Context, runID string, decision ApprovalDecision) (int64, error) {
 	if r == nil || r.subscriber == nil {
-		return fmt.Errorf("approval registry: no broker configured")
+		return 0, fmt.Errorf("approval registry: no broker configured")
 	}
 	payload, err := json.Marshal(decision)
 	if err != nil {
-		return fmt.Errorf("approval registry: marshal: %w", err)
+		return 0, fmt.Errorf("approval registry: marshal: %w", err)
 	}
-	return r.subscriber.Publish(ctx, approvalChannel(runID), payload)
+	return r.subscriber.PublishWithCount(ctx, approvalChannel(runID), payload)
 }
