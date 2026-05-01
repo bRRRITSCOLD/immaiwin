@@ -174,10 +174,10 @@ function SkillsPage() {
           <div className="border rounded p-8 text-center">
             <Package className="h-10 w-10 mx-auto mb-3 text-muted-foreground/50" />
             <p className="text-sm text-muted-foreground">
-              No skills installed. Drop a skill bundle into the local source directory and click <strong>Refresh from sources</strong>.
+              No skills installed. The API auto-imports every bundle in <code>SKILLS_DIR</code> on boot — if this is empty, either the directory is wrong or the bundles aren't on disk yet. Drop a bundle in and click <strong>Refresh from sources</strong> (no API restart needed).
             </p>
             <p className="text-xs text-muted-foreground/70 mt-2">
-              Default source dir: <code>/var/lib/burrow/skills</code> (override with <code>SKILLS_DIR</code> env var).
+              Default <code>SKILLS_DIR</code>: <code>./skills/bundled</code> (relative to the API's working directory). Override with the <code>SKILLS_DIR</code> env var.
             </p>
           </div>
         ) : (

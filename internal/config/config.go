@@ -85,8 +85,13 @@ type OAuthProviderConfig struct {
 // Disabled by default; set Enabled=true and provide a directory of bundles
 // (or just rely on the Mongo registry) to expose skills to AI agents.
 type SkillsConfig struct {
-	Enabled bool   `env:"ENABLED" envDefault:"false"`
-	Dir     string `env:"DIR"     envDefault:"/var/lib/burrow/skills"`
+	Enabled bool `env:"ENABLED" envDefault:"false"`
+	// Dir defaults to the project-local bundle directory so a freshly
+	// `go run ./cmd/api`-from-repo-root setup picks up the in-tree
+	// `skills/bundled/*` skills out of the gate. Prod deployments
+	// override to an absolute path the API process owns (e.g.
+	// `/var/lib/burrow/skills`).
+	Dir string `env:"DIR" envDefault:"./skills/bundled"`
 }
 
 type APIConfig struct {

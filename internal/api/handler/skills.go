@@ -12,7 +12,6 @@
 package handler
 
 import (
-	"context"
 	"net/http"
 
 	"github.com/bRRRITSCOLD/burrow/internal/skills"
@@ -49,53 +48,18 @@ func ListSkills(b *SkillBackend) gin.HandlerFunc {
 // RefreshSkills walks every configured Source, parses each manifest, and
 // upserts the corresponding (slug, version) pair into the registry.
 // Idempotent — calling twice is a no-op aside from refreshed checksums.
+// Delegates to skills.RefreshFromSources so the boot-time auto-import
+// path uses identical logic.
 func RefreshSkills(b *SkillBackend) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if b == nil || b.Registry == nil {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "skills system disabled"})
 			return
 		}
-		ctx := c.Request.Context()
-
-		var imported int
-		var errs []string
-
-		for _, src := range b.Sources {
-			n, err := refreshSource(ctx, b.Registry, src)
-			imported += n
-			if err != nil {
-				errs = append(errs, src.Name()+": "+err.Error())
-			}
-		}
-
+		result := skills.RefreshFromSources(c.Request.Context(), b.Registry, b.Sources)
 		c.JSON(http.StatusOK, gin.H{
-			"imported": imported,
-			"errors":   errs,
+			"imported": result.Imported,
+			"errors":   result.Errors,
 		})
 	}
-}
-
-func refreshSource(ctx context.Context, reg skills.RegistryStore, src skills.Source) (int, error) {
-	manifests, err := src.List(ctx)
-	if err != nil {
-		return 0, err
-	}
-	var n int
-	for _, m := range manifests {
-		checksum, err := src.Verify(ctx, m.ID, m.Version)
-		if err != nil {
-			continue
-		}
-		if _, err := reg.UpsertRecord(ctx, skills.SkillRecord{
-			SlugID:   m.ID,
-			Version:  m.Version,
-			Manifest: m,
-			SourceID: src.Name(),
-			Checksum: checksum,
-		}); err != nil {
-			continue
-		}
-		n++
-	}
-	return n, nil
 }

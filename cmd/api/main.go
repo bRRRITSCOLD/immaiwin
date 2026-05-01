@@ -175,13 +175,40 @@ func main() {
 		if regErr != nil {
 			slog.Warn("skill registry init failed (skills disabled)", "err", regErr)
 		} else {
-			fsSrc := skills.NewLocalFSSource(cfg.Skills.Dir, "local-fs")
+			// Expand $VAR / ${VAR} references against the process
+			// environment. godotenv only expands vars defined inside the
+			// .env file itself, so a `SKILLS_DIR=$PWD/skills/bundled`
+			// line resolves to "/skills/bundled" out of the box (PWD
+			// isn't in the .env). Documented as supported in
+			// .env.example so the literal-path workaround isn't the
+			// only option.
+			skillsDir := os.ExpandEnv(cfg.Skills.Dir)
+			fsSrc := skills.NewLocalFSSource(skillsDir, "local-fs")
 			skillRes = skills.NewResolver(registry, fsSrc)
 			skillBackend = &handler.SkillBackend{
 				Registry: registry,
 				Sources:  []skills.Source{fsSrc},
 			}
-			slog.Info("skills system enabled", "dir", cfg.Skills.Dir)
+			slog.Info("skills system enabled", "dir", skillsDir, "raw_config", cfg.Skills.Dir)
+			// Auto-import bundled skills on boot so a fresh process
+			// doesn't require an operator to click Refresh before
+			// agents can resolve `weather-formatter` etc. Idempotent —
+			// reboots just refresh checksums. Failures degrade gracefully
+			// (registry stays empty, /skills page still tells the user
+			// to drop bundles + Refresh).
+			refreshCtx, refreshCancel := context.WithTimeout(ctx, 10*time.Second)
+			result := skills.RefreshFromSources(refreshCtx, registry, []skills.Source{fsSrc})
+			refreshCancel()
+			if len(result.Errors) > 0 {
+				slog.Warn("skills boot-import: partial failures",
+					"imported", result.Imported,
+					"errors", result.Errors,
+					"dir", skillsDir)
+			} else {
+				slog.Info("skills boot-import complete",
+					"imported", result.Imported,
+					"dir", skillsDir)
+			}
 		}
 	}
 
