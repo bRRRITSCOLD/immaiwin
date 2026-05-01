@@ -123,17 +123,28 @@ type ParamEntry struct {
 // or per-tenant — workflow author owns the routing decision. PR-a stores
 // the field; PR-b adds the dispatcher.
 type ApprovalChannel struct {
-	// Type selects the transport. Supported in PR-b: "smtp" (templated
-	// email) and "slack_webhook" (Slack incoming-webhook URL POST).
-	// "none" stores intent-to-disable without removing the field; the
-	// dispatcher treats it as a no-op.
+	// Type selects the transport. Supported: "smtp" (templated
+	// email), "slack_webhook" (Incoming Webhook URL POST), "slack_bot"
+	// (chat.postMessage via a `slack`-typed Connection). "none" stores
+	// intent-to-disable without removing the field; the dispatcher
+	// treats it as a no-op.
 	Type string `bson:"type"           json:"type"`
-	// Target is the destination — recipient email for "smtp", webhook
-	// URL for "slack_webhook", empty for "none".
+	// Target is the destination keyed by Type:
+	//   smtp           → recipient email address
+	//   slack_webhook  → incoming-webhook URL
+	//   slack_bot      → connection_id (refs a `slack`-typed Connection
+	//                    whose Config.bot_token holds the xoxb-* token)
+	//   none           → empty
 	Target string `bson:"target,omitempty" json:"target,omitempty"`
 	// From is the optional sender override for the "smtp" transport;
 	// empty falls back to the SMTP-config-level default `From:` header.
 	From string `bson:"from,omitempty"   json:"from,omitempty"`
+	// Channel is the destination Slack channel ID or DM user ID
+	// (e.g. "C01234ABCDE" or "U01234ABCDE"). Required for "slack_bot"
+	// when the referenced connection has no `default_channel`. Falls
+	// back to that connection's default when empty. Ignored by other
+	// transports.
+	Channel string `bson:"channel,omitempty" json:"channel,omitempty"`
 }
 
 // CostLimits is the per-workflow cap config.

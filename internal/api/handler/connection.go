@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -85,6 +86,7 @@ func UpsertConnection(store ConnectionStore, invalidator ConnectionInvalidator) 
 			workflow.ConnectionTypeAnthropic: true,
 			workflow.ConnectionTypeOpenAI:    true,
 			workflow.ConnectionTypeOllama:    true,
+			workflow.ConnectionTypeSlack:     true,
 		}
 		if !validTypes[conn.Type] {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported connection type"})
@@ -124,6 +126,11 @@ func UpsertConnection(store ConnectionStore, invalidator ConnectionInvalidator) 
 			}
 		case workflow.ConnectionTypeOllama:
 			// No required config — endpoint defaults to http://localhost:11434.
+		case workflow.ConnectionTypeSlack:
+			if conn.Config["bot_token"] == "" {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "config.bot_token is required for slack (xoxb-* token)"})
+				return
+			}
 		}
 
 		// Tenant scoping: stamp the active tenant on new connections,
@@ -227,6 +234,11 @@ func TestConnection(db *mongo.Database) gin.HandlerFunc {
 				c.JSON(http.StatusOK, gin.H{"ok": false, "error": err.Error()})
 				return
 			}
+		case workflow.ConnectionTypeSlack:
+			if err := testSlack(ctx, req.Config); err != nil {
+				c.JSON(http.StatusOK, gin.H{"ok": false, "error": err.Error()})
+				return
+			}
 		default:
 			c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported connection type"})
 			return
@@ -308,6 +320,46 @@ func testOllama(ctx context.Context, cfg map[string]string) error {
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 400 {
 		return fmt.Errorf("ollama responded %d", resp.StatusCode)
+	}
+	return nil
+}
+
+// testSlack pings Slack's `auth.test` endpoint with the supplied bot
+// token. auth.test is the canonical "is this token valid + what
+// workspace does it belong to" check; quota-cheap and doesn't post
+// any visible message. Returns an error when Slack rejects the token
+// or returns `ok=false`.
+func testSlack(ctx context.Context, cfg map[string]string) error {
+	token := cfg["bot_token"]
+	if token == "" {
+		return fmt.Errorf("missing bot_token")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://slack.com/api/auth.test", nil)
+	if err != nil {
+		return fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
+	if err != nil {
+		return fmt.Errorf("ping slack: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("slack responded %d", resp.StatusCode)
+	}
+	var body struct {
+		OK    bool   `json:"ok"`
+		Error string `json:"error,omitempty"`
+		Team  string `json:"team,omitempty"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return fmt.Errorf("decode slack response: %w", err)
+	}
+	if !body.OK {
+		if body.Error != "" {
+			return fmt.Errorf("slack auth.test: %s", body.Error)
+		}
+		return fmt.Errorf("slack auth.test: ok=false")
 	}
 	return nil
 }

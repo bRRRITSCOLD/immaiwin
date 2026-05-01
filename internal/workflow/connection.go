@@ -15,6 +15,12 @@ const (
 	ConnectionTypeAnthropic ConnectionType = "anthropic"
 	ConnectionTypeOpenAI    ConnectionType = "openai"
 	ConnectionTypeOllama    ConnectionType = "ollama"
+	// ConnectionTypeSlack carries an `xoxb-*` Slack bot token plus an
+	// optional `default_channel` ID. Used by the Stage-2 OOB approval
+	// notifier when the workflow's `ApprovalChannel.Type == "slack_bot"`.
+	// Token gets encrypted at rest by the existing connection-encryption
+	// layer (AES-256-GCM via ENCRYPTION_KEY).
+	ConnectionTypeSlack ConnectionType = "slack"
 )
 
 // Connection is a named, reusable configuration for an external service.

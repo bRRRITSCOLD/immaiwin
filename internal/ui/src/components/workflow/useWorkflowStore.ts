@@ -7,12 +7,21 @@ export interface CostLimits {
 }
 
 // ApprovalChannel routes pending_approval events out-of-band when the
-// gate fires. PR-a stores the field; PR-b adds the dispatcher + the
-// per-workflow channel-picker UI. None = stored intent-to-disable.
+// gate fires. None = stored intent-to-disable.
+//
+// Channel-keyed `target` semantics:
+//   smtp           → recipient email
+//   slack_webhook  → incoming-webhook URL (URL is the secret)
+//   slack_bot      → connection_id of a `slack`-typed Connection
+//                    (token stays encrypted in the connection config)
+//   none           → empty
 export interface ApprovalChannel {
-  type: 'smtp' | 'slack_webhook' | 'none'
+  type: 'smtp' | 'slack_webhook' | 'slack_bot' | 'none'
   target?: string
   from?: string
+  // Slack channel ID or DM user ID (e.g. "C01234ABCDE", "U01234ABCDE").
+  // Required for slack_bot when the connection has no default_channel.
+  channel?: string
 }
 
 export interface ParamEntry {
@@ -40,7 +49,7 @@ export interface Workflow {
   updated_at: string
 }
 
-export type ConnectionType = 'mongodb' | 'redis' | 'rabbitmq' | 'anthropic' | 'openai' | 'ollama'
+export type ConnectionType = 'mongodb' | 'redis' | 'rabbitmq' | 'anthropic' | 'openai' | 'ollama' | 'slack'
 
 export interface Connection {
   id: string
