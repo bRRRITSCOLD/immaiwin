@@ -836,9 +836,10 @@ var checkpointKey = checkpointKeyT{}
 // matching fields onto runEnv so the BFS loop knows it's executing
 // under a lease.
 type checkpointBundle struct {
-	runID      string
-	workerID   string
-	priorState *ExecutionState
+	runID       string
+	workerID    string
+	priorState  *ExecutionState
+	pausedAgent *AgentPauseState
 }
 
 type resumeBundle struct {
@@ -1041,7 +1042,12 @@ func (e *WorkflowExecutor) RunResumable(ctx context.Context, wf Workflow, opts R
 // rec by whoever queued the run). No PreallocRunID etc — the run rec
 // is the source of truth.
 func (e *WorkflowExecutor) RunFromCheckpoint(ctx context.Context, wf Workflow, rec WorkflowRun, workerID string, emitter EventEmitter) (RunOutcome, error) {
-	bundle := &checkpointBundle{runID: rec.ID, workerID: workerID, priorState: rec.ExecutionState}
+	bundle := &checkpointBundle{
+		runID:       rec.ID,
+		workerID:    workerID,
+		priorState:  rec.ExecutionState,
+		pausedAgent: rec.PausedAgent,
+	}
 	ctx = context.WithValue(ctx, checkpointKey, bundle)
 	if emitter == nil {
 		emitter = e.Events
@@ -1090,9 +1096,11 @@ func (e *WorkflowExecutor) RunFromCheckpoint(ctx context.Context, wf Workflow, r
 				if stepErr != "" {
 					rcur.Error = stepErr
 				}
-				// Clear execution_state on terminal — no further
-				// resume needed; keeps the doc tidy.
+				// Clear execution_state + paused_agent on terminal — no
+				// further resume needed; keeps the doc tidy + prevents
+				// a stale PausedAgent from hydrating a future re-run.
 				rcur.ExecutionState = nil
+				rcur.PausedAgent = nil
 				if uerr := e.RunRepo.Update(ctx, rcur); uerr != nil {
 					slog.Warn("workflow: persist terminal state failed", "run_id", rec.ID, "err", uerr)
 				}
@@ -1226,6 +1234,13 @@ func (e *WorkflowExecutor) RunWithEvents(ctx context.Context, wf Workflow, stopA
 		env.checkpoint = true
 		env.yieldOnApproval = true
 		env.priorExecState = cb.priorState
+		// Hydrate the agent's mid-loop snapshot so the agent at the
+		// gated tool call resumes with its iter / messages / usage
+		// intact instead of restarting the conversation. The agent
+		// itself reads env.resumeAgentState in runAIAgent (line ~209).
+		if cb.pausedAgent != nil {
+			env.resumeAgentState = cb.pausedAgent
+		}
 		if cb.priorState != nil {
 			// Drop trigger queue; load persisted frontier instead.
 			queue = queue[:0]
@@ -1325,6 +1340,28 @@ func (e *WorkflowExecutor) RunWithEvents(ctx context.Context, wf Workflow, stopA
 		return e.RunRepo.CheckpointExecutionState(ctx, env.runID, env.workerID, state, results, "")
 	}
 
+	// yieldForApproval persists the lease-yield state and returns. Used
+	// by both the BFS-side gate (preExecApproval returns errYield) and
+	// the agent-side gate (`as_tool` target's `require_node_approval`
+	// fires inside the agent's tool dispatch and bubbles errYield up
+	// through runAIAgent). Both paths un-mark the just-marked-visited
+	// `item` and re-queue it at the head; on resume, BFS re-dispatches
+	// `item` and the agent's PausedAgent (persisted by the agent loop
+	// before unwinding) hydrates so the model picks up mid-conversation.
+	yieldForApproval := func(item queueItem) error {
+		delete(visited, item.nodeID)
+		queue = append([]queueItem{item}, queue...)
+		if env.checkpoint && e.RunRepo != nil && env.workerID != "" && env.runID != "" {
+			state := snapshotExecState()
+			state.Pending = &PendingExecutionGate{NodeID: env.pendingNodeID, Input: env.pendingInput}
+			if perr := e.RunRepo.CheckpointExecutionState(ctx, env.runID, env.workerID, state, results, RunStatusPendingApproval); perr != nil {
+				return perr
+			}
+			_ = e.RunRepo.ReleaseLease(ctx, env.runID, env.workerID)
+		}
+		return nil
+	}
+
 	for len(queue) > 0 {
 		item := queue[0]
 		queue = queue[1:]
@@ -1359,20 +1396,8 @@ func (e *WorkflowExecutor) RunWithEvents(ctx context.Context, wf Workflow, stopA
 			approved, gateErr := e.preExecApproval(ctx, env, node, item.input)
 			if gateErr != nil {
 				if errors.Is(gateErr, errYieldForApproval) {
-					// Yield: un-mark the gated node + push it back to
-					// the queue front so the resumed worker re-enters
-					// at the same step. Persist ExecutionState.Pending
-					// + release lease + return cleanly (not an error —
-					// the run is paused, not failed).
-					delete(visited, item.nodeID)
-					queue = append([]queueItem{item}, queue...)
-					if env.checkpoint && e.RunRepo != nil && env.workerID != "" && env.runID != "" {
-						state := snapshotExecState()
-						state.Pending = &PendingExecutionGate{NodeID: env.pendingNodeID, Input: env.pendingInput}
-						if perr := e.RunRepo.CheckpointExecutionState(ctx, env.runID, env.workerID, state, results, RunStatusPendingApproval); perr != nil {
-							return results, perr
-						}
-						_ = e.RunRepo.ReleaseLease(ctx, env.runID, env.workerID)
+					if perr := yieldForApproval(item); perr != nil {
+						return results, perr
 					}
 					return results, nil
 				}
@@ -1419,6 +1444,21 @@ func (e *WorkflowExecutor) RunWithEvents(ctx context.Context, wf Workflow, stopA
 			results = append(results, extraResults...)
 		} else {
 			output, err = e.runNode(ctx, node, item.input, wfCtx, params)
+		}
+
+		// Yield catch: an `as_tool` target's pre-exec gate inside an
+		// agent's tool dispatch bubbles errYieldForApproval up through
+		// runAIAgent's return. Treat it identically to the BFS-side
+		// gate yield — re-queue the agent (so resume re-dispatches it
+		// and the agent's persisted PausedAgent hydrates the loop) +
+		// persist Pending + release lease. Without this catch, the
+		// errYield falls into the generic error-handle branch below
+		// and the run terminal-errors mid-step.
+		if errors.Is(err, errYieldForApproval) {
+			if perr := yieldForApproval(item); perr != nil {
+				return results, perr
+			}
+			return results, nil
 		}
 
 		// Populate context for named nodes
