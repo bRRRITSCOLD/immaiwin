@@ -28,6 +28,7 @@ import { AIAgentNode } from './nodes/AIAgentNode'
 import { useWorkflowStore, type Workflow } from './useWorkflowStore'
 import { WorkflowParamsPanel } from './WorkflowParamsPanel'
 import { WorkflowCostLimitsPanel } from './WorkflowCostLimitsPanel'
+import { WorkflowApprovalChannelPanel } from './WorkflowApprovalChannelPanel'
 import { WorkflowHelpLegend } from './WorkflowHelpLegend'
 import { RunResultsContext, RunStatusContext, AgentRunContext, DebugContext, ToolApprovalContext, type RunResults, type AgentIterSummary } from './RunResultsContext'
 
@@ -312,7 +313,7 @@ interface EdgeMenuState {
 }
 
 function WorkflowCanvasInner({ workflow, onSave, onRun, onCancel, onContinue, onClearRun, lastRun, runRunning, agentRuns, pausedRunID, hasLivePause, runError, onApproveTool, onSetBreakpoints }: Props) {
-  const { updateActiveGraph, updateActiveCostLimits, updateActiveParamsSchema, selectedEdgeType, setSelectedEdgeType, attachingFrom, setAttachingFrom } = useWorkflowStore()
+  const { updateActiveGraph, updateActiveCostLimits, updateActiveParamsSchema, updateActiveApprovalChannel, selectedEdgeType, setSelectedEdgeType, attachingFrom, setAttachingFrom } = useWorkflowStore()
   const { screenToFlowPosition } = useReactFlow()
   const [nodes, setNodes, onNodesChange] = useNodesState(workflow.nodes)
   const [edges, setEdges, onEdgesChange] = useEdgesState(workflow.edges)
@@ -533,6 +534,21 @@ function WorkflowCanvasInner({ workflow, onSave, onRun, onCancel, onContinue, on
             <WorkflowCostLimitsPanel
               costLimits={workflow.cost_limits ?? null}
               onChange={(cl) => updateActiveCostLimits(cl)}
+              onSave={handleSave}
+            />
+          )}
+          {/* Approval channel only meaningful if at least one node is
+              gated. Surface the panel reactively so workflows without
+              any approval gates don't carry routing config. Reads
+              `require_node_approval` (any node) and `require_approval`
+              (ai_agent per-tool flag) — either qualifies. */}
+          {nodes.some((n) =>
+            (n.data as Record<string, unknown> | undefined)?.require_node_approval === true ||
+            (n.type === 'ai_agent' && (n.data as Record<string, unknown> | undefined)?.require_approval === true),
+          ) && (
+            <WorkflowApprovalChannelPanel
+              channel={workflow.approval_channel ?? null}
+              onChange={(ch) => updateActiveApprovalChannel(ch)}
               onSave={handleSave}
             />
           )}

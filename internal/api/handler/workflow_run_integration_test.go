@@ -25,6 +25,8 @@ import (
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -53,6 +55,10 @@ type WorkflowRunIntegrationSuite struct {
 	dbName      string
 	redis       *rediss.Client
 	httpSrv     *httptest.Server
+	// Notifier kept on the suite so dispatcher-path tests can swap the
+	// email sender / HTTP client per-test (capture vs no-op) without
+	// rebuilding the executor.
+	notifier *workflow.MultiplexApprovalNotifier
 }
 
 func TestWorkflowRunIntegrationSuite(t *testing.T) {
@@ -109,11 +115,17 @@ func (s *WorkflowRunIntegrationSuite) SetupSuite() {
 	// ApprovalBroker = Redis so the OOB approval gate (require_node_approval)
 	// has the cross-process pub/sub channel it needs — without it the
 	// gate degrades to auto-approve.
+	s.notifier = &workflow.MultiplexApprovalNotifier{
+		HTTPClient: &http.Client{Timeout: 5 * time.Second},
+	}
 	wfExec := &workflow.WorkflowExecutor{
-		HTTPClient:     &http.Client{Timeout: 10 * time.Second},
-		DB:             mongodb.NewMongoClient(s.db),
-		RunRepo:        runRepo,
-		ApprovalBroker: s.redis,
+		HTTPClient:          &http.Client{Timeout: 10 * time.Second},
+		DB:                  mongodb.NewMongoClient(s.db),
+		RunRepo:             runRepo,
+		ApprovalBroker:      s.redis,
+		ApprovalNotifier:    s.notifier,
+		ApprovalTokenSecret: []byte(jwtSecretForApprovalRedeemTests),
+		ApprovalUIBaseURL:   "http://127.0.0.1",
 	}
 
 	apiCfg := config.APIConfig{Host: "127.0.0.1", Port: 0, BaseURL: "http://127.0.0.1"}
@@ -614,6 +626,239 @@ func (s *WorkflowRunIntegrationSuite) TestApprovalRedeem_TokenSuperseded_Returns
 	defer resp2.Body.Close() //nolint:errcheck
 	s.Equal(http.StatusNotFound, resp2.StatusCode,
 		"replayed token should be rejected once the run moved past pending_approval")
+}
+
+// recordingEmailSender captures every Send call so dispatcher tests
+// can assert on the message that left the executor. Mutex-guarded so
+// the executor's dispatch goroutine doesn't race the assertion.
+type recordingEmailSender struct {
+	mu   sync.Mutex
+	msgs []email.Message
+}
+
+func (r *recordingEmailSender) Send(_ context.Context, msg email.Message) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.msgs = append(r.msgs, msg)
+	return nil
+}
+
+func (r *recordingEmailSender) snapshot() []email.Message {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]email.Message, len(r.msgs))
+	copy(out, r.msgs)
+	return out
+}
+
+// putApprovalGatedWorkflowWithChannel PUTs a 2-node workflow whose
+// notify node carries `require_node_approval=true` and pins the
+// workflow's `approval_channel` to the given config. The dispatcher
+// fires when the gate trips; tests assert on the recorded message.
+func (s *WorkflowRunIntegrationSuite) putApprovalGatedWorkflowWithChannel(client *http.Client, id string, channel map[string]any) {
+	payload := map[string]any{
+		"name":             "approval channel smoke",
+		"params":           map[string]any{},
+		"approval_channel": channel,
+		"nodes": []map[string]any{
+			{
+				"id":       "trigger-1",
+				"type":     "trigger",
+				"position": map[string]any{"x": 0, "y": 0},
+				"data":     map[string]any{"trigger_type": "manual"},
+			},
+			{
+				"id":       "notify-1",
+				"type":     "notify",
+				"position": map[string]any{"x": 200, "y": 0},
+				"data": map[string]any{
+					"message":               "approved-and-resumed",
+					"require_node_approval": true,
+				},
+			},
+		},
+		"edges": []map[string]any{
+			{"id": "e1", "source": "trigger-1", "target": "notify-1", "source_handle": "success"},
+		},
+	}
+	body, _ := json.Marshal(payload)
+	req, _ := http.NewRequest(http.MethodPut, s.httpSrv.URL+"/api/v1/workflows/"+id, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	s.Require().NoError(err)
+	defer resp.Body.Close() //nolint:errcheck
+	s.Require().Equal(http.StatusOK, resp.StatusCode)
+}
+
+// TestApprovalDispatch_SMTPChannel_SendsApprovalEmailWithMagicLink wires
+// a recording email sender, fires a workflow whose ApprovalChannel is
+// SMTP-typed, and verifies the dispatcher built a correct magic-link +
+// recipient + subject.
+func (s *WorkflowRunIntegrationSuite) TestApprovalDispatch_SMTPChannel_SendsApprovalEmailWithMagicLink() {
+	suffix := time.Now().UnixNano()
+	client := s.authedClient(fmt.Sprintf("alice-dispatch-smtp-%d@example.com", suffix))
+
+	rec := &recordingEmailSender{}
+	s.notifier.Email = rec
+	defer func() { s.notifier.Email = nil }()
+
+	wfID := fmt.Sprintf("wf-dispatch-smtp-%d", suffix)
+	s.putApprovalGatedWorkflowWithChannel(client, wfID, map[string]any{
+		"type":   "smtp",
+		"target": "ops@example.com",
+		"from":   "burrow@example.com",
+	})
+
+	runID, pending, runDone := s.startApprovalGatedRun(client, wfID)
+	tokenID, _ := pending["token_id"].(string)
+	s.Require().NotEmpty(tokenID)
+
+	// Dispatch is async — wait briefly for the goroutine to land.
+	deadline := time.Now().Add(2 * time.Second)
+	var sent []email.Message
+	for time.Now().Before(deadline) {
+		sent = rec.snapshot()
+		if len(sent) > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	s.Require().Len(sent, 1, "dispatcher should fire exactly one email per gate")
+
+	msg := sent[0]
+	s.Equal("ops@example.com", msg.To)
+	s.Contains(msg.Subject, "Approval needed")
+	s.Contains(msg.Body, runID, "magic-link body should include run_id")
+	s.Contains(msg.Body, "/approve?", "magic-link body should embed approve URL")
+
+	// Pull the token out of the body and verify it.
+	tokIdx := strings.Index(msg.Body, "token=")
+	s.Require().Greater(tokIdx, 0, "approve URL should include token=")
+	tokRest := msg.Body[tokIdx+len("token="):]
+	if newline := strings.IndexAny(tokRest, "\n\r&"); newline > 0 {
+		tokRest = tokRest[:newline]
+	}
+	claims, err := workflow.VerifyApprovalToken([]byte(jwtSecretForApprovalRedeemTests), tokRest)
+	s.Require().NoError(err, "embedded token must verify against the suite JWT secret")
+	s.Equal(runID, claims.Subject, "token sub should bind the run_id")
+	s.Equal(tokenID, claims.ID, "token jti should match persisted PendingApproval.TokenID")
+
+	// Resolve the gate so the run goroutine returns and we don't leak
+	// it into other tests. Use the existing /approval endpoint — the
+	// magic-link redeem path is already covered above.
+	approveBody, _ := json.Marshal(map[string]any{"approved": true})
+	resp, err := client.Post(s.httpSrv.URL+"/api/v1/workflow_runs/"+runID+"/approval",
+		"application/json", bytes.NewReader(approveBody))
+	s.Require().NoError(err)
+	_ = resp.Body.Close()
+
+	select {
+	case <-runDone:
+	case <-time.After(5 * time.Second):
+		s.FailNow("run did not complete after manual approve")
+	}
+}
+
+// TestApprovalDispatch_SlackChannel_PostsWebhookWithMagicLink does the
+// equivalent for the Slack-webhook channel. A local httptest server
+// stands in for hooks.slack.com — the dispatcher's POST lands here, the
+// test asserts on the JSON body shape.
+func (s *WorkflowRunIntegrationSuite) TestApprovalDispatch_SlackChannel_PostsWebhookWithMagicLink() {
+	suffix := time.Now().UnixNano()
+	client := s.authedClient(fmt.Sprintf("alice-dispatch-slack-%d@example.com", suffix))
+
+	type capturedPost struct {
+		body []byte
+	}
+	var (
+		capMu     sync.Mutex
+		captured  []capturedPost
+	)
+	fakeSlack := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		capMu.Lock()
+		captured = append(captured, capturedPost{body: body})
+		capMu.Unlock()
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer fakeSlack.Close()
+
+	wfID := fmt.Sprintf("wf-dispatch-slack-%d", suffix)
+	s.putApprovalGatedWorkflowWithChannel(client, wfID, map[string]any{
+		"type":   "slack_webhook",
+		"target": fakeSlack.URL + "/services/test/webhook",
+	})
+
+	runID, _, runDone := s.startApprovalGatedRun(client, wfID)
+
+	deadline := time.Now().Add(2 * time.Second)
+	var posts []capturedPost
+	for time.Now().Before(deadline) {
+		capMu.Lock()
+		posts = append(posts[:0], captured...)
+		capMu.Unlock()
+		if len(posts) > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	s.Require().Len(posts, 1, "dispatcher should POST exactly one webhook per gate")
+
+	var payload map[string]any
+	s.Require().NoError(json.Unmarshal(posts[0].body, &payload))
+	text, _ := payload["text"].(string)
+	s.Contains(text, "Approval needed", "slack body should carry the human-friendly subject")
+	s.Contains(text, runID, "slack body should include run_id")
+	s.Contains(text, "/approve?", "slack body should embed the approve URL")
+
+	approveBody, _ := json.Marshal(map[string]any{"approved": true})
+	resp, err := client.Post(s.httpSrv.URL+"/api/v1/workflow_runs/"+runID+"/approval",
+		"application/json", bytes.NewReader(approveBody))
+	s.Require().NoError(err)
+	_ = resp.Body.Close()
+
+	select {
+	case <-runDone:
+	case <-time.After(5 * time.Second):
+		s.FailNow("run did not complete after manual approve")
+	}
+}
+
+// TestApprovalDispatch_ChannelNone_NoEmailSent confirms the dispatcher
+// short-circuits cleanly when the workflow's ApprovalChannel is
+// disabled — gate still pauses, no email leaves the executor.
+func (s *WorkflowRunIntegrationSuite) TestApprovalDispatch_ChannelNone_NoEmailSent() {
+	suffix := time.Now().UnixNano()
+	client := s.authedClient(fmt.Sprintf("alice-dispatch-none-%d@example.com", suffix))
+
+	rec := &recordingEmailSender{}
+	s.notifier.Email = rec
+	defer func() { s.notifier.Email = nil }()
+
+	wfID := fmt.Sprintf("wf-dispatch-none-%d", suffix)
+	// Note: even though the channel is "none", the workflow validator
+	// rejects the field unless target is empty. Use Type=none with no
+	// target to mirror the UI's "off" representation.
+	s.putApprovalGatedWorkflowWithChannel(client, wfID, map[string]any{"type": "none"})
+
+	runID, _, runDone := s.startApprovalGatedRun(client, wfID)
+
+	// Give any potential dispatch goroutine time to (incorrectly) fire.
+	time.Sleep(300 * time.Millisecond)
+	s.Empty(rec.snapshot(), "channel=none should not send any email")
+
+	approveBody, _ := json.Marshal(map[string]any{"approved": true})
+	resp, err := client.Post(s.httpSrv.URL+"/api/v1/workflow_runs/"+runID+"/approval",
+		"application/json", bytes.NewReader(approveBody))
+	s.Require().NoError(err)
+	_ = resp.Body.Close()
+
+	select {
+	case <-runDone:
+	case <-time.After(5 * time.Second):
+		s.FailNow("run did not complete")
+	}
 }
 
 // TestRunsList_FilteredByWorkflow asserts the workflow_id query param

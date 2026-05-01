@@ -432,8 +432,7 @@ func (e *WorkflowExecutor) runAIAgent(ctx context.Context, node Node, data map[s
 							defer oobReg.Unregister(env.runID)
 						}
 						if rec, gerr := e.RunRepo.Get(ctx, env.runID); gerr == nil {
-							rec.Status = RunStatusPendingApproval
-							rec.PendingApproval = &PendingApprovalState{
+							pending := PendingApprovalState{
 								Kind:        "tool_call",
 								AgentNodeID: node.ID,
 								Iter:        iter,
@@ -443,8 +442,15 @@ func (e *WorkflowExecutor) runAIAgent(ctx context.Context, node Node, data map[s
 								RequestedAt: time.Now().UTC(),
 								TokenID:     ulid.Make().String(),
 							}
+							rec.Status = RunStatusPendingApproval
+							rec.PendingApproval = &pending
 							if uerr := e.RunRepo.Update(ctx, rec); uerr != nil {
 								slog.Warn("ai_agent: persist pending_approval failed", "run_id", env.runID, "err", uerr)
+							}
+							// Dispatch OOB channel notification (Stage 2).
+							// Best-effort + async — see dispatchApprovalNotification.
+							if env.wf != nil {
+								e.dispatchApprovalNotification(*env.wf, env.runID, pending)
 							}
 						}
 					}
