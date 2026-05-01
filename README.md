@@ -616,6 +616,39 @@ Current behaviour: the `/approval` endpoint detects the zero-subscriber case, au
 
 If you hit it on an old build, force-cancel the run from `/runs/:id` and re-trigger the workflow. Permanent fix (lease-based stateless workers + checkpoint-per-step execution) is the next architectural milestone.
 
+### `Bind for 0.0.0.0:<port> failed: port is already allocated` even though no container shows that port
+
+Two flavours, both common:
+
+**Orphan `docker-proxy` procs.** `docker ps -a` shows nothing on the port. `ss -tlnp | grep :<port>` shows a LISTEN socket; `pgrep -af docker-proxy` reveals the culprit:
+
+```sh
+sudo pgrep -af docker-proxy
+# 196761 /usr/bin/docker-proxy -proto tcp -host-ip 0.0.0.0 -host-port 5000 ...
+sudo kill <pids>
+```
+
+When dockerd kills a container ungracefully (compose race, daemon restart mid-rm), the userland docker-proxy children get reparented to PID 1 and keep holding the host port. Container is gone but the proxy isn't.
+
+**Containers from a previous compose project name.** After a project rename (e.g. `immaiwin` → `burrow`) the old containers keep their old project label, so `docker compose down` with the new project name can't see them. They survive reboots via `restart: unless-stopped` and grab the ports the new stack tries to bind.
+
+```sh
+docker rm -f $(docker ps -aq --filter 'name=<old-prefix>-')
+```
+
+`make dev-teardown` reaps both cases automatically (by name regex + by host-port for orphan proxies); the manual commands above are for one-off cleanup outside that target.
+
+### Containers, networks, or images "vanish" depending on which terminal you use
+
+You have two Docker engines installed — the native daemon (`/var/run/docker.sock`) AND Docker Desktop's VM (`~/.docker/desktop/docker.sock`). Each engine has its own containers, images, networks, volumes. `docker context` only switches which socket the CLI talks to; it doesn't sync state.
+
+```sh
+docker context ls            # `*` marks the active context
+docker context use default   # native daemon — shares the host's network namespace
+```
+
+Launching the Docker Desktop app silently flips the active context to `desktop-linux`. If you don't need Desktop's GUI / built-in k8s / Mac-style volume mounts, the native daemon is simpler. Pick one engine and stay there.
+
 ### Skills page says "No skills installed" even though `skills/bundled/` has bundles
 
 The API auto-imports every bundle in `SKILLS_DIR` on boot. If the registry is empty after start-up, either:
