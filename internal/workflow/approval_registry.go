@@ -71,11 +71,14 @@ func (r *ApprovalRegistry) Register(ctx context.Context, runID string) chan Appr
 		return nil
 	}
 	ch := make(chan ApprovalDecision, 4)
-	sub := r.subscriber.Subscribe(ctx, approvalChannel(runID))
+	channel := approvalChannel(runID)
+	sub := r.subscriber.Subscribe(ctx, channel)
 
 	r.mu.Lock()
 	r.pending[runID] = &pendingEntry{ch: ch, sub: sub}
 	r.mu.Unlock()
+
+	slog.Info("approval registry: subscribed", "run_id", runID, "channel", channel)
 
 	// Pump messages from Redis into the local channel until the sub
 	// closes (Unregister or context cancel). Goroutine exits cleanly
@@ -88,12 +91,15 @@ func (r *ApprovalRegistry) Register(ctx context.Context, runID string) chan Appr
 				slog.Warn("approval registry: bad payload", "run_id", runID, "err", err)
 				continue
 			}
+			slog.Info("approval registry: decision received from Redis",
+				"run_id", runID, "approved", d.Approved, "tool_call_id", d.ToolCallID)
 			select {
 			case ch <- d:
 			default:
 				slog.Warn("approval registry: ch full; dropping decision", "run_id", runID)
 			}
 		}
+		slog.Info("approval registry: pump goroutine exited", "run_id", runID)
 	}()
 
 	return ch
@@ -130,5 +136,13 @@ func (r *ApprovalRegistry) Submit(ctx context.Context, runID string, decision Ap
 	if err != nil {
 		return fmt.Errorf("approval registry: marshal: %w", err)
 	}
-	return r.subscriber.Publish(ctx, approvalChannel(runID), payload)
+	channel := approvalChannel(runID)
+	if err := r.subscriber.Publish(ctx, channel, payload); err != nil {
+		slog.Warn("approval registry: publish failed",
+			"run_id", runID, "channel", channel, "err", err)
+		return err
+	}
+	slog.Info("approval registry: published decision",
+		"run_id", runID, "channel", channel, "approved", decision.Approved, "tool_call_id", decision.ToolCallID)
+	return nil
 }
