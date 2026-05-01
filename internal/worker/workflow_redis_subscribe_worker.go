@@ -334,11 +334,18 @@ func processRedisMessage(
 		return
 	}
 
-	steps, err := exec.Run(ctx, wf, "", body)
+	// Use RunResumable so the run gets persisted into WorkflowRunStore
+	// with a real run_id. Side-effect: pre-exec node-approval gates
+	// (`require_node_approval`) and per-tool agent gates (`require_approval`)
+	// can register against the executor's ApprovalRegistry, persist
+	// `pending_approval` state on the run record, and resolve via
+	// `POST /api/v1/workflow_runs/:id/approval` (OOB). With the legacy
+	// `exec.Run` path the gates auto-approved silently.
+	outcome, err := exec.RunResumable(ctx, wf, workflow.RunOpts{Input: body})
 	elapsed := time.Since(start).Round(time.Millisecond)
 
 	var errCount int
-	for _, s := range steps {
+	for _, s := range outcome.Steps {
 		if s.Error != "" {
 			errCount++
 		}
@@ -346,10 +353,13 @@ func processRedisMessage(
 
 	if err != nil {
 		slog.Error("workflow-redis-subscribe: run failed",
-			"workflow", wfID, "name", wfName, "channel", msg.Channel, "err", err, "elapsed", elapsed)
+			"workflow", wfID, "name", wfName, "channel", msg.Channel,
+			"run_id", outcome.RunID, "status", outcome.Status,
+			"err", err, "elapsed", elapsed)
 		return
 	}
 	slog.Info("workflow-redis-subscribe: run complete",
 		"workflow", wfID, "name", wfName, "channel", msg.Channel,
-		"steps", len(steps), "errors", errCount, "elapsed", elapsed)
+		"run_id", outcome.RunID, "status", outcome.Status,
+		"steps", len(outcome.Steps), "errors", errCount, "elapsed", elapsed)
 }

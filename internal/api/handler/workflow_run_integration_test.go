@@ -101,10 +101,14 @@ func (s *WorkflowRunIntegrationSuite) SetupSuite() {
 	// Real executor — minimum dep set for trigger-only workflows. No
 	// sandbox, no AI-agent connection resolver (those nodes aren't in
 	// the test workflow). RunRepo is what makes /run persist a row.
+	// ApprovalBroker = Redis so the OOB approval gate (require_node_approval)
+	// has the cross-process pub/sub channel it needs — without it the
+	// gate degrades to auto-approve.
 	wfExec := &workflow.WorkflowExecutor{
-		HTTPClient: &http.Client{Timeout: 10 * time.Second},
-		DB:         mongodb.NewMongoClient(s.db),
-		RunRepo:    runRepo,
+		HTTPClient:     &http.Client{Timeout: 10 * time.Second},
+		DB:             mongodb.NewMongoClient(s.db),
+		RunRepo:        runRepo,
+		ApprovalBroker: s.redis,
 	}
 
 	apiCfg := config.APIConfig{Host: "127.0.0.1", Port: 0, BaseURL: "http://127.0.0.1"}
@@ -266,6 +270,153 @@ func (s *WorkflowRunIntegrationSuite) TestRun_Unauth_401() {
 	s.Require().NoError(err)
 	defer resp.Body.Close() //nolint:errcheck
 	s.Equal(http.StatusUnauthorized, resp.StatusCode)
+}
+
+// putApprovalWorkflow PUTs a 2-node workflow whose notify node carries
+// `require_node_approval=true`. The trigger fires unattended; the notify
+// node is what the BFS halts at. Used by the OOB-approval test below.
+func (s *WorkflowRunIntegrationSuite) putApprovalWorkflow(client *http.Client, id, name string) {
+	payload := map[string]any{
+		"name":   name,
+		"params": map[string]any{},
+		"nodes": []map[string]any{
+			{
+				"id":       "trigger-1",
+				"type":     "trigger",
+				"position": map[string]any{"x": 0, "y": 0},
+				"data":     map[string]any{"trigger_type": "manual"},
+			},
+			{
+				"id":       "notify-1",
+				"type":     "notify",
+				"position": map[string]any{"x": 200, "y": 0},
+				"data": map[string]any{
+					"message":                "approved-and-resumed",
+					"require_node_approval":  true,
+				},
+			},
+		},
+		"edges": []map[string]any{
+			{
+				"id":            "e1",
+				"source":        "trigger-1",
+				"target":        "notify-1",
+				"source_handle": "success",
+			},
+		},
+	}
+	body, _ := json.Marshal(payload)
+	req, _ := http.NewRequest(http.MethodPut, s.httpSrv.URL+"/api/v1/workflows/"+id, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	s.Require().NoError(err)
+	defer resp.Body.Close() //nolint:errcheck
+	s.Require().Equal(http.StatusOK, resp.StatusCode)
+}
+
+// TestRun_NodeApproval_OOB_PendsThenResumesAfterApprove verifies the
+// `require_node_approval` gate works out-of-band: with no live UI WS the
+// run lands in `pending_approval`, the HTTP `/approval` endpoint
+// publishes a verdict through the Redis-backed registry, the executor
+// resumes, and the run completes.
+//
+// This is the path the rabbitmq + redis-subscribe trigger workers now
+// flow through (after the `exec.Run` → `exec.RunResumable` swap that
+// motivated this test). Asserting it here means non-manual triggers
+// inherit the same OOB approval guarantees as cron + webhook.
+func (s *WorkflowRunIntegrationSuite) TestRun_NodeApproval_OOB_PendsThenResumesAfterApprove() {
+	suffix := time.Now().UnixNano()
+	client := s.authedClient(fmt.Sprintf("alice-approval-%d@example.com", suffix))
+	wfID := fmt.Sprintf("wf-approval-%d", suffix)
+	s.putApprovalWorkflow(client, wfID, "approval gate smoke")
+
+	// /run is synchronous — it blocks until the executor finishes. With
+	// a node-approval gate it'll block waiting on Redis. Fire it from a
+	// goroutine so the main test loop can poll status + post the verdict.
+	type runResp struct {
+		RunID  string                   `json:"run_id"`
+		Status string                   `json:"status"`
+		Steps  []map[string]any         `json:"steps"`
+	}
+	runDone := make(chan runResp, 1)
+	runErr := make(chan error, 1)
+	go func() {
+		resp, err := client.Post(s.httpSrv.URL+"/api/v1/workflows/"+wfID+"/run",
+			"application/json", bytes.NewReader([]byte(`{}`)))
+		if err != nil {
+			runErr <- err
+			return
+		}
+		defer resp.Body.Close() //nolint:errcheck
+		body, _ := io.ReadAll(resp.Body)
+		var out runResp
+		_ = json.Unmarshal(body, &out)
+		runDone <- out
+	}()
+
+	// Poll workflow_runs list until we see a row in pending_approval for
+	// this workflow. RunResumable mints + persists the run on entry, so
+	// the row appears almost immediately, but the gate may not have
+	// flipped status to pending_approval yet.
+	deadline := time.Now().Add(5 * time.Second)
+	var pendingRunID string
+	for time.Now().Before(deadline) {
+		listResp, err := client.Get(s.httpSrv.URL + "/api/v1/workflow_runs?workflow_id=" + wfID)
+		s.Require().NoError(err)
+		var rows []map[string]any
+		_ = json.NewDecoder(listResp.Body).Decode(&rows)
+		_ = listResp.Body.Close()
+		for _, r := range rows {
+			if r["status"] == "pending_approval" {
+				if id, ok := r["_id"].(string); ok {
+					pendingRunID = id
+				} else if id, ok := r["id"].(string); ok {
+					pendingRunID = id
+				}
+				break
+			}
+		}
+		if pendingRunID != "" {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	s.Require().NotEmpty(pendingRunID, "run should land in pending_approval within 5s")
+
+	// Detail endpoint should also show the pending_approval state with
+	// the node kind populated.
+	detailResp, err := client.Get(s.httpSrv.URL + "/api/v1/workflow_runs/" + pendingRunID)
+	s.Require().NoError(err)
+	defer detailResp.Body.Close() //nolint:errcheck
+	var detail map[string]any
+	s.Require().NoError(json.NewDecoder(detailResp.Body).Decode(&detail))
+	run, _ := detail["run"].(map[string]any)
+	s.Require().NotNil(run, "detail must include run object")
+	pending, _ := run["pending_approval"].(map[string]any)
+	s.Require().NotNil(pending, "pending_approval state must be persisted on the run")
+	s.Equal("node", pending["kind"])
+	s.Equal("notify-1", pending["node_id"])
+
+	// POST the approval. Body shape is kind-agnostic — `tool_call_id`
+	// stays empty for node gates.
+	approveBody, _ := json.Marshal(map[string]any{"approved": true, "reason": "test"})
+	approveResp, err := client.Post(s.httpSrv.URL+"/api/v1/workflow_runs/"+pendingRunID+"/approval",
+		"application/json", bytes.NewReader(approveBody))
+	s.Require().NoError(err)
+	defer approveResp.Body.Close() //nolint:errcheck
+	s.Require().Equal(http.StatusOK, approveResp.StatusCode)
+
+	// Run goroutine should now unblock + return. Wait up to 5s.
+	select {
+	case out := <-runDone:
+		s.Equal(pendingRunID, out.RunID, "run_id should match the pending one")
+		s.Equal("success", out.Status, "approved run should complete with success")
+		s.NotEmpty(out.Steps, "completed run should have step results")
+	case err := <-runErr:
+		s.FailNow("run goroutine errored", err.Error())
+	case <-time.After(5 * time.Second):
+		s.FailNow("approved run did not complete within 5s")
+	}
 }
 
 // TestRunsList_FilteredByWorkflow asserts the workflow_id query param
