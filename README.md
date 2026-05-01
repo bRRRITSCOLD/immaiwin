@@ -582,15 +582,14 @@ sudo systemctl restart k3s      # bigger hammer for multiple stuck images
 
 ### `$PWD` (or any other `$VAR`) in `.env` doesn't expand
 
-The `.env` loader only substitutes variables that are defined inside the `.env` file itself. `$PWD` lives in the process environment, so an unquoted reference silently expands to empty:
+The `.env` loader only substitutes variables that are defined inside the `.env` file itself.
 
 ```sh
 # wrong — godotenv eats the $PWD before the API ever sees it:
 SKILLS_DIR=$PWD/skills/bundled
 
-# right — single quotes preserve the literal; the API expands $PWD against
-# the process environment at boot:
-SKILLS_DIR='$PWD/skills/bundled'
+# right
+SKILLS_DIR=./skills/bundled
 ```
 
 This applies to any path-style env var you want resolved against the process environment.
