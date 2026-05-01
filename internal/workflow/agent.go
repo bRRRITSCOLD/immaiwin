@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -565,6 +566,49 @@ func (e *WorkflowExecutor) runAIAgent(ctx context.Context, node Node, data map[s
 				}
 
 				obs, err := catalog.Execute(loopCtx, call.Name, call.Input)
+				// Approval-gate yield: an `as_tool` target's
+				// `require_node_approval=true` fired the lease-yield path.
+				// Treat this NOT as a tool error — feeding it back to the
+				// LLM as a tool_result would loop the model on retries —
+				// but as a hard signal to persist the agent's mid-loop
+				// state and bubble the yield up the BFS so the worker
+				// releases its lease. On resume the worker rehydrates
+				// from PausedAgent + applies the gate decision before
+				// re-dispatching the same tool call.
+				if errors.Is(err, errYieldForApproval) {
+					if env.runID != "" && e.RunRepo != nil {
+						// Pop the trailing assistant turn (the one that
+						// emitted the tool_calls we partially dispatched
+						// before the gate fired). On resume the LLM
+						// re-emits a fresh response with the same input
+						// state — costs one extra Chat call but avoids
+						// feeding the model its own un-completed
+						// tool_calls (most providers either error or
+						// emit incoherent output in that shape). Cost
+						// trade-off documented in
+						// .private/ai-automation/DURABLE-EXECUTION-PLAN.md
+						// (long-tail edge cases section).
+						msgsForResume := messages
+						if n := len(msgsForResume); n > 0 && msgsForResume[n-1].Role == llm.RoleAssistant {
+							msgsForResume = msgsForResume[:n-1]
+						}
+						if rec, gerr := e.RunRepo.Get(ctx, env.runID); gerr == nil {
+							rec.PausedAgent = &AgentPauseState{
+								AgentNodeID:  node.ID,
+								Iter:         iter,
+								Messages:     msgsForResume,
+								UsageTotal:   usageTotal,
+								Trace:        traceEvents,
+								SystemPrompt: systemPrompt,
+								UserInput:    userInputText,
+							}
+							if uerr := e.RunRepo.Update(ctx, rec); uerr != nil {
+								slog.Warn("ai_agent: persist paused-agent on yield failed", "run_id", env.runID, "agent", node.ID, "err", uerr)
+							}
+						}
+					}
+					return nil, err
+				}
 				isErr := err != nil
 				if isErr {
 					// Prefer the handler's rich string (often includes stderr +
