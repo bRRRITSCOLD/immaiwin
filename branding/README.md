@@ -1,6 +1,6 @@
 # Branding
 
-Asset directory for the burrow brand. Empty placeholders today — drop finals here when a designer ships them.
+Asset directory for the burrow brand. Hand-written geometric SVGs shipped as v0; commission a designer when polish matters more than parity.
 
 ## Name
 
@@ -24,30 +24,31 @@ Earthy palette to lean into the burrow / dirt / Go-mascot heritage:
 
 Final hex values to be set by designer; the tokens above are placeholders.
 
-## Files (when ready)
+## Files
 
 ```
 branding/
 ├── README.md                 ← this file
-├── wordmark.svg              ← full logo for README header + docs
-├── wordmark-dark.svg         ← dark-mode variant
+├── wordmark.svg              ← full logo for README header + docs (light bg)
+├── wordmark-dark.svg         ← dark-mode variant (light text on dark bg)
 ├── icon.svg                  ← square mark for favicon + app shortcut
-├── icon-16.png               ← favicon raster fallback
-├── icon-512.png              ← PWA / app shortcut
-├── social-card.png           ← OpenGraph 1200×630
-└── tokens.json               ← brand colors as design tokens
+├── icon-16.png               ← TODO (designer): favicon raster fallback
+├── icon-512.png              ← TODO (designer): PWA / app shortcut
+├── social-card.png           ← TODO (designer): OpenGraph 1200×630
+└── tokens.json               ← TODO (designer): brand colors as design tokens
 ```
+
+The SVGs are hand-written geometric placeholders meant to ship the wordmark + favicon-class icon without blocking on a designer. Raster (`icon-*.png`, `social-card.png`) and the formal token file remain designer tasks — flag in any rebrand pass.
 
 ## Usage
 
-Until the SVGs land, the README leans on the **burrow** wordmark via plain text. After designer drop:
+README header uses both wordmark variants via `<picture>` so light + dark themes resolve to the matching variant:
 
 ```markdown
 <p align="center">
-  <img src="branding/wordmark.svg" alt="burrow" height="80" />
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="branding/wordmark-dark.svg">
+    <img src="branding/wordmark.svg" alt="burrow" height="80">
+  </picture>
 </p>
 ```
-
-## History
-
-Renamed from `immaiwin` (a riff on the JG Wentworth jingle, "it's my money and I want it now"). The original project was a Polymarket / Schwab / news-scraper toolkit; over time the workflow + AI agent layer outgrew the finance domain, so the project pivoted and dropped the name. See PR #38 for the domain-code rip and PR-where-this-ships for the rename.

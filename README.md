@@ -1,4 +1,9 @@
-# burrow
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="branding/wordmark-dark.svg">
+    <img src="branding/wordmark.svg" alt="burrow" height="80">
+  </picture>
+</p>
 
 **Visual workflow automation with sandboxed multi-language code execution and interactive debugging.**
 
