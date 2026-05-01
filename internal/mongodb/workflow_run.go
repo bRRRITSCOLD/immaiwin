@@ -23,6 +23,10 @@ func NewWorkflowRunRepository(ctx context.Context, db *mongo.Database) (*Workflo
 		{Keys: bson.D{{Key: "workflow_id", Value: 1}, {Key: "started_at", Value: -1}}},
 		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "started_at", Value: -1}}},
 		{Keys: bson.D{{Key: "status", Value: 1}}},
+		// Powers ClaimLease's findAndModify predicate. Sparse on
+		// lease_expires_at so docs that never had a lease (legacy /
+		// unleased runs) don't bloat the index.
+		{Keys: bson.D{{Key: "status", Value: 1}, {Key: "lease_expires_at", Value: 1}}},
 	})
 	if err != nil {
 		return nil, err
@@ -326,6 +330,108 @@ func (r *WorkflowRunRepository) AppendTrace(ctx context.Context, runID, nodeID s
 	_, err := r.col.UpdateOne(ctx,
 		bson.M{"_id": runID},
 		bson.M{"$push": bson.M{"agent_traces." + nodeID: event}},
+	)
+	return err
+}
+
+// ClaimLease atomically acquires a lease on the next claimable run.
+// Predicate:
+//   - status ∈ statuses
+//   - lease_owner is missing OR empty OR lease_expires_at is missing OR <= now
+//
+// On success the same findAndModify writes lease_owner=workerID and
+// lease_expires_at=now+leaseDur. ReturnDocument:After returns the
+// post-update document so caller sees the new lease state.
+//
+// Returns (run, true, nil) on success; (zero, false, nil) when no
+// candidate exists; (zero, false, err) on I/O failure. Never returns
+// an unleased run on success.
+func (r *WorkflowRunRepository) ClaimLease(ctx context.Context, workerID string, leaseDur time.Duration, statuses []workflow.RunStatus) (workflow.WorkflowRun, bool, error) {
+	if workerID == "" {
+		return workflow.WorkflowRun{}, false, errors.New("workflow run lease: workerID required")
+	}
+	if leaseDur <= 0 {
+		return workflow.WorkflowRun{}, false, errors.New("workflow run lease: leaseDur must be > 0")
+	}
+	if len(statuses) == 0 {
+		return workflow.WorkflowRun{}, false, errors.New("workflow run lease: statuses required")
+	}
+	now := time.Now().UTC()
+	statusStrs := make([]string, len(statuses))
+	for i, s := range statuses {
+		statusStrs[i] = string(s)
+	}
+	filter := bson.M{
+		"status": bson.M{"$in": statusStrs},
+		"$or": []bson.M{
+			{"lease_owner": bson.M{"$in": []any{nil, ""}}},
+			{"lease_expires_at": bson.M{"$lte": now}},
+			{"lease_expires_at": bson.M{"$exists": false}},
+		},
+	}
+	expiresAt := now.Add(leaseDur)
+	update := bson.M{
+		"$set": bson.M{
+			"lease_owner":      workerID,
+			"lease_expires_at": expiresAt,
+		},
+	}
+	// FIFO-ish: prefer the run with the oldest started_at so long-waiting
+	// runs don't get starved by a flood of fresh ones.
+	opts := options.FindOneAndUpdate().
+		SetUpsert(false).
+		SetReturnDocument(options.After).
+		SetSort(bson.D{{Key: "started_at", Value: 1}})
+
+	var out workflow.WorkflowRun
+	err := r.col.FindOneAndUpdate(ctx, filter, update, opts).Decode(&out)
+	if err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return workflow.WorkflowRun{}, false, nil
+		}
+		return workflow.WorkflowRun{}, false, err
+	}
+	return out, true, nil
+}
+
+// ExtendLease pushes lease_expires_at forward only when caller still
+// holds the lease. Foreign extends return ErrLeaseNotHeld so the
+// caller can abort cleanly. Implements the heartbeat side of the
+// lease pattern: workers should call this every ~10s if leaseDur=30s.
+func (r *WorkflowRunRepository) ExtendLease(ctx context.Context, runID, workerID string, leaseDur time.Duration) error {
+	if runID == "" || workerID == "" {
+		return errors.New("workflow run lease: runID and workerID required")
+	}
+	if leaseDur <= 0 {
+		return errors.New("workflow run lease: leaseDur must be > 0")
+	}
+	now := time.Now().UTC()
+	expiresAt := now.Add(leaseDur)
+	res, err := r.col.UpdateOne(
+		ctx,
+		bson.M{"_id": runID, "lease_owner": workerID},
+		bson.M{"$set": bson.M{"lease_expires_at": expiresAt}},
+	)
+	if err != nil {
+		return err
+	}
+	if res.MatchedCount == 0 {
+		return workflow.ErrLeaseNotHeld
+	}
+	return nil
+}
+
+// ReleaseLease clears lease_owner + lease_expires_at only when caller
+// still holds the lease. Foreign release is a no-op (returns nil) —
+// defensive for double-release on cleanup paths.
+func (r *WorkflowRunRepository) ReleaseLease(ctx context.Context, runID, workerID string) error {
+	if runID == "" || workerID == "" {
+		return errors.New("workflow run lease: runID and workerID required")
+	}
+	_, err := r.col.UpdateOne(
+		ctx,
+		bson.M{"_id": runID, "lease_owner": workerID},
+		bson.M{"$unset": bson.M{"lease_owner": "", "lease_expires_at": ""}},
 	)
 	return err
 }
