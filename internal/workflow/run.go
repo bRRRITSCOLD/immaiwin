@@ -36,6 +36,28 @@ type WorkflowRun struct {
 	// The /runs/:id UI page reads this to render Approve/Reject buttons.
 	// Cleared once the decision arrives.
 	PendingApproval *PendingApprovalState `bson:"pending_approval,omitempty" json:"pending_approval,omitempty"`
+
+	// LeaseOwner identifies the worker holding execution rights for
+	// this run (Phase 3 durable execution). Empty (or `lease_expires_at`
+	// in the past) means the run is up for grabs by any worker. Workers
+	// claim leases via WorkflowRunStore.ClaimLease, extend them via
+	// ExtendLease while heartbeating, and release them on yield-points
+	// (gate fire, breakpoint, terminal status). On worker death the
+	// lease auto-expires and another worker re-claims; this is what
+	// makes the platform restart-safe + horizontally scalable. See
+	// .private/ai-automation/DURABLE-EXECUTION-PLAN.md for the design.
+	LeaseOwner string `bson:"lease_owner,omitempty" json:"lease_owner,omitempty"`
+	// LeaseExpiresAt is the wall-clock deadline by which the holder
+	// must extend the lease or it auto-expires + becomes claimable by
+	// any worker. Tracked in UTC; stale leases are cleaned up
+	// implicitly by ClaimLease's predicate.
+	LeaseExpiresAt *time.Time `bson:"lease_expires_at,omitempty" json:"lease_expires_at,omitempty"`
+	// LastCheckpointAt is the wall-clock time of the last successful
+	// checkpoint write (BFS step boundary, agent iter, tool call, gate
+	// fire). Used by the resume path to prefer recently-checkpointed
+	// runs + by ops dashboards to spot runs whose worker is alive but
+	// not making progress.
+	LastCheckpointAt *time.Time `bson:"last_checkpoint_at,omitempty" json:"last_checkpoint_at,omitempty"`
 }
 
 // PendingApprovalState mirrors the active require_approval gate so the
@@ -173,7 +195,42 @@ type WorkflowRunStore interface {
 	// the daily-cost-cap enforcement path (executor pre-run + agent
 	// loop mid-run). Returns 0 when the store has no matching docs.
 	SumCostSince(ctx context.Context, workflowID string, since time.Time) (float64, error)
+
+	// ClaimLease atomically acquires the lease on a non-terminal run
+	// matching one of `statuses`. Predicate also requires the run to be
+	// either unleased (no lease_owner) or to have a stale lease
+	// (lease_expires_at <= now). Returns (run, true, nil) on success;
+	// (zero, false, nil) when no claimable run exists. Implementations
+	// MUST use a single findAndModify so two competing workers can
+	// never both claim the same run.
+	//
+	// Phase 3 durable-execution primitive — see
+	// .private/ai-automation/DURABLE-EXECUTION-PLAN.md.
+	ClaimLease(ctx context.Context, workerID string, leaseDur time.Duration, statuses []RunStatus) (WorkflowRun, bool, error)
+
+	// ExtendLease pushes lease_expires_at forward for the run, only
+	// when the caller still owns the lease. Returns ErrLeaseNotHeld
+	// when the lease has been re-claimed by a different worker (i.e.
+	// our heartbeat was too slow). Caller should treat ErrLeaseNotHeld
+	// as a hard signal to abort + release any in-process work.
+	ExtendLease(ctx context.Context, runID, workerID string, leaseDur time.Duration) error
+
+	// ReleaseLease clears lease_owner + lease_expires_at, only when the
+	// caller currently holds the lease. Foreign release is a no-op
+	// (returns nil) — defensive against double-release on cleanup.
+	ReleaseLease(ctx context.Context, runID, workerID string) error
 }
+
+// ErrLeaseNotHeld is returned by ExtendLease (and may be returned by
+// ReleaseLease in stricter implementations) when the caller's lease
+// has been re-acquired by a different worker. Callers should treat
+// this as a fatal "your work is now stale; abort + don't write any
+// further state" signal.
+var ErrLeaseNotHeld = errLeaseNotHeld{}
+
+type errLeaseNotHeld struct{}
+
+func (errLeaseNotHeld) Error() string { return "workflow run: lease not held by caller" }
 
 // RunFilter captures the query parameters for the runs history table.
 // All fields are optional. Limit defaults to 50; Skip defaults to 0.
