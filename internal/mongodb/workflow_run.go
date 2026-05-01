@@ -435,3 +435,73 @@ func (r *WorkflowRunRepository) ReleaseLease(ctx context.Context, runID, workerI
 	)
 	return err
 }
+
+// CheckpointExecutionState writes the BFS snapshot at a step boundary,
+// gated on the caller still holding the lease (filter matches
+// lease_owner == workerID). On lease loss returns ErrLeaseNotHeld so
+// the caller aborts without clobbering state another worker now owns.
+//
+// `steps` and `status` are optional: pass nil/"" to skip those parts of
+// the write. Bumps last_checkpoint_at on every successful update.
+func (r *WorkflowRunRepository) CheckpointExecutionState(ctx context.Context, runID, workerID string, state workflow.ExecutionState, steps []workflow.StepResult, status workflow.RunStatus) error {
+	if runID == "" || workerID == "" {
+		return errors.New("workflow run checkpoint: runID and workerID required")
+	}
+	now := time.Now().UTC()
+	set := bson.M{
+		"execution_state":    state,
+		"last_checkpoint_at": now,
+	}
+	if steps != nil {
+		set["steps"] = steps
+	}
+	if status != "" {
+		set["status"] = string(status)
+	}
+	res, err := r.col.UpdateOne(
+		ctx,
+		bson.M{"_id": runID, "lease_owner": workerID},
+		bson.M{"$set": set},
+	)
+	if err != nil {
+		return err
+	}
+	if res.MatchedCount == 0 {
+		return workflow.ErrLeaseNotHeld
+	}
+	return nil
+}
+
+// ApplyApprovalDecision writes the user's decision into the run's
+// pending execution-state gate, clears any held lease, flips status
+// back to running, and stamps last_checkpoint_at. Caller follows up
+// with a Redis wakeup publish so the next worker claims and applies
+// the decision. Idempotent: re-applying on a run with no pending gate
+// is a no-op (no error) — protects against duplicate clicks racing
+// with worker apply.
+func (r *WorkflowRunRepository) ApplyApprovalDecision(ctx context.Context, runID string, decision workflow.ApprovalDecision) error {
+	if runID == "" {
+		return errors.New("workflow run apply approval: runID required")
+	}
+	now := time.Now().UTC()
+	res, err := r.col.UpdateOne(
+		ctx,
+		bson.M{"_id": runID, "execution_state.pending": bson.M{"$ne": nil}},
+		bson.M{
+			"$set": bson.M{
+				"execution_state.pending.decision": decision,
+				"status":                           string(workflow.RunStatusRunning),
+				"last_checkpoint_at":               now,
+			},
+			"$unset": bson.M{
+				"lease_owner":      "",
+				"lease_expires_at": "",
+			},
+		},
+	)
+	if err != nil {
+		return err
+	}
+	_ = res
+	return nil
+}

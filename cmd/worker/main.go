@@ -29,6 +29,7 @@ func main() {
 	wr.RegisterWorker(worker.WorkflowRabbitMQWorker)
 	wr.RegisterWorker(worker.WorkflowRedisSubscribeWorker)
 	wr.RegisterWorker(worker.ReaperWorker)
+	wr.RegisterWorker(worker.WorkflowExecutorWorker)
 
 	if *list {
 		slog.Info("available workers", "names", strings.Join(wr.RegisteredWorkerNames(), ", "))

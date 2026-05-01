@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -113,9 +114,9 @@ type StepResult struct {
 // For for_each nodes:  Input = the full array; Item = the current iteration element.
 //                      Output is only populated after all iterations complete (not useful in body).
 type StepContext struct {
-	Input  any `json:"input"`
-	Output any `json:"output"`
-	Item   any `json:"item,omitempty"`
+	Input  any `bson:"input,omitempty"          json:"input"`
+	Output any `bson:"output,omitempty"         json:"output"`
+	Item   any `bson:"item,omitempty"           json:"item,omitempty"`
 }
 
 // runCtx is a per-run map from step name → StepContext.
@@ -283,10 +284,31 @@ func (e *WorkflowExecutor) preExecApproval(ctx context.Context, env *runEnv, nod
 	if !e.requireNodeApproval(node) {
 		return true, nil
 	}
+	// Pre-approved (resumed lease run): the resume path consumed an
+	// Approved decision from execution_state.pending and stamped this
+	// node ID. Skip the gate so the run proceeds. One-shot — clear
+	// the flag so a future re-visit of the same node ID would gate
+	// again.
+	if env.approvedNodeIDs != nil && env.approvedNodeIDs[node.ID] {
+		delete(env.approvedNodeIDs, node.ID)
+		return true, nil
+	}
 	if env.continueCh != nil {
 		// Live UI path — breakpoint-style pause.
 		env.waitAtBreakpoint(ctx, node)
 		return true, nil
+	}
+	// Lease-yield path: persist the gate mirror + dispatch OOB +
+	// return the yield sentinel. The BFS catches the sentinel,
+	// persists ExecutionState.Pending, releases the lease, and
+	// unwinds cleanly so the worker can pick up another run.
+	if env.yieldOnApproval && env.runID != "" && e.RunRepo != nil {
+		if err := e.persistPendingApprovalMirror(ctx, env, node, input); err != nil {
+			return false, err
+		}
+		env.pendingNodeID = node.ID
+		env.pendingInput = input
+		return false, errYieldForApproval
 	}
 	if env.runID != "" && e.RunRepo != nil {
 		decision, err := e.waitNodeApproval(ctx, env, node, input)
@@ -301,6 +323,47 @@ func (e *WorkflowExecutor) preExecApproval(ctx context.Context, env *runEnv, nod
 	slog.Warn("workflow: node approval gate skipped (no continueCh or RunRepo)",
 		"node", node.ID, "type", node.Type)
 	return true, nil
+}
+
+// persistPendingApprovalMirror writes the UI-facing PendingApprovalState
+// + emits the canvas pending event + dispatches the OOB notification
+// for a gated node. Used by the lease-yield branch of preExecApproval
+// to set up everything waitNodeApproval would do EXCEPT the in-process
+// channel block — the worker yields instead. Idempotent on repeated
+// calls (the next run-pass on resume has already cleared Pending).
+func (e *WorkflowExecutor) persistPendingApprovalMirror(ctx context.Context, env *runEnv, node Node, input any) error {
+	name, _ := node.Data["name"].(string)
+	if name == "" {
+		name = string(node.Type) + "_" + node.ID
+	}
+	pending := PendingApprovalState{
+		Kind:        "node",
+		NodeID:      node.ID,
+		NodeType:    node.Type,
+		NodeName:    name,
+		NodeInput:   input,
+		RequestedAt: time.Now().UTC(),
+		TokenID:     ulid.Make().String(),
+	}
+	if rec, gerr := e.RunRepo.Get(ctx, env.runID); gerr == nil {
+		rec.Status = RunStatusPendingApproval
+		rec.PendingApproval = &pending
+		if uerr := e.RunRepo.Update(ctx, rec); uerr != nil {
+			slog.Warn("workflow: persist pending_approval mirror (yield) failed", "run_id", env.runID, "node", node.ID, "err", uerr)
+		}
+	}
+	if env.events != nil {
+		env.events.Emit(stampNow(RunEvent{
+			Type:     EventNodeApprovalPending,
+			NodeID:   node.ID,
+			NodeType: node.Type,
+			RunID:    env.runID,
+		}))
+	}
+	if env.wf != nil {
+		e.dispatchApprovalNotification(*env.wf, env.runID, pending)
+	}
+	return nil
 }
 
 // waitNodeApproval blocks until the OOB approval registry receives a
@@ -530,16 +593,65 @@ type runEnv struct {
 	// "not executed". Skill tools / built-ins aren't in this map (no
 	// canvas node behind them) — those just stay invisible on rejection.
 	toolNameToNodeID map[string]string
+
+	// workerID is the lease-holding worker's identifier for runs
+	// executing under the Phase 3 lease-based path. Empty for legacy
+	// (in-process) runs. When non-empty, BFS checkpoints carry it so
+	// CheckpointExecutionState can reject the write if a different
+	// worker has reclaimed the lease.
+	workerID string
+	// checkpoint controls whether BFS persists ExecutionState after
+	// every node visit. True only for lease-held runs (worker loop);
+	// false for legacy in-process Run / RunResumable so the existing
+	// non-durable path stays free of Mongo round-trips.
+	checkpoint bool
+	// yieldOnApproval routes the approval gate through the persist-
+	// then-return sentinel path instead of blocking on the in-process
+	// approval channel. True only for lease-held runs. When true, a
+	// gate fire persists PendingExecutionGate, releases the lease,
+	// and surfaces errYieldForApproval up the call chain. When false
+	// (legacy), the gate blocks on an in-process channel exactly as
+	// before.
+	yieldOnApproval bool
+	// priorExecState carries the BFS snapshot loaded from the run
+	// record at resume time. RunWithEvents pre-populates the local
+	// queue + visited map from this when non-nil so the resumed run
+	// dispatches the next node, not the trigger.
+	priorExecState *ExecutionState
+	// approvedNodeIDs tracks node IDs whose approval gate has already
+	// been resolved (Approved=true) on a previous run-pass. Set from
+	// priorExecState.Pending when the resuming worker applies the
+	// pre-recorded decision; consulted by preExecApproval to skip the
+	// gate so the run proceeds without firing the gate a second time.
+	approvedNodeIDs map[string]bool
+	// pendingNodeID + pendingInput identify the gated node that the
+	// BFS must yield on (set by the gate handler before returning the
+	// sentinel). RunWithEvents reads these to write the persisted
+	// ExecutionState.Pending before unwinding the loop.
+	pendingNodeID string
+	pendingInput  any
 }
+
+// errYieldForApproval is the sentinel an executor under a lease
+// returns when an approval gate fires: instead of blocking the
+// worker on a Redis-backed channel (the legacy path), the gate
+// persists PendingExecutionGate, releases the lease, and unwinds
+// the BFS loop so the worker can pick up another run. The next
+// claim of this run will see ExecutionState.Pending != nil and
+// (once the user clicks Approve/Reject) Pending.Decision != nil,
+// at which point the worker applies the decision and continues.
+//
+// Not exported: only the executor package raises and matches it.
+var errYieldForApproval = errors.New("workflow: yield for approval gate")
 
 // ApprovalDecision is the user's per-tool-call verdict for the
 // require_approval gate. Routed from the live WS handler into
 // runEnv.approveCh; the agent loop matches it by ToolCallID before
 // firing or short-circuiting the tool dispatch.
 type ApprovalDecision struct {
-	ToolCallID string `json:"tool_call_id"`
-	Approved   bool   `json:"approved"`
-	Reason     string `json:"reason,omitempty"`
+	ToolCallID string `bson:"tool_call_id,omitempty" json:"tool_call_id"`
+	Approved   bool   `bson:"approved"               json:"approved"`
+	Reason     string `bson:"reason,omitempty"       json:"reason,omitempty"`
 }
 
 // isBreakpoint reports whether the given node ID is one of this run's
@@ -706,6 +818,27 @@ type RunOutcome struct {
 type resumeKeyT struct{}
 
 var resumeKey = resumeKeyT{}
+
+// checkpointKeyT is the ctx key for the lease-aware checkpoint bundle.
+// Set by RunFromCheckpoint (worker-loop entry path) so RunWithEvents
+// hydrates BFS state from the persisted ExecutionState + emits a
+// checkpoint after every node visit + routes approval gates through
+// the yield-and-release path. Distinct from resumeKey: that one
+// carries the legacy paused-agent snapshot used by the in-process
+// resume flow; this one carries the new durable-run state.
+type checkpointKeyT struct{}
+
+var checkpointKey = checkpointKeyT{}
+
+// checkpointBundle is the per-run lease + checkpoint context the
+// worker loop hands the executor when invoking RunFromCheckpoint.
+// RunWithEvents reads this off ctx and (when present) wires the
+// matching fields onto runEnv so the BFS loop knows it's executing
+// under a lease.
+type checkpointBundle struct {
+	workerID  string
+	priorState *ExecutionState
+}
 
 type resumeBundle struct {
 	runID         string
@@ -885,6 +1018,91 @@ func (e *WorkflowExecutor) RunResumable(ctx context.Context, wf Workflow, opts R
 	return RunOutcome{Steps: steps, RunID: bundle.runID, Status: status}, err
 }
 
+// RunFromCheckpoint is the lease-aware entry point used by the
+// durable-execution worker loop. The caller has already claimed the
+// run's lease via WorkflowRunStore.ClaimLease and (when restarting an
+// existing run) handed in the loaded WorkflowRun record so we don't
+// double-fetch.
+//
+// Behaviour:
+//   - Stashes a checkpointBundle on ctx so RunWithEvents wires
+//     env.workerID + env.checkpoint=true + env.yieldOnApproval=true
+//     and hydrates BFS state from rec.ExecutionState (when present).
+//   - On normal completion, persists the terminal status (success /
+//     error / paused-via-yield) the same way RunResumable does. The
+//     worker loop releases the lease on its way back to ClaimLease.
+//   - On approval-gate yield, RunWithEvents persists Pending +
+//     releases the lease internally; this method returns
+//     RunStatusPendingApproval so the worker loop knows not to mark
+//     terminal.
+//
+// Initial input is taken from rec.TriggerInput (already stamped on the
+// rec by whoever queued the run). No PreallocRunID etc — the run rec
+// is the source of truth.
+func (e *WorkflowExecutor) RunFromCheckpoint(ctx context.Context, wf Workflow, rec WorkflowRun, workerID string, emitter EventEmitter) (RunOutcome, error) {
+	bundle := &checkpointBundle{workerID: workerID, priorState: rec.ExecutionState}
+	ctx = context.WithValue(ctx, checkpointKey, bundle)
+	if emitter == nil {
+		emitter = e.Events
+	}
+	var steps []StepResult
+	var err error
+	if rec.TriggerInput != nil {
+		steps, err = e.RunWithEvents(ctx, wf, nil, emitter, rec.TriggerInput)
+	} else {
+		steps, err = e.RunWithEvents(ctx, wf, nil, emitter)
+	}
+	// Determine final status. Lease loss surfaces as ErrLeaseNotHeld
+	// — propagate so the worker loop can re-claim or move on.
+	if errors.Is(err, ErrLeaseNotHeld) {
+		return RunOutcome{Steps: steps, RunID: rec.ID, Status: rec.Status}, err
+	}
+	// Re-read rec to see whether the executor flipped status to
+	// pending_approval (yield path persists status itself).
+	cur, gerr := e.RunRepo.Get(ctx, rec.ID)
+	if gerr == nil && cur.Status == RunStatusPendingApproval {
+		return RunOutcome{Steps: steps, RunID: rec.ID, Status: RunStatusPendingApproval}, nil
+	}
+	status := RunStatusSuccess
+	stepErr := ""
+	if err != nil {
+		status = RunStatusError
+		stepErr = err.Error()
+	}
+	if status == RunStatusSuccess {
+		for _, s := range steps {
+			if s.Error != "" {
+				status = RunStatusError
+				stepErr = s.Error
+				break
+			}
+		}
+	}
+	if e.RunRepo != nil {
+		if rcur, rerr := e.RunRepo.Get(ctx, rec.ID); rerr == nil {
+			if rcur.Status != RunStatusPaused {
+				rcur.Status = status
+				now := time.Now().UTC()
+				rcur.FinishedAt = &now
+				rcur.Steps = steps
+				rcur.Usage = aggregateUsage(rcur.AgentTraces)
+				if stepErr != "" {
+					rcur.Error = stepErr
+				}
+				// Clear execution_state on terminal — no further
+				// resume needed; keeps the doc tidy.
+				rcur.ExecutionState = nil
+				if uerr := e.RunRepo.Update(ctx, rcur); uerr != nil {
+					slog.Warn("workflow: persist terminal state failed", "run_id", rec.ID, "err", uerr)
+				}
+			} else {
+				status = RunStatusPaused
+			}
+		}
+	}
+	return RunOutcome{Steps: steps, RunID: rec.ID, Status: status}, err
+}
+
 // RunWithEvents is Run with an explicit per-invocation EventEmitter. Pass
 // nil to disable streaming (still records traces via RunRepo as before).
 func (e *WorkflowExecutor) RunWithEvents(ctx context.Context, wf Workflow, stopAtIDs []string, emitter EventEmitter, initialInput ...any) ([]StepResult, error) {
@@ -994,7 +1212,116 @@ func (e *WorkflowExecutor) RunWithEvents(ctx context.Context, wf Workflow, stopA
 			}(rb.breakpointsCh)
 		}
 	}
+	// Checkpoint hydration: when called via RunFromCheckpoint (worker-
+	// loop entry) a checkpointBundle is stashed in ctx. If the run
+	// already has a persisted ExecutionState (mid-run resume), we
+	// replace the trigger-derived BFS frontier with the persisted
+	// queue + visited and apply any landed approval decision before
+	// re-entering the loop. Empty priorState (fresh lease-claimed
+	// run) falls through to the trigger path.
+	if cb, ok := ctx.Value(checkpointKey).(*checkpointBundle); ok && cb != nil {
+		env.workerID = cb.workerID
+		env.checkpoint = true
+		env.yieldOnApproval = true
+		env.priorExecState = cb.priorState
+		if cb.priorState != nil {
+			// Drop trigger queue; load persisted frontier instead.
+			queue = queue[:0]
+			for _, q := range cb.priorState.Queue {
+				queue = append(queue, queueItem{nodeID: q.NodeID, input: q.Input})
+			}
+			for _, id := range cb.priorState.Visited {
+				visited[id] = true
+			}
+			if cb.priorState.WfCtx != nil {
+				for k, v := range cb.priorState.WfCtx {
+					wfCtx[k] = v
+				}
+			}
+			// Apply pre-recorded approval decision (if any) before BFS:
+			// Approved → mark the gated node as pre-approved so the
+			// pre-exec gate doesn't re-fire. Rejected → emit the
+			// rejection step + follow the error edge so the run
+			// continues without re-running the gated node. Either
+			// way, clear Pending so a second yield doesn't replay
+			// the same gate.
+			if pg := cb.priorState.Pending; pg != nil && pg.Decision != nil {
+				if pg.Decision.Approved {
+					if env.approvedNodeIDs == nil {
+						env.approvedNodeIDs = map[string]bool{}
+					}
+					env.approvedNodeIDs[pg.NodeID] = true
+				} else {
+					gatedNode := byID[pg.NodeID]
+					rejErr := "rejected by user"
+					if pg.Decision.Reason != "" {
+						rejErr = "rejected by user: " + pg.Decision.Reason
+					}
+					emitter.Emit(stampNow(RunEvent{Type: EventStepStart, NodeID: pg.NodeID, NodeType: gatedNode.Type}))
+					emitter.Emit(stampNow(RunEvent{Type: EventStepDone, NodeID: pg.NodeID, NodeType: gatedNode.Type, Error: rejErr, IsError: true}))
+					results = append(results, StepResult{NodeID: pg.NodeID, NodeType: gatedNode.Type, Error: rejErr})
+					// Drop the gated node from the queue front; route
+					// any error-edge children in its place.
+					var nextQueue []queueItem
+					skipped := false
+					for _, q := range queue {
+						if !skipped && q.nodeID == pg.NodeID {
+							skipped = true
+							continue
+						}
+						nextQueue = append(nextQueue, q)
+					}
+					queue = nextQueue
+					for _, et := range adj[pg.NodeID] {
+						if et.sourceHandle == "error" && !visited[et.targetID] {
+							queue = append(queue, queueItem{nodeID: et.targetID, input: pg.Input})
+						}
+					}
+					visited[pg.NodeID] = true
+				}
+				// Clear local mirror so the post-BFS persist doesn't
+				// re-write the consumed gate.
+				cb.priorState.Pending = nil
+			}
+		}
+	}
 	ctx = context.WithValue(ctx, runEnvKey, env)
+
+	// snapshotExecState materialises the current BFS state into an
+	// ExecutionState ready for persistence. Visited is sorted-stable
+	// for deterministic bson encoding so two consecutive checkpoints
+	// without progress write the same document.
+	snapshotExecState := func() ExecutionState {
+		visIDs := make([]string, 0, len(visited))
+		for id := range visited {
+			visIDs = append(visIDs, id)
+		}
+		sort.Strings(visIDs)
+		qn := make([]QueuedNode, 0, len(queue))
+		for _, q := range queue {
+			qn = append(qn, QueuedNode{NodeID: q.nodeID, Input: q.input})
+		}
+		var ctxCopy map[string]StepContext
+		if len(wfCtx) > 0 {
+			ctxCopy = make(map[string]StepContext, len(wfCtx))
+			for k, v := range wfCtx {
+				ctxCopy[k] = v
+			}
+		}
+		return ExecutionState{Visited: visIDs, Queue: qn, WfCtx: ctxCopy}
+	}
+
+	// checkpointBFS persists the current BFS snapshot. Called after
+	// every node visit when a lease is held; no-op otherwise. Lease
+	// loss (ErrLeaseNotHeld) is fatal — we abort the loop, the worker
+	// releases its (lost) lease, and the next claim picks up the run.
+	checkpointBFS := func() error {
+		if !env.checkpoint || env.workerID == "" || e.RunRepo == nil || env.runID == "" {
+			return nil
+		}
+		state := snapshotExecState()
+		return e.RunRepo.CheckpointExecutionState(ctx, env.runID, env.workerID, state, results, "")
+	}
 
 	for len(queue) > 0 {
 		item := queue[0]
@@ -1024,10 +1351,29 @@ func (e *WorkflowExecutor) RunWithEvents(ctx context.Context, wf Workflow, stopA
 		}
 
 		// Pre-exec approval gate. Routes through preExecApproval which
-		// picks live-UI (continueCh) vs OOB (Redis) automatically.
+		// picks live-UI (continueCh) vs OOB-block-on-channel vs
+		// lease-yield automatically based on env wiring.
 		if e.requireNodeApproval(node) {
 			approved, gateErr := e.preExecApproval(ctx, env, node, item.input)
 			if gateErr != nil {
+				if errors.Is(gateErr, errYieldForApproval) {
+					// Yield: un-mark the gated node + push it back to
+					// the queue front so the resumed worker re-enters
+					// at the same step. Persist ExecutionState.Pending
+					// + release lease + return cleanly (not an error —
+					// the run is paused, not failed).
+					delete(visited, item.nodeID)
+					queue = append([]queueItem{item}, queue...)
+					if env.checkpoint && e.RunRepo != nil && env.workerID != "" && env.runID != "" {
+						state := snapshotExecState()
+						state.Pending = &PendingExecutionGate{NodeID: env.pendingNodeID, Input: env.pendingInput}
+						if perr := e.RunRepo.CheckpointExecutionState(ctx, env.runID, env.workerID, state, results, RunStatusPendingApproval); perr != nil {
+							return results, perr
+						}
+						_ = e.RunRepo.ReleaseLease(ctx, env.runID, env.workerID)
+					}
+					return results, nil
+				}
 				return results, gateErr
 			}
 			if !approved {
@@ -1136,6 +1482,16 @@ func (e *WorkflowExecutor) RunWithEvents(ctx context.Context, wf Workflow, stopA
 					queue = append(queue, queueItem{nodeID: et.targetID, input: output})
 				}
 			}
+		}
+
+		// Per-visit checkpoint (lease-held runs only). On lease loss
+		// abort the loop without writing further state.
+		if cerr := checkpointBFS(); cerr != nil {
+			if errors.Is(cerr, ErrLeaseNotHeld) {
+				slog.Warn("workflow: lease lost mid-BFS — abandoning run-pass", "run_id", env.runID, "node", node.ID, "worker", env.workerID)
+				return results, cerr
+			}
+			slog.Warn("workflow: BFS checkpoint write failed", "run_id", env.runID, "node", node.ID, "err", cerr)
 		}
 	}
 

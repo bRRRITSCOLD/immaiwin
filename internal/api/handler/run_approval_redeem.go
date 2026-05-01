@@ -121,13 +121,10 @@ func SubmitRunApprovalByToken(deps RunApprovalRedeemDeps) gin.HandlerFunc {
 			Approved:   req.Decision == "approve",
 			Reason:     req.Reason,
 		}
-		reg := workflow.NewApprovalRegistry(deps.Exec.ApprovalBroker)
-		count, perr := reg.Submit(c.Request.Context(), runID, decision)
-		if perr != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": perr.Error()})
+		if applied, derr := applyDecisionAcrossPaths(c, deps.Exec, deps.RunStore, rec, decision); derr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": derr.Error()})
 			return
-		}
-		if count == 0 {
+		} else if !applied {
 			cancelOrphanedApproval(c, deps.RunStore, rec)
 			return
 		}
