@@ -121,9 +121,29 @@ type QueuedNode struct {
 // internal yield record. They co-exist on the run record while a gate
 // is active and clear together when the decision lands.
 type PendingExecutionGate struct {
-	NodeID   string            `bson:"node_id" json:"node_id"`
-	Input    any               `bson:"input,omitempty" json:"input,omitempty"`
-	Decision *ApprovalDecision `bson:"decision,omitempty" json:"decision,omitempty"`
+	// Kind is "node" for a pre-exec node-approval gate (the gated
+	// node is `NodeID`) or "tool_call" for an agent's per-tool
+	// approval gate (the agent is `NodeID`; the gated tool call is
+	// captured by `ToolName` + `ToolCallID`). Empty defaults to
+	// "node" for backward-compat with pre-PR-71 records.
+	Kind string `bson:"kind,omitempty" json:"kind,omitempty"`
+	// NodeID identifies the gated node for kind="node" or the
+	// agent's node for kind="tool_call".
+	NodeID string `bson:"node_id" json:"node_id"`
+	// Input is the upstream input the gated node was about to
+	// receive. Unused for kind="tool_call" (agent's PausedAgent
+	// snapshot carries the conversation state instead).
+	Input any `bson:"input,omitempty" json:"input,omitempty"`
+	// ToolName is the LLM-facing tool name being gated. Set only
+	// when Kind="tool_call". Resume matches the next tool_call by
+	// name (NOT by ToolCallID — the model regenerates IDs on the
+	// re-prompt that follows yield).
+	ToolName string `bson:"tool_name,omitempty" json:"tool_name,omitempty"`
+	// ToolCallID is the model-generated id for the gated call at
+	// yield time. Persisted for audit; not used for matching on
+	// resume (see ToolName above).
+	ToolCallID string `bson:"tool_call_id,omitempty" json:"tool_call_id,omitempty"`
+	Decision   *ApprovalDecision `bson:"decision,omitempty" json:"decision,omitempty"`
 }
 
 // PendingApprovalState mirrors the active require_approval gate so the
