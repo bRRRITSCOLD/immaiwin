@@ -433,30 +433,122 @@ func (e *WorkflowExecutor) runAIAgent(ctx context.Context, node Node, data map[s
 					ToolArgs: rawJSONToAny(call.Input),
 				})
 
-				// Approval gate. Two paths:
-				//   1. Live UI (WS) — env.approveCh wired, decisions
+				// Approval gate. Three paths:
+				//   1. Pre-approved on resume — `env.approvedToolCallNames`
+				//      carries a decision keyed by tool name (set by the
+				//      checkpoint hydration when priorState.Pending was a
+				//      tool_call gate that resolved). One-shot consumption.
+				//   2. Live UI (WS) — env.approveCh wired, decisions
 				//      arrive over the open socket; fast path.
-				//   2. Out-of-band — server-side run (cron / event
-				//      trigger / eval) with no socket. Register a
-				//      channel in the executor's ApprovalRegistry +
-				//      persist `pending_approval` state on the run
-				//      record. The HTTP endpoint
-				//      `POST /runs/:id/approval` looks up the channel
-				//      and pushes the decision in. The eval run path
-				//      still auto-approves: evals must complete
-				//      deterministically without a human in the loop.
+				//   3. Out-of-band — server-side run with no socket.
+				//      Under a lease (env.yieldOnApproval=true), the
+				//      gate persists the agent's PausedAgent + writes
+				//      execution_state.pending{kind:"tool_call"} +
+				//      releases the lease + bubbles errYieldForApproval.
+				//      The legacy fall-through (no lease) still
+				//      registers a Redis channel + blocks via
+				//      ApprovalRegistry — covers eval runs / pre-PR-71
+				//      paths until those migrate.
 				gateActive := false
 				approveCh := env.approveCh
 				oob := false
+				if requireApproval && env.approvedToolCallNames != nil {
+					if pre, ok := env.approvedToolCallNames[call.Name]; ok && pre != nil {
+						// Apply pre-recorded decision. Skip gate. One-
+						// shot — clear the entry so a subsequent call
+						// with the same name re-gates.
+						delete(env.approvedToolCallNames, call.Name)
+						if !pre.Approved {
+							// Mirror the rejection path below: emit a
+							// rejected tool_result + skip dispatch.
+							reason := pre.Reason
+							if reason == "" {
+								reason = "rejected by user"
+							}
+							obs := "tool call rejected by user: " + reason
+							results = append(results, llm.ToolResultBlock(call.ID, obs, true))
+							emitTrace(TraceEvent{
+								Type:     "tool_result",
+								Iter:     iter,
+								ToolName: call.Name,
+								ToolID:   call.ID,
+								Result:   obs,
+								IsError:  true,
+							})
+							continue
+						}
+						// Approved: fall through to dispatch as if no gate.
+						goto dispatchTool
+					}
+				}
 				if requireApproval {
 					if approveCh != nil {
 						gateActive = true
+					} else if env.yieldOnApproval && env.runID != "" && e.RunRepo != nil {
+						// Lease-yield path. Mirror the UI-facing
+						// PendingApproval (existing top-level field
+						// the /runs UI reads) + dispatch OOB
+						// notification + persist agent's mid-loop
+						// snapshot (with trailing assistant turn
+						// popped so resume can re-prompt cleanly) +
+						// stash gate identity on env so the BFS
+						// yield handler builds the right
+						// PendingExecutionGate. Then return
+						// errYieldForApproval to bubble up.
+						pending := PendingApprovalState{
+							Kind:        "tool_call",
+							AgentNodeID: node.ID,
+							Iter:        iter,
+							ToolCallID:  call.ID,
+							ToolName:    call.Name,
+							ToolArgs:    rawJSONToAny(call.Input),
+							RequestedAt: time.Now().UTC(),
+							TokenID:     ulid.Make().String(),
+						}
+						if rec, gerr := e.RunRepo.Get(ctx, env.runID); gerr == nil {
+							rec.Status = RunStatusPendingApproval
+							rec.PendingApproval = &pending
+							msgsForResume := messages
+							if n := len(msgsForResume); n > 0 && msgsForResume[n-1].Role == llm.RoleAssistant {
+								msgsForResume = msgsForResume[:n-1]
+							}
+							rec.PausedAgent = &AgentPauseState{
+								AgentNodeID:  node.ID,
+								Iter:         iter,
+								Messages:     msgsForResume,
+								UsageTotal:   usageTotal,
+								Trace:        traceEvents,
+								SystemPrompt: systemPrompt,
+								UserInput:    userInputText,
+							}
+							if uerr := e.RunRepo.Update(ctx, rec); uerr != nil {
+								slog.Warn("ai_agent: persist tool_call yield failed", "run_id", env.runID, "err", uerr)
+							}
+							if env.events != nil {
+								env.events.Emit(stampNow(RunEvent{
+									Type:     EventAgentToolApproval,
+									NodeID:   node.ID,
+									NodeType: node.Type,
+									Iter:     iter,
+									ToolName: call.Name,
+									ToolID:   call.ID,
+									ToolArgs: rawJSONToAny(call.Input),
+									RunID:    env.runID,
+								}))
+							}
+							if env.wf != nil {
+								e.dispatchApprovalNotification(*env.wf, env.runID, pending)
+							}
+						}
+						env.pendingNodeID = node.ID
+						env.pendingKind = "tool_call"
+						env.pendingToolName = call.Name
+						env.pendingToolCallID = call.ID
+						return nil, errYieldForApproval
 					} else if env.runID != "" && e.RunRepo != nil {
-						// OOB path — register channel + persist pending
-						// state so the HTTP endpoint can resolve it.
-						// Cross-process: agent runs in worker, HTTP
-						// endpoint runs in api → registry uses Redis
-						// pub/sub under the hood.
+						// Legacy OOB block-on-Redis-channel path. Used
+						// by eval runs + any pre-PR-71 caller that
+						// doesn't go through the lease worker.
 						oobReg := e.approvalRegistryFor()
 						if oobReg != nil {
 							oob = true
@@ -480,8 +572,6 @@ func (e *WorkflowExecutor) runAIAgent(ctx context.Context, node Node, data map[s
 							if uerr := e.RunRepo.Update(ctx, rec); uerr != nil {
 								slog.Warn("ai_agent: persist pending_approval failed", "run_id", env.runID, "err", uerr)
 							}
-							// Dispatch OOB channel notification (Stage 2).
-							// Best-effort + async — see dispatchApprovalNotification.
 							if env.wf != nil {
 								e.dispatchApprovalNotification(*env.wf, env.runID, pending)
 							}
@@ -489,6 +579,7 @@ func (e *WorkflowExecutor) runAIAgent(ctx context.Context, node Node, data map[s
 					}
 					// else: no live ch + no RunRepo → can't OOB; auto-approve.
 				}
+			dispatchTool:
 				if gateActive {
 					if env.events != nil {
 						env.events.Emit(stampNow(RunEvent{

@@ -641,6 +641,24 @@ type runEnv struct {
 	// ExecutionState.Pending before unwinding the loop.
 	pendingNodeID string
 	pendingInput  any
+	// pendingKind is "node" (default — pre-exec node-approval gate)
+	// or "tool_call" (agent's per-tool approval gate). yieldForApproval
+	// reads this to populate PendingExecutionGate.Kind so the resume
+	// path knows whether to apply the decision to a node or to the
+	// agent's next tool_call by name.
+	pendingKind string
+	// pendingToolName + pendingToolCallID are populated only when
+	// pendingKind="tool_call". ToolName is what resume matches against
+	// (model regenerates ToolCallIDs on the re-prompt). ToolCallID is
+	// captured for audit.
+	pendingToolName   string
+	pendingToolCallID string
+	// approvedToolCallNames carries pre-recorded per-tool approval
+	// decisions hydrated from priorState.Pending on resume. The
+	// agent's per-tool gate consults this map by tool name; a hit
+	// applies the saved decision and removes the entry (one-shot
+	// consumption so a re-fire doesn't reuse an old approval).
+	approvedToolCallNames map[string]*ApprovalDecision
 }
 
 // errYieldForApproval is the sentinel an executor under a lease
@@ -1292,6 +1310,21 @@ func (e *WorkflowExecutor) RunWithEvents(ctx context.Context, wf Workflow, stopA
 			// way, clear Pending so a second yield doesn't replay
 			// the same gate.
 			if pg := cb.priorState.Pending; pg != nil && pg.Decision != nil {
+				// Per-tool approval (agent gated on a specific tool
+				// call). The resumed agent re-prompts the LLM with the
+				// trimmed-trailing-assistant message stack and emits a
+				// FRESH tool_call (new ID, same name + same intent
+				// because input messages are identical). We match on
+				// ToolName, not ToolCallID.
+				if pg.Kind == "tool_call" && pg.ToolName != "" {
+					if env.approvedToolCallNames == nil {
+						env.approvedToolCallNames = map[string]*ApprovalDecision{}
+					}
+					decisionCopy := *pg.Decision
+					env.approvedToolCallNames[pg.ToolName] = &decisionCopy
+					cb.priorState.Pending = nil
+					goto pendingApplied
+				}
 				if pg.Decision.Approved {
 					if env.approvedNodeIDs == nil {
 						env.approvedNodeIDs = map[string]bool{}
@@ -1329,6 +1362,7 @@ func (e *WorkflowExecutor) RunWithEvents(ctx context.Context, wf Workflow, stopA
 				// re-write the consumed gate.
 				cb.priorState.Pending = nil
 			}
+		pendingApplied:
 		}
 	}
 	ctx = context.WithValue(ctx, runEnvKey, env)
@@ -1382,7 +1416,17 @@ func (e *WorkflowExecutor) RunWithEvents(ctx context.Context, wf Workflow, stopA
 		queue = append([]queueItem{item}, queue...)
 		if env.checkpoint && e.RunRepo != nil && env.workerID != "" && env.runID != "" {
 			state := snapshotExecState()
-			state.Pending = &PendingExecutionGate{NodeID: env.pendingNodeID, Input: env.pendingInput}
+			kind := env.pendingKind
+			if kind == "" {
+				kind = "node"
+			}
+			state.Pending = &PendingExecutionGate{
+				Kind:       kind,
+				NodeID:     env.pendingNodeID,
+				Input:      env.pendingInput,
+				ToolName:   env.pendingToolName,
+				ToolCallID: env.pendingToolCallID,
+			}
 			if perr := e.RunRepo.CheckpointExecutionState(ctx, env.runID, env.workerID, state, results, RunStatusPendingApproval); perr != nil {
 				return perr
 			}
