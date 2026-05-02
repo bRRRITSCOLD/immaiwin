@@ -26,6 +26,7 @@ import {
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '~/components/ui/table'
 import type { Workflow } from '~/components/workflow/useWorkflowStore'
 import { api, ApiError } from '~/lib/api'
+import { useAuthStore } from '~/lib/auth-store'
 
 export const Route = createFileRoute('/evals')({
   component: EvalsPage,
@@ -142,12 +143,14 @@ function EvalsPage() {
     return out
   }, [workflows])
 
+  // See workflows.tsx for the rationale; same gate pattern.
+  const meLoaded = useAuthStore((s) => s.me !== undefined && s.me !== null)
   const loadWorkflows = useCallback(async () => {
     try {
       const wfs = await api.get<Workflow[]>('/api/v1/workflows')
       setWorkflows(wfs)
     } catch {
-      toast.error('Failed to load workflows')
+      toast.error('Failed to load workflows', { id: 'load-workflows' })
     }
   }, [])
 
@@ -156,14 +159,15 @@ function EvalsPage() {
       const data = await api.get<Eval[]>('/api/v1/evals')
       setEvals(data ?? [])
     } catch (err) {
-      toast.error(err instanceof ApiError ? err.message : 'Network error loading evals')
+      toast.error(err instanceof ApiError ? err.message : 'Network error loading evals', { id: 'load-evals' })
     }
   }, [])
 
   useEffect(() => {
+    if (!meLoaded) return
     loadWorkflows()
     loadEvals()
-  }, [loadWorkflows, loadEvals])
+  }, [meLoaded, loadWorkflows, loadEvals])
 
   const selected = useMemo(
     () => evals.find((e) => e.id === selectedID) ?? null,

@@ -9,6 +9,7 @@ import type { Node, Edge } from '@xyflow/react'
 import { useQueryState } from '~/hooks/useQueryState'
 import { useWorkflowRunStream } from '~/hooks/useWorkflowRunStream'
 import { api, ApiError } from '~/lib/api'
+import { useAuthStore } from '~/lib/auth-store'
 
 export const Route = createFileRoute('/workflows')({
   component: WorkflowsPage,
@@ -138,6 +139,14 @@ function WorkflowsPage() {
     [setActive, setQsWorkflow],
   )
 
+  // Gate API loads on the auth store reporting a logged-in user.
+  // Without this, a cold visit to /workflows fires the fetch in
+  // parallel with AuthGate's /auth/me hydration; the protected
+  // endpoint 401s and the user lands on /login with a confusing
+  // "failed to load workflows" toast already on screen. AuthGate
+  // owns the redirect; routes own their data fetch — but only
+  // once auth is known.
+  const meLoaded = useAuthStore((s) => s.me !== undefined && s.me !== null)
   const load = useCallback(async () => {
     try {
       const [wfs, conns] = await Promise.all([
@@ -147,13 +156,16 @@ function WorkflowsPage() {
       setWorkflows(wfs)
       setConnections(conns)
     } catch {
-      toast.error('Failed to load workflows')
+      // Stable id dedupes Strict-Mode double-mount + any concurrent
+      // re-render causing the same toast twice on screen.
+      toast.error('Failed to load workflows', { id: 'load-workflows' })
     }
   }, [setWorkflows, setConnections])
 
   useEffect(() => {
+    if (!meLoaded) return
     load()
-  }, [load])
+  }, [meLoaded, load])
 
   // Restore from URL on load, or auto-select first
   useEffect(() => {
