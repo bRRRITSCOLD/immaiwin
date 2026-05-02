@@ -25,6 +25,7 @@ import {
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '~/components/ui/table'
 import type { Workflow } from '~/components/workflow/useWorkflowStore'
 import { api, ApiError } from '~/lib/api'
+import { useAuthStore } from '~/lib/auth-store'
 
 export const Route = createFileRoute('/runs')({
   component: RunsPage,
@@ -189,12 +190,14 @@ function RunsPage() {
     return out
   }, [workflows])
 
+  // See workflows.tsx for the rationale; same gate pattern.
+  const meLoaded = useAuthStore((s) => s.me !== undefined && s.me !== null)
   const loadWorkflows = useCallback(async () => {
     try {
       const wfs = await api.get<Workflow[]>('/api/v1/workflows')
       setWorkflows(wfs)
     } catch {
-      toast.error('Failed to load workflows')
+      toast.error('Failed to load workflows', { id: 'load-workflows' })
     }
   }, [])
 
@@ -216,12 +219,14 @@ function RunsPage() {
   }, [workflowFilter, statusFilter, limit, skip])
 
   useEffect(() => {
+    if (!meLoaded) return
     loadWorkflows()
-  }, [loadWorkflows])
+  }, [meLoaded, loadWorkflows])
 
   useEffect(() => {
+    if (!meLoaded) return
     loadRuns()
-  }, [loadRuns])
+  }, [meLoaded, loadRuns])
 
   const cancelRun = useCallback(
     async (id: string) => {
