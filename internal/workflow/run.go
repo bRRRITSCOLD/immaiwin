@@ -204,6 +204,24 @@ type AgentPauseState struct {
 	Trace        []TraceEvent  `bson:"trace"         json:"trace"`
 	SystemPrompt string        `bson:"system_prompt" json:"system_prompt"`
 	UserInput    string        `bson:"user_input"    json:"user_input"`
+
+	// Partial-tool-dispatch state. Populated when the agent yielded
+	// mid-iter on an approval gate while it had multiple parallel
+	// tool_uses to dispatch. On resume the agent skips the Chat call
+	// (the assistant turn is already in Messages — un-popped this
+	// time) and continues the dispatch loop at PartialNextIndex,
+	// re-using the partial results already collected. Without this
+	// state, a multi-tool-use response gets the model re-prompted on
+	// every gate, producing the same parallel tool_uses on each
+	// resume → first call's gate fires again → infinite loop.
+	//
+	// Empty (nil + 0) on a normal pause where the agent yielded BEFORE
+	// dispatching anything from the current iter (or paused via
+	// stop_at). The agent loop's resume path then takes the standard
+	// Chat-then-dispatch flow.
+	PartialToolCalls   []llm.Content `bson:"partial_tool_calls,omitempty"   json:"partial_tool_calls,omitempty"`
+	PartialToolResults []llm.Content `bson:"partial_tool_results,omitempty" json:"partial_tool_results,omitempty"`
+	PartialNextIndex   int           `bson:"partial_next_index,omitempty"   json:"partial_next_index,omitempty"`
 }
 
 // RunStatus is the lifecycle state of a workflow run.

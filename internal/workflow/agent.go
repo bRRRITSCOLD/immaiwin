@@ -238,11 +238,32 @@ func (e *WorkflowExecutor) runAIAgent(ctx context.Context, node Node, data map[s
 		usageTotal  UsageTotal
 		traceEvents []TraceEvent
 	)
+	// Partial-tool-dispatch resume: when the agent yielded mid-iter
+	// because an approval gate fired AFTER one or more parallel
+	// tool_uses had already been dispatched, the saved PausedAgent
+	// carries the assistant turn (un-popped), the partially-collected
+	// tool_results, and the index where dispatch was interrupted. On
+	// resume we skip the provider.Chat call for that iter and pick up
+	// the dispatch loop where it left off — without this, re-prompting
+	// produces the same parallel tool_uses and the gate fires again on
+	// the first call → infinite approve-and-yield loop.
+	var (
+		partialResumeActive  bool
+		partialToolCalls     []llm.Content
+		partialToolResults   []llm.Content
+		partialNextIndex     int
+	)
 	if env.resumeAgentState != nil && env.resumeAgentState.AgentNodeID == node.ID {
 		startIter = env.resumeAgentState.Iter
 		messages = env.resumeAgentState.Messages
 		usageTotal = env.resumeAgentState.UsageTotal
 		traceEvents = env.resumeAgentState.Trace
+		if len(env.resumeAgentState.PartialToolCalls) > 0 {
+			partialResumeActive = true
+			partialToolCalls = env.resumeAgentState.PartialToolCalls
+			partialToolResults = env.resumeAgentState.PartialToolResults
+			partialNextIndex = env.resumeAgentState.PartialNextIndex
+		}
 		// Use the saved prompt/input verbatim — the workflow-author may
 		// have edited the agent node between pause and resume, but loop
 		// state must be deterministic for the LLM.
@@ -337,44 +358,79 @@ func (e *WorkflowExecutor) runAIAgent(ctx context.Context, node Node, data map[s
 			}
 		}
 
-		req := llm.ChatRequest{
-			Model:       model,
-			System:      systemPrompt,
-			Messages:    messages,
-			Tools:       catalog.Defs(),
-			MaxTokens:   maxTokens,
-			Temperature: temperature,
+		// Partial-resume: skip the Chat call. Messages already contain
+		// the original assistant turn; we have the toolCalls list +
+		// the partially-completed results + the index to resume at.
+		// Synthesise a ChatResponse with stop_reason=tool_use so the
+		// switch below routes correctly. Token / usage tracking
+		// already accounted for the original Chat call (counted in
+		// usageTotal at original-iter time).
+		var resp *llm.ChatResponse
+		var startCallIdx int
+		var preDispatchedResults []llm.Content
+		if partialResumeActive && iter == startIter {
+			// Reconstruct the assistant content the original iter
+			// emitted by reading the trailing turn off `messages`.
+			// On a clean resume the trailing turn is the assistant
+			// turn with the tool_use blocks the user saw on the
+			// approval gate. If the trailing turn isn't an assistant
+			// turn the saved state is malformed — fall back to a
+			// fresh Chat call rather than crash.
+			lastIdx := len(messages) - 1
+			if lastIdx < 0 || messages[lastIdx].Role != llm.RoleAssistant {
+				slog.Warn("ai_agent: partial resume state corrupt (trailing turn not assistant); falling back to fresh Chat", "run_id", env.runID, "iter", iter)
+				partialResumeActive = false
+			} else {
+				resp = &llm.ChatResponse{
+					StopReason: llm.StopReasonToolUse,
+					Content:    messages[lastIdx].Content,
+				}
+				startCallIdx = partialNextIndex
+				preDispatchedResults = partialToolResults
+				partialResumeActive = false // one-shot
+			}
 		}
+		if resp == nil {
+			req := llm.ChatRequest{
+				Model:       model,
+				System:      systemPrompt,
+				Messages:    messages,
+				Tools:       catalog.Defs(),
+				MaxTokens:   maxTokens,
+				Temperature: temperature,
+			}
 
-		resp, err := provider.Chat(loopCtx, req)
-		if err != nil {
-			return nil, fmt.Errorf("ai_agent: llm chat (iter %d): %w", iter, err)
+			var cerr error
+			resp, cerr = provider.Chat(loopCtx, req)
+			if cerr != nil {
+				return nil, fmt.Errorf("ai_agent: llm chat (iter %d): %w", iter, cerr)
+			}
+
+			usageTotal.Add(resp.Usage.InputTokens, resp.Usage.OutputTokens, resp.Usage.CostUSD)
+			emitTrace(TraceEvent{
+				Type: "llm_call",
+				Iter: iter,
+				Text: extractText(resp.Content),
+				Usage: &UsageTotal{
+					InputTokens:  resp.Usage.InputTokens,
+					OutputTokens: resp.Usage.OutputTokens,
+					TotalTokens:  resp.Usage.TotalTokens,
+					CostUSD:      resp.Usage.CostUSD,
+				},
+				Provider: provider.Name(),
+				Model:    resp.Model,
+			})
+
+			// (Cost cap enforcement is the PRE-CALL block above this iter's
+			// `provider.Chat`. The post-call slot is intentionally empty so
+			// iter N's call can't be blocked retroactively after billing —
+			// iter N+1's pre-call check catches the breach using the freshly-
+			// updated usageTotal.)
+
+			// Always append the assistant turn so the LLM sees its own emission
+			// when we feed back observations.
+			messages = append(messages, llm.Message{Role: llm.RoleAssistant, Content: resp.Content})
 		}
-
-		usageTotal.Add(resp.Usage.InputTokens, resp.Usage.OutputTokens, resp.Usage.CostUSD)
-		emitTrace(TraceEvent{
-			Type: "llm_call",
-			Iter: iter,
-			Text: extractText(resp.Content),
-			Usage: &UsageTotal{
-				InputTokens:  resp.Usage.InputTokens,
-				OutputTokens: resp.Usage.OutputTokens,
-				TotalTokens:  resp.Usage.TotalTokens,
-				CostUSD:      resp.Usage.CostUSD,
-			},
-			Provider: provider.Name(),
-			Model:    resp.Model,
-		})
-
-		// (Cost cap enforcement is the PRE-CALL block above this iter's
-		// `provider.Chat`. The post-call slot is intentionally empty so
-		// iter N's call can't be blocked retroactively after billing —
-		// iter N+1's pre-call check catches the breach using the freshly-
-		// updated usageTotal.)
-
-		// Always append the assistant turn so the LLM sees its own emission
-		// when we feed back observations.
-		messages = append(messages, llm.Message{Role: llm.RoleAssistant, Content: resp.Content})
 
 		switch resp.StopReason {
 		case llm.StopReasonEndTurn:
@@ -415,7 +471,18 @@ func (e *WorkflowExecutor) runAIAgent(ctx context.Context, node Node, data map[s
 
 		case llm.StopReasonToolUse:
 			// Execute every tool_use block in the assistant turn.
-			toolCalls := filterToolUseBlocks(resp.Content)
+			// On partial resume we trust the saved toolCalls list +
+			// already-collected results + start-index instead of
+			// re-extracting from the synthetic resp; that way a
+			// model that re-emitted a different shape can't shift
+			// the dispatch out from under the already-completed
+			// ones.
+			var toolCalls []llm.Content
+			if startCallIdx > 0 && len(partialToolCalls) > 0 {
+				toolCalls = partialToolCalls
+			} else {
+				toolCalls = filterToolUseBlocks(resp.Content)
+			}
 			if len(toolCalls) == 0 {
 				return nil, fmt.Errorf("ai_agent: stop_reason=tool_use but no tool_use blocks (iter %d)", iter)
 			}
@@ -424,7 +491,13 @@ func (e *WorkflowExecutor) runAIAgent(ctx context.Context, node Node, data map[s
 			}
 
 			results := make([]llm.Content, 0, len(toolCalls))
-			for _, call := range toolCalls {
+			if startCallIdx > 0 && len(preDispatchedResults) > 0 {
+				results = append(results, preDispatchedResults...)
+			}
+			for callIdx, call := range toolCalls {
+				if callIdx < startCallIdx {
+					continue
+				}
 				emitTrace(TraceEvent{
 					Type:     "tool_call",
 					Iter:     iter,
@@ -508,18 +581,24 @@ func (e *WorkflowExecutor) runAIAgent(ctx context.Context, node Node, data map[s
 						if rec, gerr := e.RunRepo.Get(ctx, env.runID); gerr == nil {
 							rec.Status = RunStatusPendingApproval
 							rec.PendingApproval = &pending
-							msgsForResume := messages
-							if n := len(msgsForResume); n > 0 && msgsForResume[n-1].Role == llm.RoleAssistant {
-								msgsForResume = msgsForResume[:n-1]
-							}
+							// Mid-iter yield: keep the assistant turn
+							// on Messages so resume can replay the
+							// dispatch from `callIdx` without re-
+							// prompting the model. partialNextIndex
+							// is the call we're about to gate (the
+							// one not yet run); previously-completed
+							// dispatches are already in `results`.
 							rec.PausedAgent = &AgentPauseState{
-								AgentNodeID:  node.ID,
-								Iter:         iter,
-								Messages:     msgsForResume,
-								UsageTotal:   usageTotal,
-								Trace:        traceEvents,
-								SystemPrompt: systemPrompt,
-								UserInput:    userInputText,
+								AgentNodeID:        node.ID,
+								Iter:               iter,
+								Messages:           messages,
+								UsageTotal:         usageTotal,
+								Trace:              traceEvents,
+								SystemPrompt:       systemPrompt,
+								UserInput:          userInputText,
+								PartialToolCalls:   toolCalls,
+								PartialToolResults: append([]llm.Content{}, results...),
+								PartialNextIndex:   callIdx,
 							}
 							if uerr := e.RunRepo.Update(ctx, rec); uerr != nil {
 								slog.Warn("ai_agent: persist tool_call yield failed", "run_id", env.runID, "err", uerr)
@@ -700,30 +779,30 @@ func (e *WorkflowExecutor) runAIAgent(ctx context.Context, node Node, data map[s
 				// re-dispatching the same tool call.
 				if errors.Is(err, errYieldForApproval) {
 					if env.runID != "" && e.RunRepo != nil {
-						// Pop the trailing assistant turn (the one that
-						// emitted the tool_calls we partially dispatched
-						// before the gate fired). On resume the LLM
-						// re-emits a fresh response with the same input
-						// state — costs one extra Chat call but avoids
-						// feeding the model its own un-completed
-						// tool_calls (most providers either error or
-						// emit incoherent output in that shape). Cost
-						// trade-off documented in
-						// .private/ai-automation/DURABLE-EXECUTION-PLAN.md
-						// (long-tail edge cases section).
-						msgsForResume := messages
-						if n := len(msgsForResume); n > 0 && msgsForResume[n-1].Role == llm.RoleAssistant {
-							msgsForResume = msgsForResume[:n-1]
-						}
+						// Mid-iter yield: keep the assistant turn on
+						// Messages and snapshot the partial-dispatch
+						// state (toolCalls + already-collected
+						// results + the index of the call that
+						// fired the gate). On resume the agent
+						// skips the Chat call and continues
+						// dispatching from PartialNextIndex.
+						// Without this snapshot, multi-tool-use
+						// responses re-prompt the model on every
+						// gate, the model emits the same parallel
+						// tool_uses, the first call's gate fires
+						// again → infinite approve-and-yield loop.
 						if rec, gerr := e.RunRepo.Get(ctx, env.runID); gerr == nil {
 							rec.PausedAgent = &AgentPauseState{
-								AgentNodeID:  node.ID,
-								Iter:         iter,
-								Messages:     msgsForResume,
-								UsageTotal:   usageTotal,
-								Trace:        traceEvents,
-								SystemPrompt: systemPrompt,
-								UserInput:    userInputText,
+								AgentNodeID:        node.ID,
+								Iter:               iter,
+								Messages:           messages,
+								UsageTotal:         usageTotal,
+								Trace:              traceEvents,
+								SystemPrompt:       systemPrompt,
+								UserInput:          userInputText,
+								PartialToolCalls:   toolCalls,
+								PartialToolResults: append([]llm.Content{}, results...),
+								PartialNextIndex:   callIdx,
 							}
 							if uerr := e.RunRepo.Update(ctx, rec); uerr != nil {
 								slog.Warn("ai_agent: persist paused-agent on yield failed", "run_id", env.runID, "agent", node.ID, "err", uerr)
