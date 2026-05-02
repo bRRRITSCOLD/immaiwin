@@ -297,11 +297,14 @@ func (e *WorkflowExecutor) preExecApproval(ctx context.Context, env *runEnv, nod
 	}
 	// Pre-approved (resumed lease run): the resume path consumed an
 	// Approved decision from execution_state.pending and stamped this
-	// node ID. Skip the gate so the run proceeds. One-shot — clear
-	// the flag so a future re-visit of the same node ID would gate
-	// again.
+	// node ID. Skip the gate so the run proceeds. DON'T delete the
+	// flag here: in nested-gate scenarios (agent's per-tool gate +
+	// this node-level gate on the same call) a subsequent yield
+	// might re-enter this code on the next resume; deleting now
+	// would cause the second resume to re-fire the gate. Iter-end
+	// cleanup in the agent loop clears env.approvedNodeIDs after
+	// a successful full tool dispatch.
 	if env.approvedNodeIDs != nil && env.approvedNodeIDs[node.ID] {
-		delete(env.approvedNodeIDs, node.ID)
 		return true, nil
 	}
 	if env.continueCh != nil {
