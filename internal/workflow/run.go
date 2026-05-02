@@ -222,6 +222,22 @@ type AgentPauseState struct {
 	PartialToolCalls   []llm.Content `bson:"partial_tool_calls,omitempty"   json:"partial_tool_calls,omitempty"`
 	PartialToolResults []llm.Content `bson:"partial_tool_results,omitempty" json:"partial_tool_results,omitempty"`
 	PartialNextIndex   int           `bson:"partial_next_index,omitempty"   json:"partial_next_index,omitempty"`
+
+	// ApprovedToolCallNames + ApprovedNodeIDs preserve approval flags
+	// across yield-resume cycles inside a SINGLE tool dispatch. The
+	// nested-gate case (per-tool `require_approval` on the agent +
+	// `require_node_approval` on the as_tool target) yielded twice
+	// per call: once for the per-tool gate, once for the node-level
+	// gate. Pre-fix, the per-tool flag was deleted on consume, so the
+	// second yield's resume couldn't see it and the per-tool gate
+	// fired again → infinite approve-and-yield ping-pong between the
+	// two gates. Persisting both flag maps via PausedAgent + checking
+	// them WITHOUT delete keeps the approval sticky for the duration
+	// of the dispatch. The agent loop clears both maps at iter-end
+	// (after the `tool_results` are appended) so a later iter
+	// emitting the same name / node ID gets a fresh gate.
+	ApprovedToolCallNames map[string]ApprovalDecision `bson:"approved_tool_call_names,omitempty" json:"approved_tool_call_names,omitempty"`
+	ApprovedNodeIDs       []string                    `bson:"approved_node_ids,omitempty"        json:"approved_node_ids,omitempty"`
 }
 
 // RunStatus is the lifecycle state of a workflow run.

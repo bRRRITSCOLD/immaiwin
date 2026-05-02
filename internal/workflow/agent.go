@@ -238,6 +238,35 @@ func (e *WorkflowExecutor) runAIAgent(ctx context.Context, node Node, data map[s
 		usageTotal  UsageTotal
 		traceEvents []TraceEvent
 	)
+	// snapshotApprovedFlags captures env.approvedToolCallNames +
+	// env.approvedNodeIDs into the bson-friendly shapes
+	// AgentPauseState carries so a yield can persist them. Saved
+	// approvals stay sticky across yield-resume cycles within the
+	// same dispatch (cleared at iter-end). Closures rebind on every
+	// call so we always read the current env state.
+	snapshotApprovedToolCallNames := func() map[string]ApprovalDecision {
+		if len(env.approvedToolCallNames) == 0 {
+			return nil
+		}
+		out := make(map[string]ApprovalDecision, len(env.approvedToolCallNames))
+		for k, v := range env.approvedToolCallNames {
+			if v != nil {
+				out[k] = *v
+			}
+		}
+		return out
+	}
+	snapshotApprovedNodeIDs := func() []string {
+		if len(env.approvedNodeIDs) == 0 {
+			return nil
+		}
+		out := make([]string, 0, len(env.approvedNodeIDs))
+		for k := range env.approvedNodeIDs {
+			out = append(out, k)
+		}
+		return out
+	}
+
 	// Partial-tool-dispatch resume: when the agent yielded mid-iter
 	// because an approval gate fired AFTER one or more parallel
 	// tool_uses had already been dispatched, the saved PausedAgent
@@ -263,6 +292,34 @@ func (e *WorkflowExecutor) runAIAgent(ctx context.Context, node Node, data map[s
 			partialToolCalls = env.resumeAgentState.PartialToolCalls
 			partialToolResults = env.resumeAgentState.PartialToolResults
 			partialNextIndex = env.resumeAgentState.PartialNextIndex
+		}
+		// Restore per-call approval flags so a nested-gate cascade
+		// (per-tool then node-level on the same call) doesn't re-fire
+		// the first gate on the second yield's resume. The
+		// checkpoint hydration (executor) already adds the freshly-
+		// landed decision into env.approvedToolCallNames /
+		// env.approvedNodeIDs from priorState.Pending; merge with the
+		// PausedAgent-saved state so previously-approved gates within
+		// this dispatch stay approved.
+		if len(env.resumeAgentState.ApprovedToolCallNames) > 0 {
+			if env.approvedToolCallNames == nil {
+				env.approvedToolCallNames = map[string]*ApprovalDecision{}
+			}
+			for name, dec := range env.resumeAgentState.ApprovedToolCallNames {
+				if _, already := env.approvedToolCallNames[name]; already {
+					continue
+				}
+				cp := dec
+				env.approvedToolCallNames[name] = &cp
+			}
+		}
+		if len(env.resumeAgentState.ApprovedNodeIDs) > 0 {
+			if env.approvedNodeIDs == nil {
+				env.approvedNodeIDs = map[string]bool{}
+			}
+			for _, id := range env.resumeAgentState.ApprovedNodeIDs {
+				env.approvedNodeIDs[id] = true
+			}
 		}
 		// Use the saved prompt/input verbatim — the workflow-author may
 		// have edited the agent node between pause and resume, but loop
@@ -306,13 +363,15 @@ func (e *WorkflowExecutor) runAIAgent(ctx context.Context, node Node, data map[s
 				if rec, gerr := e.RunRepo.Get(ctx, env.runID); gerr == nil {
 					rec.Status = RunStatusPaused
 					rec.PausedAgent = &AgentPauseState{
-						AgentNodeID:  node.ID,
-						Iter:         iter,
-						Messages:     messages,
-						UsageTotal:   usageTotal,
-						Trace:        traceEvents,
-						SystemPrompt: systemPrompt,
-						UserInput:    userInputText,
+						AgentNodeID:           node.ID,
+						Iter:                  iter,
+						Messages:              messages,
+						UsageTotal:            usageTotal,
+						Trace:                 traceEvents,
+						SystemPrompt:          systemPrompt,
+						UserInput:             userInputText,
+						ApprovedToolCallNames: snapshotApprovedToolCallNames(),
+						ApprovedNodeIDs:       snapshotApprovedNodeIDs(),
 					}
 					if uerr := e.RunRepo.Update(ctx, rec); uerr != nil {
 						slog.Warn("ai_agent: persist paused state failed", "run_id", env.runID, "err", uerr)
@@ -527,10 +586,16 @@ func (e *WorkflowExecutor) runAIAgent(ctx context.Context, node Node, data map[s
 				oob := false
 				if requireApproval && env.approvedToolCallNames != nil {
 					if pre, ok := env.approvedToolCallNames[call.Name]; ok && pre != nil {
-						// Apply pre-recorded decision. Skip gate. One-
-						// shot — clear the entry so a subsequent call
-						// with the same name re-gates.
-						delete(env.approvedToolCallNames, call.Name)
+						// Apply pre-recorded decision. Skip gate.
+						// DON'T delete the entry: a cascading
+						// node-level gate (require_node_approval on
+						// the as_tool target) might yield mid-
+						// dispatch on the same call. If we delete
+						// here, the second yield's resume re-fires
+						// THIS gate again because the flag is gone
+						// → infinite per-tool ↔ node-level ping-pong.
+						// Iter-end cleanup clears both maps after a
+						// successful full dispatch.
 						if !pre.Approved {
 							// Mirror the rejection path below: emit a
 							// rejected tool_result + skip dispatch.
@@ -589,16 +654,18 @@ func (e *WorkflowExecutor) runAIAgent(ctx context.Context, node Node, data map[s
 							// one not yet run); previously-completed
 							// dispatches are already in `results`.
 							rec.PausedAgent = &AgentPauseState{
-								AgentNodeID:        node.ID,
-								Iter:               iter,
-								Messages:           messages,
-								UsageTotal:         usageTotal,
-								Trace:              traceEvents,
-								SystemPrompt:       systemPrompt,
-								UserInput:          userInputText,
-								PartialToolCalls:   toolCalls,
-								PartialToolResults: append([]llm.Content{}, results...),
-								PartialNextIndex:   callIdx,
+								AgentNodeID:           node.ID,
+								Iter:                  iter,
+								Messages:              messages,
+								UsageTotal:            usageTotal,
+								Trace:                 traceEvents,
+								SystemPrompt:          systemPrompt,
+								UserInput:             userInputText,
+								PartialToolCalls:      toolCalls,
+								PartialToolResults:    append([]llm.Content{}, results...),
+								PartialNextIndex:      callIdx,
+								ApprovedToolCallNames: snapshotApprovedToolCallNames(),
+								ApprovedNodeIDs:       snapshotApprovedNodeIDs(),
 							}
 							if uerr := e.RunRepo.Update(ctx, rec); uerr != nil {
 								slog.Warn("ai_agent: persist tool_call yield failed", "run_id", env.runID, "err", uerr)
@@ -793,16 +860,18 @@ func (e *WorkflowExecutor) runAIAgent(ctx context.Context, node Node, data map[s
 						// again → infinite approve-and-yield loop.
 						if rec, gerr := e.RunRepo.Get(ctx, env.runID); gerr == nil {
 							rec.PausedAgent = &AgentPauseState{
-								AgentNodeID:        node.ID,
-								Iter:               iter,
-								Messages:           messages,
-								UsageTotal:         usageTotal,
-								Trace:              traceEvents,
-								SystemPrompt:       systemPrompt,
-								UserInput:          userInputText,
-								PartialToolCalls:   toolCalls,
-								PartialToolResults: append([]llm.Content{}, results...),
-								PartialNextIndex:   callIdx,
+								AgentNodeID:           node.ID,
+								Iter:                  iter,
+								Messages:              messages,
+								UsageTotal:            usageTotal,
+								Trace:                 traceEvents,
+								SystemPrompt:          systemPrompt,
+								UserInput:             userInputText,
+								PartialToolCalls:      toolCalls,
+								PartialToolResults:    append([]llm.Content{}, results...),
+								PartialNextIndex:      callIdx,
+								ApprovedToolCallNames: snapshotApprovedToolCallNames(),
+								ApprovedNodeIDs:       snapshotApprovedNodeIDs(),
 							}
 							if uerr := e.RunRepo.Update(ctx, rec); uerr != nil {
 								slog.Warn("ai_agent: persist paused-agent on yield failed", "run_id", env.runID, "agent", node.ID, "err", uerr)
@@ -882,6 +951,14 @@ func (e *WorkflowExecutor) runAIAgent(ctx context.Context, node Node, data map[s
 			}
 
 			messages = append(messages, llm.ToolResultMessage(results))
+			// Iter dispatch fully completed without yielding. Clear
+			// per-call approval flags so a re-occurrence of the same
+			// tool name / node ID in a LATER iter requires fresh
+			// approval. Within-iter persistence is preserved by
+			// PausedAgent across yield-resume cycles; this clear is
+			// the across-iter scope reset.
+			env.approvedToolCallNames = nil
+			env.approvedNodeIDs = nil
 			continue
 
 		case llm.StopReasonMaxTokens:
