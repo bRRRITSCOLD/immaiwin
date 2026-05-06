@@ -89,22 +89,38 @@ func (r *WorkflowRunRepository) CountInFlightForWorkflow(ctx context.Context, wo
 }
 
 // SweepAbandonedNonTerminal flips every non-terminal run older than
-// `olderThan` into a terminal `error` state with the supplied reason.
-// Used by the API boot path to recover from a hard crash / restart
-// while runs were mid-flight: the in-process goroutines that held
-// their state are gone, so the runs are unrecoverable. Returns the
-// number of records flipped.
+// `olderThan` into a terminal `error` state with the supplied reason —
+// EXCEPT runs that the lease pattern can recover. Used by the API boot
+// path to clean up the legacy in-process tier (cron / rabbitmq /
+// redis-sub triggers pre-3.4, sync /run requests pre-3.3) where the
+// goroutines holding execution state are gone after a restart.
+//
+// Lease-aware gates (PR 3.5):
+//
+//  1. Skip runs with a live lease (`lease_owner != ""` AND
+//     `lease_expires_at > now`). Another worker is heartbeating the
+//     run; flipping it would race with `CheckpointExecutionState` /
+//     `ExtendLease` and corrupt durable state.
+//  2. Skip runs whose lease has expired but `execution_state != nil`.
+//     The next `ClaimLease` tick will rehydrate from the checkpoint
+//     and resume; flipping would discard committed BFS progress.
+//
+// What still gets flipped after the gates: legacy in-process runs
+// (no lease ever taken, no execution_state ever written) that died
+// when their owning pid restarted. Those are unrecoverable — the
+// frontier + visited set + named-output map only ever lived in RAM.
 //
 // `olderThan` is a safety window so a parallel API process that's
 // legitimately running fresh work doesn't get its records stomped.
 // Anything started AFTER (boot_time - olderThan) is assumed to belong
 // to a still-alive process and skipped. Single-pod deployments can
 // pass a near-zero window; multi-pod deployments need wider margins.
-//
-// Permanent fix is Phase 3 lease-based execution (Mongo-tracked
-// run-owner leases that auto-renew); this method is the stop-gap.
+// With the lease gates in (1) + (2) above, the window is now defense
+// in depth rather than primary safety; still wired in case some
+// future trigger source bypasses both lease + execution_state.
 func (r *WorkflowRunRepository) SweepAbandonedNonTerminal(ctx context.Context, reason string, olderThan time.Duration) (int64, error) {
-	cutoff := time.Now().UTC().Add(-olderThan)
+	now := time.Now().UTC()
+	cutoff := now.Add(-olderThan)
 	filter := bson.M{
 		"status": bson.M{"$in": []string{
 			string(workflow.RunStatusQueued),
@@ -113,8 +129,26 @@ func (r *WorkflowRunRepository) SweepAbandonedNonTerminal(ctx context.Context, r
 			string(workflow.RunStatusPendingApproval),
 		}},
 		"queued_at": bson.M{"$lt": cutoff},
+		// Gate 1: skip live-lease runs. A run is live-leased when
+		// lease_owner is set AND lease_expires_at is in the future.
+		// The negation (sweep target) is the union: no owner OR
+		// expired deadline. We express it as $or so a single missing
+		// field short-circuits the candidate into the sweep set.
+		"$or": []bson.M{
+			{"lease_owner": bson.M{"$in": []any{nil, ""}}},
+			{"lease_owner": bson.M{"$exists": false}},
+			{"lease_expires_at": bson.M{"$lte": now}},
+			{"lease_expires_at": bson.M{"$exists": false}},
+		},
+		// Gate 2: skip durable runs (execution_state set). The next
+		// claim tick will rehydrate. `execution_state` is unset on
+		// boot for legacy in-process runs and on terminal cleanup
+		// for everything else, so this filter equals "the legacy
+		// orphan tier and nothing else." `{field: nil}` matches both
+		// missing-field and null-field per Mongo's documented quirk —
+		// covers legacy rows that never had the field written.
+		"execution_state": nil,
 	}
-	now := time.Now().UTC()
 	update := bson.M{
 		"$set": bson.M{
 			"status":      string(workflow.RunStatusError),
