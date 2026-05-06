@@ -256,7 +256,7 @@ func NewServer(
 	// Webhook trigger — POST /api/v1/webhooks/:slug runs the workflow
 	// whose trigger node has matching webhook_slug. Body becomes the
 	// trigger output (JSON or raw string).
-	r.POST("/api/v1/webhooks/:slug", handler.HandleWebhook(wfStore, wfExec))
+	r.POST("/api/v1/webhooks/:slug", handler.HandleWebhook(wfStore, wfRunStore, rc))
 
 	// Workflow templates — bundled at compile time, served read-only.
 	r.GET("/api/v1/workflow_templates", handler.ListWorkflowTemplates())

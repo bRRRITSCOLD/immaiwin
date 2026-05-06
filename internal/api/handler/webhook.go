@@ -2,21 +2,39 @@
 // service POSTs to /api/v1/webhooks/:slug. The slug is configured per
 // trigger node (`trigger_type=webhook`, `webhook_slug=<value>`); the
 // handler scans workflow docs for a matching slug, decodes the request
-// body as the trigger's input, and runs the workflow synchronously
-// (returning the run ID and final status). Optional HMAC SHA-256
-// auth: when the trigger node has `webhook_secret` set, the request
-// must include `X-Webhook-Signature: sha256=<hex>` over the raw body.
+// body as the trigger's input, and dispatches the run via the lease
+// worker (PR 3.4b — durable execution unification).
+//
+// Sync vs async response shape is selected by `?wait=`:
+//
+//	wait=false  (default)  → 202 Accepted + {run_id, status:"queued"}.
+//	                         Async clients poll /api/v1/workflow_runs/:id.
+//	                         Matches the GitHub / Stripe / Slack webhook
+//	                         contract where senders have short timeouts +
+//	                         retry on non-2xx, and a long workflow or
+//	                         approval gate would otherwise deadlock the
+//	                         request.
+//	wait=true              → block until the run hits a terminal status
+//	                         (success / error / cancelled), then return
+//	                         200 + {run_id, status, error?}. Use for
+//	                         Slack slash commands or "AI agent reply in
+//	                         same response" patterns. Caller's HTTP
+//	                         timeout governs how long we wait.
+//
+// Optional HMAC SHA-256 auth: when the trigger node has
+// `webhook_secret` set, the request must include
+// `X-Webhook-Signature: sha256=<hex>` over the raw body.
 //
 // Distinct from the workflow run WS endpoint — that one streams events
-// to the canvas. Webhooks have no live UI; we run server-side just
-// like a cron-driven invocation. Approval gates (`require_node_approval`
-// / agent's `require_approval`) flow through the OOB Redis channel.
+// to the canvas. Webhooks have no live UI; the lease worker handles
+// execution + the agent's OOB approval gates resolve via
+// `POST /api/v1/workflow_runs/:id/approval` exactly like any other
+// trigger source.
 
 package handler
 
 import (
 	"bytes"
-	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -24,25 +42,34 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/bRRRITSCOLD/burrow/internal/workflow"
 	"github.com/gin-gonic/gin"
 	"github.com/oklog/ulid/v2"
 )
 
+const (
+	// webhookWaitPollInterval is the poll cadence when the caller
+	// asked for synchronous behaviour. 200ms keeps round-trip overhead
+	// low for fast workflows (most webhooks finish in <1s) without
+	// pounding Mongo for slow ones — a 30s run hits the DB ~150 times.
+	webhookWaitPollInterval = 200 * time.Millisecond
+)
+
 // HandleWebhook handles POST /api/v1/webhooks/:slug. Looks up the
-// matching workflow, parses the body (JSON or raw), kicks off
-// RunResumable. Returns the run record so callers can poll
-// /workflow_runs/:id for status if they need it.
-func HandleWebhook(store WorkflowStore, exec *workflow.WorkflowExecutor) gin.HandlerFunc {
+// matching workflow, parses the body, dispatches via the lease worker
+// (queued WorkflowRun record + Redis wakeup), and either returns the
+// run_id immediately (async) or polls until terminal (sync).
+func HandleWebhook(store WorkflowStore, runStore workflow.WorkflowRunStore, rc workflow.WakeupPublisher) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		slug := c.Param("slug")
 		if slug == "" {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "slug required"})
 			return
 		}
-		if exec == nil {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "executor not configured"})
+		if runStore == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "run store not configured"})
 			return
 		}
 
@@ -111,9 +138,9 @@ func HandleWebhook(store WorkflowStore, exec *workflow.WorkflowExecutor) gin.Han
 		}
 
 		// Decode body as JSON when content-type matches; otherwise
-		// pass the raw string through. Mirrors the http_request
-		// node's `parse_json` behaviour so trigger-side handling
-		// stays predictable.
+		// pass the raw string through. Mirrors the http_request node's
+		// `parse_json` behaviour so trigger-side handling stays
+		// predictable.
 		var input any
 		ct := strings.ToLower(c.GetHeader("Content-Type"))
 		if strings.Contains(ct, "application/json") && len(raw) > 0 {
@@ -127,56 +154,87 @@ func HandleWebhook(store WorkflowStore, exec *workflow.WorkflowExecutor) gin.Han
 			input = string(raw)
 		}
 
-		// Sync vs async dispatch. Default = async (fire-and-forget,
-		// 202 Accepted, run_id only) — matches the GitHub/Stripe/Slack
-		// webhook contract where senders have their own short timeouts
-		// + retry on non-2xx, and approval gates / long workflows
-		// would otherwise deadlock the request. Opt into sync via
-		// `?wait=true` for use cases like Slack slash commands or
-		// "AI agent reply in same response" patterns.
+		// Persist the run rec + publish wakeup. Same contract every
+		// other trigger source uses post-PR-3.4: the lease worker
+		// claims, ClaimLease atomically promotes queued → running,
+		// BFS executes, terminal cleanup writes status.
+		runID := ulid.Make().String()
+		now := time.Now().UTC()
+		rec := workflow.WorkflowRun{
+			ID:           runID,
+			WorkflowID:   matched.ID,
+			TenantID:     matched.TenantID,
+			QueuedAt:     now,
+			Status:       workflow.RunStatusQueued,
+			Params:       matched.Params,
+			TriggerInput: input,
+		}
+		if _, cerr := runStore.Create(c.Request.Context(), rec); cerr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "create run: " + cerr.Error()})
+			return
+		}
+		// Best-effort wakeup; nil rc = no Redis wired = lease worker
+		// picks the run up on its next claim tick instead.
+		workflow.PublishWakeup(c.Request.Context(), rc)
+
 		wait := strings.EqualFold(c.Query("wait"), "true") || c.Query("wait") == "1"
 		if !wait {
-			// Pre-allocate run ID so we can return it in the 202
-			// response. RunResumable seeds the WorkflowRun record
-			// with this ID via opts.PreallocRunID. Detach from
-			// request ctx so the run survives after we reply.
-			runID := ulid.Make().String()
-			runCtx := context.Background()
-			wfCopy := *matched
-			go func() {
-				_, _ = exec.RunResumable(runCtx, wfCopy, workflow.RunOpts{
-					Input:         input,
-					PreallocRunID: runID,
-				})
-				// Run record already captures status/error via
-				// RunResumable's persist — async clients poll
-				// /workflow_runs/:id.
-			}()
 			c.JSON(http.StatusAccepted, gin.H{
 				"run_id": runID,
-				"status": "accepted",
+				"status": string(workflow.RunStatusQueued),
 				"detail": "Run dispatched async. Poll /api/v1/workflow_runs/:id for status. Use ?wait=true on this endpoint to block until completion instead.",
 			})
 			return
 		}
 
-		outcome, err := exec.RunResumable(c.Request.Context(), *matched, workflow.RunOpts{
-			Input: input,
-		})
-		if err != nil {
-			// RunResumable already persists the failed run; return
-			// the run_id + the error so the caller can fetch full
-			// detail via /workflow_runs/:id.
-			c.JSON(http.StatusOK, gin.H{
-				"run_id": outcome.RunID,
-				"status": string(outcome.Status),
-				"error":  err.Error(),
-			})
-			return
+		// Sync path — poll until terminal or the request context
+		// dies. The caller's HTTP timeout governs total wait; we
+		// don't impose a server-side deadline beyond what gin already
+		// enforces. Read-after-write on Mongo is consistent enough
+		// for this poll cadence on a single-node deployment.
+		ticker := time.NewTicker(webhookWaitPollInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-c.Request.Context().Done():
+				// Caller hung up before terminal; the run keeps
+				// running on the worker. We still return what we
+				// know so the client can poll later by run_id.
+				c.JSON(http.StatusAccepted, gin.H{
+					"run_id": runID,
+					"status": "accepted",
+					"detail": "Caller context cancelled before run reached terminal; run continues on the worker. Poll /api/v1/workflow_runs/:id for final status.",
+				})
+				return
+			case <-ticker.C:
+				cur, gerr := runStore.Get(c.Request.Context(), runID)
+				if gerr != nil {
+					// Run was deleted out from under us, or the
+					// reaper flipped it; surface the error and let
+					// the caller decide.
+					c.JSON(http.StatusInternalServerError, gin.H{
+						"run_id": runID,
+						"error":  "fetch run: " + gerr.Error(),
+					})
+					return
+				}
+				switch cur.Status {
+				case workflow.RunStatusSuccess,
+					workflow.RunStatusError,
+					workflow.RunStatusCancelled:
+					body := gin.H{
+						"run_id": runID,
+						"status": string(cur.Status),
+					}
+					if cur.Error != "" {
+						body["error"] = cur.Error
+					}
+					c.JSON(http.StatusOK, body)
+					return
+				}
+				// Anything else (queued / running / pending_approval
+				// / paused) — keep waiting.
+			}
 		}
-		c.JSON(http.StatusOK, gin.H{
-			"run_id": outcome.RunID,
-			"status": string(outcome.Status),
-		})
 	}
 }
