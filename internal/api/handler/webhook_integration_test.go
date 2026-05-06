@@ -43,6 +43,12 @@ type WebhookIntegrationSuite struct {
 	dbName      string
 	redis       *rediss.Client
 	httpSrv     *httptest.Server
+
+	// Lease-worker harness — the webhook handler now dispatches via
+	// the lease path (PR 3.4b), so a wait=true test that doesn't have
+	// a worker would hang until ctx timeout.
+	workerCancel context.CancelFunc
+	workerDone   chan struct{}
 }
 
 func TestWebhookIntegrationSuite(t *testing.T) {
@@ -89,9 +95,10 @@ func (s *WebhookIntegrationSuite) SetupSuite() {
 	s.Require().NoError(err)
 
 	wfExec := &workflow.WorkflowExecutor{
-		HTTPClient: &http.Client{Timeout: 10 * time.Second},
-		DB:         mongodb.NewMongoClient(s.db),
-		RunRepo:    runRepo,
+		HTTPClient:     &http.Client{Timeout: 10 * time.Second},
+		DB:             mongodb.NewMongoClient(s.db),
+		RunRepo:        runRepo,
+		ApprovalBroker: s.redis,
 	}
 
 	apiCfg := config.APIConfig{Host: "127.0.0.1", Port: 0, BaseURL: "http://127.0.0.1"}
@@ -113,9 +120,26 @@ func (s *WebhookIntegrationSuite) SetupSuite() {
 		nil,
 	)
 	s.httpSrv = httptest.NewServer(srv.Handler())
+
+	// In-test workflow-executor worker so dispatched runs (the
+	// webhook handler now persists queued + publishes wakeup, then
+	// — on ?wait=true — polls for terminal). Without the worker the
+	// wait-true tests would hang until ctx timeout. Cancelled in
+	// TearDownSuite.
+	workerCtx, workerCancel := context.WithCancel(context.Background())
+	s.workerCancel = workerCancel
+	s.workerDone = make(chan struct{})
+	go func() {
+		defer close(s.workerDone)
+		runInTestExecutorWorker(workerCtx, "webhook-test-executor", runRepo, wfRepo, wfExec)
+	}()
 }
 
 func (s *WebhookIntegrationSuite) TearDownSuite() {
+	if s.workerCancel != nil {
+		s.workerCancel()
+		<-s.workerDone
+	}
 	if s.httpSrv != nil {
 		s.httpSrv.Close()
 	}
@@ -282,4 +306,104 @@ func (s *WebhookIntegrationSuite) TestWebhook_UnknownSlug_Returns404() {
 	s.Require().NoError(err)
 	defer resp.Body.Close() //nolint:errcheck
 	s.Equal(http.StatusNotFound, resp.StatusCode)
+}
+
+// TestWebhook_DefaultAsync_DispatchesViaLeaseAndCompletes is the
+// PR 3.4b regression test for the async path: the handler must
+// persist the run as `queued`, return 202 + run_id immediately, and
+// the lease worker must claim + run it to terminal `success`. Pre-
+// 3.4b the handler ran the workflow inline via RunResumable and the
+// lease worker never saw the record.
+func (s *WebhookIntegrationSuite) TestWebhook_DefaultAsync_DispatchesViaLeaseAndCompletes() {
+	suffix := time.Now().UnixNano()
+	client := s.authedClient(fmt.Sprintf("alice-wh-async-%d@example.com", suffix))
+	slug := fmt.Sprintf("hook-async-%d", suffix)
+	s.putWebhookWorkflow(client, fmt.Sprintf("wf-wh-async-%d", suffix), slug, "")
+
+	body := []byte(`{"event":"async-test"}`)
+	resp, err := http.Post(s.httpSrv.URL+"/api/v1/webhooks/"+slug,
+		"application/json", bytes.NewReader(body))
+	s.Require().NoError(err)
+	defer resp.Body.Close() //nolint:errcheck
+	s.Equal(http.StatusAccepted, resp.StatusCode, "default path is async — expect 202")
+	var out struct {
+		RunID  string `json:"run_id"`
+		Status string `json:"status"`
+	}
+	s.Require().NoError(json.NewDecoder(resp.Body).Decode(&out))
+	s.Require().NotEmpty(out.RunID)
+	s.Equal("queued", out.Status, "run record persists with status=queued; ClaimLease promotes to running on first claim")
+
+	// Poll the run record until terminal — the in-test executor
+	// worker must claim + run + complete.
+	deadline := time.Now().Add(5 * time.Second)
+	var lastStatus string
+	for time.Now().Before(deadline) {
+		getResp, gerr := client.Get(s.httpSrv.URL + "/api/v1/workflow_runs/" + out.RunID)
+		if gerr == nil && getResp.StatusCode == http.StatusOK {
+			var detail struct {
+				Run struct {
+					Status string `json:"status"`
+				} `json:"run"`
+			}
+			_ = json.NewDecoder(getResp.Body).Decode(&detail)
+			_ = getResp.Body.Close()
+			lastStatus = detail.Run.Status
+			if lastStatus == "success" {
+				return
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	s.FailNowf("run never reached terminal", "run %s last status %q", out.RunID, lastStatus)
+}
+
+// TestWebhook_WaitTrue_BlocksUntilTerminalAndReturnsOutcome verifies
+// the synchronous opt-in: `?wait=true` makes the handler poll until
+// the lease worker drives the run terminal, then returns 200 with
+// the final status. Previously this was implemented inline via
+// RunResumable; PR 3.4b reroutes through the lease worker without
+// changing the response contract.
+func (s *WebhookIntegrationSuite) TestWebhook_WaitTrue_BlocksUntilTerminalAndReturnsOutcome() {
+	suffix := time.Now().UnixNano()
+	client := s.authedClient(fmt.Sprintf("alice-wh-wait-%d@example.com", suffix))
+	slug := fmt.Sprintf("hook-wait-%d", suffix)
+	s.putWebhookWorkflow(client, fmt.Sprintf("wf-wh-wait-%d", suffix), slug, "")
+
+	body := []byte(`{"event":"sync-test"}`)
+	req, _ := http.NewRequest(http.MethodPost,
+		s.httpSrv.URL+"/api/v1/webhooks/"+slug+"?wait=true", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	s.Require().NoError(err)
+	defer resp.Body.Close() //nolint:errcheck
+	s.Equal(http.StatusOK, resp.StatusCode, "wait=true blocks until terminal; expect 200")
+
+	var out struct {
+		RunID  string `json:"run_id"`
+		Status string `json:"status"`
+		Error  string `json:"error,omitempty"`
+	}
+	s.Require().NoError(json.NewDecoder(resp.Body).Decode(&out))
+	s.NotEmpty(out.RunID)
+	s.Equal("success", out.Status, "trigger-only workflow lands success — sync response carries the terminal status")
+	s.Empty(out.Error)
+}
+
+// TestWebhook_WaitFalseExplicit_Returns202 is the redundant-but-
+// document-it variant: explicitly setting `?wait=false` matches the
+// no-query default. Lets clients lock in the async contract on the
+// URL even when the default is what they want.
+func (s *WebhookIntegrationSuite) TestWebhook_WaitFalseExplicit_Returns202() {
+	suffix := time.Now().UnixNano()
+	client := s.authedClient(fmt.Sprintf("alice-wh-wfalse-%d@example.com", suffix))
+	slug := fmt.Sprintf("hook-wfalse-%d", suffix)
+	s.putWebhookWorkflow(client, fmt.Sprintf("wf-wh-wfalse-%d", suffix), slug, "")
+
+	body := []byte(`{}`)
+	resp, err := http.Post(s.httpSrv.URL+"/api/v1/webhooks/"+slug+"?wait=false",
+		"application/json", bytes.NewReader(body))
+	s.Require().NoError(err)
+	defer resp.Body.Close() //nolint:errcheck
+	s.Equal(http.StatusAccepted, resp.StatusCode)
 }
