@@ -15,6 +15,7 @@ import (
 	"github.com/bRRRITSCOLD/burrow/internal/rediss"
 	"github.com/bRRRITSCOLD/burrow/internal/skills"
 	"github.com/bRRRITSCOLD/burrow/internal/workflow"
+	"github.com/oklog/ulid/v2"
 	"github.com/robfig/cron/v3"
 	mongoDriver "go.mongodb.org/mongo-driver/v2/mongo"
 )
@@ -106,6 +107,11 @@ func (w *workflowCronWorker) Run(ctx context.Context) error {
 		return fmt.Errorf("workflow-cron: create workflow repo: %w", err)
 	}
 
+	runRepo, err := mongodb.NewWorkflowRunRepository(ctx, mc.DB())
+	if err != nil {
+		return fmt.Errorf("workflow-cron: create run repo: %w", err)
+	}
+
 	var encKey []byte
 	if trimmed := strings.TrimSpace(cfg.EncryptionKey); trimmed != "" {
 		encKey, err = hex.DecodeString(trimmed)
@@ -156,8 +162,9 @@ func (w *workflowCronWorker) Run(ctx context.Context) error {
 			return
 		}
 		defer syncing.Store(false)
-		syncSchedules(ctx, repo, exec, scheduler, tracked, running)
+		syncSchedules(ctx, repo, runRepo, rc, scheduler, tracked, running)
 	}
+	_ = exec // exec retained for future migrations (eval / ad-hoc dispatch). Cron itself no longer executes runs in-process — it dispatches via the lease worker.
 
 	runSync()
 
@@ -177,7 +184,8 @@ func (w *workflowCronWorker) Run(ctx context.Context) error {
 func syncSchedules(
 	ctx context.Context,
 	repo *mongodb.WorkflowRepository,
-	exec *workflow.WorkflowExecutor,
+	runRepo *mongodb.WorkflowRunRepository,
+	rc *rediss.Client,
 	scheduler *cron.Cron,
 	tracked map[string]trackedEntry,
 	running *sync.Map,
@@ -219,8 +227,9 @@ func syncSchedules(
 
 		wfID, wfName, skip := wfID, info.name, info.skipIfRunning
 		entryID, err := scheduler.AddFunc(info.expr, func() {
-			runCronWorkflow(ctx, repo, exec, wfID, wfName, skip, running)
+			dispatchCronTick(ctx, repo, runRepo, rc, wfID, wfName, skip)
 		})
+		_ = running // legacy in-memory dedupe; lease path uses Mongo CountInFlightForWorkflow
 		if err != nil {
 			slog.Error("workflow-cron: schedule failed", "workflow", wfID, "name", wfName, "expr", info.expr, "err", err)
 			delete(tracked, wfID)
@@ -245,47 +254,65 @@ func syncSchedules(
 	}
 }
 
-func runCronWorkflow(
+// dispatchCronTick is the lease-path replacement for the legacy
+// runCronWorkflow inline executor. Each cron tick:
+//   1. (skip_if_running) consults Mongo for any in-flight run of this
+//      workflow. If found, log + skip — the previous run finishes
+//      naturally, the next tick gets its own dispatch.
+//   2. Loads the workflow doc (validation only — the worker re-loads
+//      its own copy on claim, so this fetch just confirms the
+//      workflow still exists and the trigger config hasn't been
+//      rewritten in the last few seconds).
+//   3. Persists a queued WorkflowRun record + publishes a Redis
+//      wakeup. The lease worker picks it up on next claim tick.
+//
+// Replaces the in-process RunResumable call so cron-triggered runs
+// are durable, restart-safe, and multi-pod-coordinated alongside
+// every other dispatch path. Per the durable-execution plan PR 3.4a.
+func dispatchCronTick(
 	ctx context.Context,
-	repo *mongodb.WorkflowRepository,
-	exec *workflow.WorkflowExecutor,
+	wfRepo *mongodb.WorkflowRepository,
+	runRepo *mongodb.WorkflowRunRepository,
+	rc *rediss.Client,
 	wfID, wfName string,
 	skipIfRunning bool,
-	running *sync.Map,
 ) {
 	if skipIfRunning {
-		if _, loaded := running.LoadOrStore(wfID, true); loaded {
-			slog.Info("workflow-cron: skipped (still running)", "workflow", wfID, "name", wfName)
+		// Mongo is the source of truth — survives this worker's
+		// restart, unlike the prior sync.Map. Any non-terminal run
+		// for this workflow blocks the next tick.
+		count, err := runRepo.CountInFlightForWorkflow(ctx, wfID)
+		if err != nil {
+			slog.Warn("workflow-cron: count-in-flight failed; dispatching anyway", "workflow", wfID, "err", err)
+		} else if count > 0 {
+			slog.Info("workflow-cron: skipped (still running)", "workflow", wfID, "name", wfName, "in_flight", count)
 			return
 		}
-		defer running.Delete(wfID)
 	}
 
-	start := time.Now()
-
-	wf, err := repo.GetByID(ctx, wfID)
+	wf, err := wfRepo.GetByID(ctx, wfID)
 	if err != nil {
 		slog.Error("workflow-cron: fetch workflow", "workflow", wfID, "name", wfName, "err", err)
 		return
 	}
 
-	// Use RunResumable so the run gets persisted into WorkflowRunStore
-	// (visible in /runs UI) and the agent's OOB approval gate has a
-	// runID to register against.
-	outcome, err := exec.RunResumable(ctx, wf, workflow.RunOpts{})
-	steps := outcome.Steps
-	elapsed := time.Since(start).Round(time.Millisecond)
-
-	var errCount int
-	for _, s := range steps {
-		if s.Error != "" {
-			errCount++
-		}
+	now := time.Now().UTC()
+	rec := workflow.WorkflowRun{
+		ID:         ulid.Make().String(),
+		WorkflowID: wf.ID,
+		TenantID:   wf.TenantID,
+		QueuedAt:   now,
+		Status:     workflow.RunStatusQueued,
+		Params:     wf.Params,
 	}
-
-	if err != nil {
-		slog.Error("workflow-cron: run failed", "workflow", wfID, "name", wfName, "err", err, "elapsed", elapsed)
-	} else {
-		slog.Info("workflow-cron: run complete", "workflow", wfID, "name", wfName, "steps", len(steps), "errors", errCount, "elapsed", elapsed)
+	if _, cerr := runRepo.Create(ctx, rec); cerr != nil {
+		slog.Error("workflow-cron: persist run rec failed", "workflow", wfID, "name", wfName, "err", cerr)
+		return
 	}
+	// Best-effort wakeup so a worker idling between claim ticks
+	// picks the run up immediately. ClaimLease's tick covers worker
+	// pools that missed the publish.
+	workflow.PublishWakeup(ctx, rc)
+
+	slog.Info("workflow-cron: dispatched", "workflow", wfID, "name", wfName, "run_id", rec.ID)
 }

@@ -10,8 +10,12 @@
 //  4. Per-agent traces (iter timeline)
 //
 // "Replay" POSTs the original trigger_input back to /api/v1/workflows/:id/run
-// — same shape as the workflows page Run button. After the replay returns
-// we navigate to the new run id so the user lands on a fresh detail view.
+// — the async lease path (PR 3.3). The endpoint persists a run record,
+// publishes a wakeup, and returns 202 with the new run_id; a workflow-
+// executor worker claims the lease and runs the BFS. We navigate to the
+// new run id so the user lands on a fresh detail view that polls for
+// progress. Distinct from the canvas Run button which uses the WS
+// streaming path (RunResumable, BypassLease=true) for live debugger UX.
 
 import { createFileRoute, Link } from '@tanstack/react-router'
 import { useCallback, useEffect, useState } from 'react'
@@ -32,7 +36,7 @@ export const Route = createFileRoute('/runs_/$runId')({
 })
 
 
-type RunStatus = 'running' | 'success' | 'error' | 'cancelled' | 'paused' | 'pending_approval'
+type RunStatus = 'queued' | 'running' | 'success' | 'error' | 'cancelled' | 'paused' | 'pending_approval'
 
 interface UsageTotal {
   input_tokens?: number
@@ -93,7 +97,8 @@ interface WorkflowRun {
   id: string
   workflow_id: string
   tenant_id: string
-  started_at: string
+  queued_at: string
+  started_at?: string
   finished_at?: string
   status: RunStatus
   trigger_input?: unknown
@@ -137,14 +142,18 @@ function statusBadgeClass(s: RunStatus): string {
       return 'bg-yellow-500 hover:bg-yellow-500 text-black border-transparent'
     case 'pending_approval':
       return 'bg-amber-500 hover:bg-amber-500 text-black border-transparent'
+    case 'queued':
+      return 'bg-slate-500 hover:bg-slate-500 text-white border-transparent'
     case 'running':
     default:
       return 'bg-blue-500 hover:bg-blue-500 text-white border-transparent animate-pulse'
   }
 }
 
-function formatDuration(start: string, end?: string): string {
-  if (!end) return '—'
+// finished - started (run time only — queue wait excluded). Returns
+// "—" if either bound is missing.
+function formatDuration(start?: string, end?: string): string {
+  if (!start || !end) return '—'
   const ms = new Date(end).getTime() - new Date(start).getTime()
   if (!Number.isFinite(ms) || ms < 0) return '—'
   if (ms < 1000) return `${ms}ms`
@@ -281,7 +290,14 @@ function RunDetailPage() {
           approved,
           reason,
         })
-        toast.success(approved ? 'Approved — run resuming' : 'Rejected — run resuming')
+        if (approved) {
+          toast.success('Approved — run resuming')
+        } else {
+          // Reject is now a hard-fail contract (run lands `error`),
+          // so the toast shouldn't promise a resume that won't
+          // happen. Use info + an explicit "ending" verb.
+          toast.info('Rejected — ending run')
+        }
         // Refresh once immediately; the polling effect picks up from
         // there. Server still has to flush state writes, so initial
         // refresh may show pending — the poll covers that.
@@ -326,9 +342,11 @@ function RunDetailPage() {
       const body = await api.post<{ run_id?: string }>(`/api/v1/workflows/${data.run.workflow_id}/run`, {
         input: data.run.trigger_input ?? null,
       })
-      // POST /workflows/:id/run is synchronous — when this resolves the
-      // executor has finished (or paused). Open the new run's detail in a
-      // fresh tab so the current view stays parked on the original run.
+      // POST /workflows/:id/run is async (lease path) — the response
+      // returns the new run_id immediately; execution happens out-of-
+      // process in the worker. Open the new run's detail in a fresh
+      // tab so the current view stays parked on the original run; the
+      // detail page polls and updates as the worker progresses.
       const newID = body.run_id
       if (newID) {
         toast.success('Replay completed')
@@ -388,7 +406,8 @@ function RunDetailPage() {
                         Manual safety valve for runs stuck due to worker
                         crash, abandoned approval, etc. Stage 2 = reaper
                         worker auto-fails based on heartbeat staleness. */}
-                    {(data.run.status === 'running' ||
+                    {(data.run.status === 'queued' ||
+                      data.run.status === 'running' ||
                       data.run.status === 'pending_approval' ||
                       data.run.status === 'paused') && (
                       <Button
@@ -406,8 +425,12 @@ function RunDetailPage() {
                   </div>
                 </div>
 
-                <div className="mt-4 grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
-                  <Stat label="Started" value={new Date(data.run.started_at).toLocaleString()} />
+                <div className="mt-4 grid grid-cols-2 md:grid-cols-5 gap-4 text-sm">
+                  <Stat label="Queued" value={new Date(data.run.queued_at).toLocaleString()} />
+                  <Stat
+                    label="Started"
+                    value={data.run.started_at ? new Date(data.run.started_at).toLocaleString() : '—'}
+                  />
                   <Stat
                     label="Finished"
                     value={data.run.finished_at ? new Date(data.run.finished_at).toLocaleString() : '—'}
@@ -581,16 +604,50 @@ function Stat({ label, value }: { label: string; value: string }) {
 //
 // Source of truth is the persisted llm_call.Usage on each TraceEvent
 // (one llm_call per iter); tool_call events are counted for the badge.
+// Tag each trace event with an `attempt` index so re-runs after worker
+// death (where the same agent_traces array gets concatenated across
+// attempts) can be matched correctly: a tool_call only resolves when
+// its tool_id appears as a tool_result WITHIN THE SAME ATTEMPT.
+// Without this, gemma's deterministic tool_ids ("format_weather_0")
+// from a killed attempt steal the resolution from a successful next
+// attempt, hiding the interrupted state.
+//
+// Attempt boundary = iter_start for an iter index we've already seen
+// in the current attempt. (Models can only re-enter iter 0 by
+// restarting the agent loop from scratch.)
+type EventWithAttempt = TraceEvent & { attempt: number }
+function tagAttempts(events: TraceEvent[]): EventWithAttempt[] {
+  const out: EventWithAttempt[] = []
+  let attempt = 0
+  let seen = new Set<number>()
+  for (const ev of events) {
+    if (ev.type === 'iter_start') {
+      const iter = ev.iter ?? 0
+      if (seen.has(iter)) {
+        attempt++
+        seen = new Set<number>()
+      }
+      seen.add(iter)
+    }
+    out.push({ ...ev, attempt })
+  }
+  return out
+}
+
 function AgentTraceBlock({ title, events }: { title: string; events: TraceEvent[] }) {
-  const byIter = events.reduce<Record<number, TraceEvent[]>>((acc, ev) => {
-    const k = ev.iter ?? 0
-    if (!acc[k]) acc[k] = []
-    acc[k].push(ev)
-    return acc
-  }, {})
-  const iterKeys = Object.keys(byIter)
-    .map(Number)
-    .sort((a, b) => a - b)
+  const tagged = tagAttempts(events)
+  const attemptCount = tagged.length === 0 ? 0 : tagged[tagged.length - 1]!.attempt + 1
+  // Group by attempt → iter. Render each attempt as its own subsection
+  // when there's more than one (re-run after worker death); single-
+  // attempt runs render flat the same way they always have.
+  const byAttempt: Record<number, Record<number, EventWithAttempt[]>> = {}
+  for (const ev of tagged) {
+    const a = ev.attempt
+    const i = ev.iter ?? 0
+    if (!byAttempt[a]) byAttempt[a] = {}
+    if (!byAttempt[a][i]) byAttempt[a][i] = []
+    byAttempt[a][i].push(ev)
+  }
 
   // Agent total — same numbers as AgentCostBadge on the workflow canvas.
   let totalIn = 0
@@ -634,15 +691,35 @@ function AgentTraceBlock({ title, events }: { title: string; events: TraceEvent[
           </span>
         )}
       </div>
-      <div className="space-y-2">
-        {iterKeys.map((i) => (
-          <IterSection
-            key={i}
-            iter={i}
-            events={byIter[i]!}
-            defaultOpen={i === iterKeys[0]}
-          />
-        ))}
+      <div className="space-y-3">
+        {Array.from({ length: attemptCount }, (_, a) => {
+          const iters = byAttempt[a] ?? {}
+          const iterKeys = Object.keys(iters)
+            .map(Number)
+            .sort((x, y) => x - y)
+          const isAbandoned = a < attemptCount - 1
+          return (
+            <div key={a} className={isAbandoned ? 'opacity-70' : ''}>
+              {attemptCount > 1 && (
+                <div className="flex items-center gap-2 mb-1 text-[11px] text-muted-foreground">
+                  <Badge variant="outline" className={`text-[10px] ${isAbandoned ? 'border-amber-500/40 text-amber-400' : ''}`}>
+                    attempt {a + 1}{isAbandoned ? ' · abandoned (worker died)' : ''}
+                  </Badge>
+                </div>
+              )}
+              <div className="space-y-2">
+                {iterKeys.map((i) => (
+                  <IterSection
+                    key={i}
+                    iter={i}
+                    events={iters[i]!}
+                    defaultOpen={a === attemptCount - 1 && i === iterKeys[0]}
+                  />
+                ))}
+              </div>
+            </div>
+          )
+        })}
       </div>
     </div>
   )
@@ -706,16 +783,32 @@ function IterSection({
       </CollapsibleTrigger>
       <CollapsibleContent>
         <div className="space-y-2 ml-5 mt-2">
-          {events.map((ev, idx) => (
-            <TraceEventRow key={idx} ev={ev} />
-          ))}
+          {(() => {
+            // Mark tool_call events that never resolved into a tool_result
+            // as "interrupted" — happens when the worker died mid-tool
+            // (lease auto-expires, fresh worker re-runs the agent from
+            // iter 0, both attempts share the same agent_traces array).
+            // No data deleted; the orphaned attempt is just labelled.
+            const resolvedToolIDs = new Set(
+              events
+                .filter((e) => e.type === 'tool_result' && e.tool_id)
+                .map((e) => e.tool_id!),
+            )
+            return events.map((ev, idx) => (
+              <TraceEventRow
+                key={idx}
+                ev={ev}
+                interrupted={ev.type === 'tool_call' && !!ev.tool_id && !resolvedToolIDs.has(ev.tool_id)}
+              />
+            ))
+          })()}
         </div>
       </CollapsibleContent>
     </Collapsible>
   )
 }
 
-function TraceEventRow({ ev }: { ev: TraceEvent }) {
+function TraceEventRow({ ev, interrupted }: { ev: TraceEvent; interrupted?: boolean }) {
   return (
     <div className="text-xs border-l-2 border-muted pl-2">
       <div className="flex items-center gap-2">
@@ -724,6 +817,11 @@ function TraceEventRow({ ev }: { ev: TraceEvent }) {
         </Badge>
         {ev.tool_name && <span className="font-mono">{ev.tool_name}</span>}
         {ev.is_error && <Badge variant="destructive">error</Badge>}
+        {interrupted && (
+          <Badge variant="outline" className="text-[10px] border-amber-500/40 text-amber-400">
+            interrupted — no result
+          </Badge>
+        )}
         {ev.usage && (
           <span className="text-muted-foreground tabular-nums">
             {(ev.usage.total_tokens ?? 0).toLocaleString()} tok

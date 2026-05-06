@@ -20,8 +20,10 @@ type WorkflowRunRepository struct {
 func NewWorkflowRunRepository(ctx context.Context, db *mongo.Database) (*WorkflowRunRepository, error) {
 	col := db.Collection("workflow_runs")
 	_, err := col.Indexes().CreateMany(ctx, []mongo.IndexModel{
-		{Keys: bson.D{{Key: "workflow_id", Value: 1}, {Key: "started_at", Value: -1}}},
-		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "started_at", Value: -1}}},
+		// queued_at = dispatch time (always set); listings sort by it
+		// so queued runs appear immediately after dispatch.
+		{Keys: bson.D{{Key: "workflow_id", Value: 1}, {Key: "queued_at", Value: -1}}},
+		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "queued_at", Value: -1}}},
 		{Keys: bson.D{{Key: "status", Value: 1}}},
 		// Powers ClaimLease's findAndModify predicate. Sparse on
 		// lease_expires_at so docs that never had a lease (legacy /
@@ -65,6 +67,27 @@ func (r *WorkflowRunRepository) Update(ctx context.Context, run workflow.Workflo
 	return err
 }
 
+// CountInFlightForWorkflow returns the number of non-terminal runs
+// for the given workflow_id. Cron trigger worker's skip_if_running
+// option queries this before dispatching: if any prior tick is still
+// running / queued / paused / awaiting approval, the cron worker
+// skips this tick so concurrent runs of the same workflow don't
+// stack.
+func (r *WorkflowRunRepository) CountInFlightForWorkflow(ctx context.Context, workflowID string) (int64, error) {
+	if workflowID == "" {
+		return 0, errors.New("workflow_run count: workflow_id required")
+	}
+	return r.col.CountDocuments(ctx, bson.M{
+		"workflow_id": workflowID,
+		"status": bson.M{"$in": []string{
+			string(workflow.RunStatusQueued),
+			string(workflow.RunStatusRunning),
+			string(workflow.RunStatusPaused),
+			string(workflow.RunStatusPendingApproval),
+		}},
+	})
+}
+
 // SweepAbandonedNonTerminal flips every non-terminal run older than
 // `olderThan` into a terminal `error` state with the supplied reason.
 // Used by the API boot path to recover from a hard crash / restart
@@ -84,11 +107,12 @@ func (r *WorkflowRunRepository) SweepAbandonedNonTerminal(ctx context.Context, r
 	cutoff := time.Now().UTC().Add(-olderThan)
 	filter := bson.M{
 		"status": bson.M{"$in": []string{
+			string(workflow.RunStatusQueued),
 			string(workflow.RunStatusRunning),
 			string(workflow.RunStatusPaused),
 			string(workflow.RunStatusPendingApproval),
 		}},
-		"started_at": bson.M{"$lt": cutoff},
+		"queued_at": bson.M{"$lt": cutoff},
 	}
 	now := time.Now().UTC()
 	update := bson.M{
@@ -115,7 +139,7 @@ func (r *WorkflowRunRepository) List(ctx context.Context, workflowID string, lim
 		limit = 50
 	}
 	opts := options.Find().
-		SetSort(bson.D{{Key: "started_at", Value: -1}}).
+		SetSort(bson.D{{Key: "queued_at", Value: -1}}).
 		SetLimit(int64(limit))
 
 	cur, err := r.col.Find(ctx, bson.M{"workflow_id": workflowID}, opts)
@@ -161,11 +185,11 @@ func (r *WorkflowRunRepository) ListWithFilter(ctx context.Context, f workflow.R
 		if !f.StartedBefore.IsZero() {
 			startedQ["$lte"] = f.StartedBefore
 		}
-		q["started_at"] = startedQ
+		q["queued_at"] = startedQ
 	}
 
 	opts := options.Find().
-		SetSort(bson.D{{Key: "started_at", Value: -1}}).
+		SetSort(bson.D{{Key: "queued_at", Value: -1}}).
 		SetLimit(int64(limit)).
 		SetSkip(int64(skip))
 
@@ -189,7 +213,7 @@ func (r *WorkflowRunRepository) SumCostSince(ctx context.Context, workflowID str
 	pipeline := mongo.Pipeline{
 		{{Key: "$match", Value: bson.M{
 			"workflow_id": workflowID,
-			"started_at":  bson.M{"$gte": since},
+			"queued_at":   bson.M{"$gte": since},
 		}}},
 		{{Key: "$group", Value: bson.M{
 			"_id":   nil,
@@ -262,7 +286,7 @@ func (r *WorkflowRunRepository) AggregateMetrics(ctx context.Context, f RunMetri
 		if !f.Until.IsZero() {
 			startedQ["$lte"] = f.Until
 		}
-		match["started_at"] = startedQ
+		match["queued_at"] = startedQ
 	}
 
 	pipeline := mongo.Pipeline{
@@ -370,18 +394,35 @@ func (r *WorkflowRunRepository) ClaimLease(ctx context.Context, workerID string,
 		},
 	}
 	expiresAt := now.Add(leaseDur)
-	update := bson.M{
-		"$set": bson.M{
+	// Promote queued → running atomically as part of the claim. The
+	// dispatcher (POST /run, canvas WS, cron, webhook…) seeds new runs
+	// with status=queued so the UI doesn't lie about runs sitting in
+	// the queue. The first worker to land the findAndModify wins both
+	// the lease AND the status flip in one round-trip — no separate
+	// Update needed, and no window where status=running but
+	// lease_owner is empty. Already-running runs (resumes, recovered
+	// dead-worker runs) keep status=running through the same $set.
+	// Aggregation-pipeline update so we can use `$ifNull` to set
+	// started_at only on the FIRST claim. Re-claims (recovered
+	// dead-worker runs) preserve the original run-start time so
+	// duration math reflects total execution effort, not just the
+	// most recent claim. Plain $set would clobber the original on
+	// every claim. queued_at is never touched by ClaimLease — it
+	// records dispatch time.
+	update := bson.A{
+		bson.M{"$set": bson.M{
 			"lease_owner":      workerID,
 			"lease_expires_at": expiresAt,
-		},
+			"status":           string(workflow.RunStatusRunning),
+			"started_at":       bson.M{"$ifNull": bson.A{"$started_at", now}},
+		}},
 	}
-	// FIFO-ish: prefer the run with the oldest started_at so long-waiting
-	// runs don't get starved by a flood of fresh ones.
+	// FIFO-ish: prefer the run with the oldest queued_at so long-
+	// waiting runs don't get starved by a flood of fresh ones.
 	opts := options.FindOneAndUpdate().
 		SetUpsert(false).
 		SetReturnDocument(options.After).
-		SetSort(bson.D{{Key: "started_at", Value: 1}})
+		SetSort(bson.D{{Key: "queued_at", Value: 1}})
 
 	var out workflow.WorkflowRun
 	err := r.col.FindOneAndUpdate(ctx, filter, update, opts).Decode(&out)

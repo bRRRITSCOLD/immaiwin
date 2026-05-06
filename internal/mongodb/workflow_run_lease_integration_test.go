@@ -86,14 +86,16 @@ func (s *WorkflowRunLeaseIntegrationSuite) SetupTest() {
 
 func (s *WorkflowRunLeaseIntegrationSuite) TearDownTest() {}
 
-// seedRun creates a non-terminal workflow run.
-func (s *WorkflowRunLeaseIntegrationSuite) seedRun(id, workflowID string, started time.Time) {
+// seedRun creates a non-terminal workflow run. `queuedAt` doubles as
+// the FIFO sort key for ClaimLease — the lease tests assert oldest-first
+// ordering.
+func (s *WorkflowRunLeaseIntegrationSuite) seedRun(id, workflowID string, queuedAt time.Time) {
 	_, err := s.repo.Create(context.Background(), workflow.WorkflowRun{
 		ID:         id,
 		WorkflowID: workflowID,
 		TenantID:   "default",
-		Status:     workflow.RunStatusRunning,
-		StartedAt:  started,
+		Status:     workflow.RunStatusQueued,
+		QueuedAt:   queuedAt,
 	})
 	s.Require().NoError(err)
 }
@@ -103,7 +105,7 @@ func (s *WorkflowRunLeaseIntegrationSuite) seedRun(id, workflowID string, starte
 // Workers' claim loops rely on this for backoff.
 func (s *WorkflowRunLeaseIntegrationSuite) TestClaimLease_NoCandidates_ReturnsFalse() {
 	_, ok, err := s.repo.ClaimLease(context.Background(), "worker-a", 30*time.Second,
-		[]workflow.RunStatus{workflow.RunStatusRunning})
+		[]workflow.RunStatus{workflow.RunStatusQueued, workflow.RunStatusRunning})
 	s.Require().NoError(err)
 	s.False(ok, "no runs in the collection → no claim possible")
 }
@@ -118,7 +120,7 @@ func (s *WorkflowRunLeaseIntegrationSuite) TestClaimLease_TwoWorkersCompete_Exac
 
 	// Sequential first to verify the basic pattern.
 	a, ok, err := s.repo.ClaimLease(context.Background(), "worker-a", 30*time.Second,
-		[]workflow.RunStatus{workflow.RunStatusRunning})
+		[]workflow.RunStatus{workflow.RunStatusQueued, workflow.RunStatusRunning})
 	s.Require().NoError(err)
 	s.True(ok)
 	s.Equal("run-only", a.ID)
@@ -127,7 +129,7 @@ func (s *WorkflowRunLeaseIntegrationSuite) TestClaimLease_TwoWorkersCompete_Exac
 
 	// Worker B claims now: same run is held by A, so B should get nothing.
 	_, ok, err = s.repo.ClaimLease(context.Background(), "worker-b", 30*time.Second,
-		[]workflow.RunStatus{workflow.RunStatusRunning})
+		[]workflow.RunStatus{workflow.RunStatusQueued, workflow.RunStatusRunning})
 	s.Require().NoError(err)
 	s.False(ok, "worker-a holds the only candidate; worker-b must get nothing")
 }
@@ -143,26 +145,26 @@ func (s *WorkflowRunLeaseIntegrationSuite) TestClaimLease_DistributesAcrossWorke
 	s.seedRun("run-3", "wf-1", base.Add(-1*time.Minute))
 
 	a, ok, err := s.repo.ClaimLease(context.Background(), "worker-a", 30*time.Second,
-		[]workflow.RunStatus{workflow.RunStatusRunning})
+		[]workflow.RunStatus{workflow.RunStatusQueued, workflow.RunStatusRunning})
 	s.Require().NoError(err)
 	s.Require().True(ok)
 	s.Equal("run-1", a.ID, "FIFO: oldest started_at gets claimed first")
 
 	b, ok, err := s.repo.ClaimLease(context.Background(), "worker-b", 30*time.Second,
-		[]workflow.RunStatus{workflow.RunStatusRunning})
+		[]workflow.RunStatus{workflow.RunStatusQueued, workflow.RunStatusRunning})
 	s.Require().NoError(err)
 	s.Require().True(ok)
 	s.Equal("run-2", b.ID)
 
 	c, ok, err := s.repo.ClaimLease(context.Background(), "worker-c", 30*time.Second,
-		[]workflow.RunStatus{workflow.RunStatusRunning})
+		[]workflow.RunStatus{workflow.RunStatusQueued, workflow.RunStatusRunning})
 	s.Require().NoError(err)
 	s.Require().True(ok)
 	s.Equal("run-3", c.ID)
 
 	// Fourth claim — pool empty.
 	_, ok, _ = s.repo.ClaimLease(context.Background(), "worker-d", 30*time.Second,
-		[]workflow.RunStatus{workflow.RunStatusRunning})
+		[]workflow.RunStatus{workflow.RunStatusQueued, workflow.RunStatusRunning})
 	s.False(ok, "all candidates leased; new worker should idle")
 }
 
@@ -172,7 +174,7 @@ func (s *WorkflowRunLeaseIntegrationSuite) TestExtendLease_FromHolder_ExtendsExp
 	now := time.Now().UTC()
 	s.seedRun("run-extend", "wf-1", now)
 	a, ok, err := s.repo.ClaimLease(context.Background(), "worker-a", 5*time.Second,
-		[]workflow.RunStatus{workflow.RunStatusRunning})
+		[]workflow.RunStatus{workflow.RunStatusQueued, workflow.RunStatusRunning})
 	s.Require().NoError(err)
 	s.Require().True(ok)
 	first := *a.LeaseExpiresAt
@@ -196,7 +198,7 @@ func (s *WorkflowRunLeaseIntegrationSuite) TestExtendLease_FromForeignWorker_Ret
 	now := time.Now().UTC()
 	s.seedRun("run-foreign", "wf-1", now)
 	_, ok, err := s.repo.ClaimLease(context.Background(), "worker-a", 30*time.Second,
-		[]workflow.RunStatus{workflow.RunStatusRunning})
+		[]workflow.RunStatus{workflow.RunStatusQueued, workflow.RunStatusRunning})
 	s.Require().NoError(err)
 	s.Require().True(ok)
 
@@ -215,7 +217,7 @@ func (s *WorkflowRunLeaseIntegrationSuite) TestExpiredLease_AutoReclaimable_NewW
 
 	// Worker-a claims with a tiny TTL.
 	_, ok, err := s.repo.ClaimLease(context.Background(), "worker-a", 100*time.Millisecond,
-		[]workflow.RunStatus{workflow.RunStatusRunning})
+		[]workflow.RunStatus{workflow.RunStatusQueued, workflow.RunStatusRunning})
 	s.Require().NoError(err)
 	s.Require().True(ok)
 
@@ -224,7 +226,7 @@ func (s *WorkflowRunLeaseIntegrationSuite) TestExpiredLease_AutoReclaimable_NewW
 
 	// Worker-b can now claim.
 	b, ok, err := s.repo.ClaimLease(context.Background(), "worker-b", 30*time.Second,
-		[]workflow.RunStatus{workflow.RunStatusRunning})
+		[]workflow.RunStatus{workflow.RunStatusQueued, workflow.RunStatusRunning})
 	s.Require().NoError(err)
 	s.Require().True(ok)
 	s.Equal("run-stale", b.ID)
@@ -242,7 +244,7 @@ func (s *WorkflowRunLeaseIntegrationSuite) TestReleaseLease_FromHolder_ClearsLea
 	now := time.Now().UTC()
 	s.seedRun("run-release", "wf-1", now)
 	_, ok, err := s.repo.ClaimLease(context.Background(), "worker-a", 30*time.Second,
-		[]workflow.RunStatus{workflow.RunStatusRunning})
+		[]workflow.RunStatus{workflow.RunStatusQueued, workflow.RunStatusRunning})
 	s.Require().NoError(err)
 	s.Require().True(ok)
 
@@ -256,7 +258,7 @@ func (s *WorkflowRunLeaseIntegrationSuite) TestReleaseLease_FromHolder_ClearsLea
 
 	// And another worker can claim immediately.
 	b, ok, err := s.repo.ClaimLease(context.Background(), "worker-b", 30*time.Second,
-		[]workflow.RunStatus{workflow.RunStatusRunning})
+		[]workflow.RunStatus{workflow.RunStatusQueued, workflow.RunStatusRunning})
 	s.Require().NoError(err)
 	s.Require().True(ok)
 	s.Equal("run-release", b.ID)
@@ -271,7 +273,7 @@ func (s *WorkflowRunLeaseIntegrationSuite) TestReleaseLease_FromForeignWorker_No
 	now := time.Now().UTC()
 	s.seedRun("run-foreign-rel", "wf-1", now)
 	_, ok, err := s.repo.ClaimLease(context.Background(), "worker-a", 30*time.Second,
-		[]workflow.RunStatus{workflow.RunStatusRunning})
+		[]workflow.RunStatus{workflow.RunStatusQueued, workflow.RunStatusRunning})
 	s.Require().NoError(err)
 	s.Require().True(ok)
 
@@ -293,22 +295,22 @@ func (s *WorkflowRunLeaseIntegrationSuite) TestClaimLease_StatusFilter_OnlyMatch
 	// when we ask for `running`.
 	_, _ = s.repo.Create(context.Background(), workflow.WorkflowRun{
 		ID: "run-success", WorkflowID: "wf-1", TenantID: "default",
-		Status: workflow.RunStatusSuccess, StartedAt: now,
+		Status: workflow.RunStatusSuccess, QueuedAt: now,
 	})
 	_, _ = s.repo.Create(context.Background(), workflow.WorkflowRun{
 		ID: "run-error", WorkflowID: "wf-1", TenantID: "default",
-		Status: workflow.RunStatusError, StartedAt: now,
+		Status: workflow.RunStatusError, QueuedAt: now,
 	})
 
 	_, ok, err := s.repo.ClaimLease(context.Background(), "worker-a", 30*time.Second,
-		[]workflow.RunStatus{workflow.RunStatusRunning})
+		[]workflow.RunStatus{workflow.RunStatusQueued, workflow.RunStatusRunning})
 	s.Require().NoError(err)
 	s.False(ok, "no runs in `running` status; terminal runs must NOT be claimed")
 
 	// Now ask for the right status.
 	s.seedRun("run-r", "wf-1", now)
 	_, ok, err = s.repo.ClaimLease(context.Background(), "worker-a", 30*time.Second,
-		[]workflow.RunStatus{workflow.RunStatusRunning})
+		[]workflow.RunStatus{workflow.RunStatusQueued, workflow.RunStatusRunning})
 	s.Require().NoError(err)
 	s.True(ok)
 }

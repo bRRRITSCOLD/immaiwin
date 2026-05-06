@@ -256,6 +256,7 @@ function statusColor(s: string): string {
     case 'success': return 'border-emerald-700/50 text-emerald-300'
     case 'error': return 'border-red-700/50 text-red-300'
     case 'cancelled': return 'border-gray-700/50 text-gray-300'
+    case 'queued': return 'border-slate-700/50 text-slate-300'
     case 'running': return 'border-blue-700/50 text-blue-300'
     case 'paused': return 'border-amber-700/50 text-amber-300'
     case 'pending_approval': return 'border-purple-700/50 text-purple-300'

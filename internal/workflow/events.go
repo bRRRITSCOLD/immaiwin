@@ -21,6 +21,7 @@ import (
 type EventType string
 
 const (
+	EventRunStart            EventType = "run_start" // emitted by the WS handler when the run is dispatched, gives the browser the run_id ASAP
 	EventStepStart           EventType = "step_start"
 	EventStepDone            EventType = "step_done"
 	EventStepPending         EventType = "step_pending" // pre-exec breakpoint pause

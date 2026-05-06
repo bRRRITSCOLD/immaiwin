@@ -4,7 +4,6 @@ import { useContext, useState } from 'react'
 import { Textarea } from '~/components/ui/textarea'
 import { Input } from '~/components/ui/input'
 import { NumberField } from '~/components/ui/number-field'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '~/components/ui/select'
 import { Tooltip, TooltipTrigger, TooltipContent } from '~/components/ui/tooltip'
 import { Switch } from '~/components/ui/switch'
 import { StepNameInput } from './StepNameInput'
@@ -12,20 +11,17 @@ import { DynamicHandles } from './DynamicHandles'
 import { SkillsPanel } from './SkillsPanel'
 import { AgentTimelinePanel } from './AgentTimelinePanel'
 import { NodeDebugPanel, BreakpointMarker, ApprovalMarker, AgentRunContext } from '../RunResultsContext'
-import { useWorkflowStore } from '../useWorkflowStore'
+import { ConnectionPicker } from './ConnectionPicker'
 
 const LLM_TYPES = ['anthropic', 'openai', 'ollama'] as const
 
 export function AIAgentNode({ id, data, selected }: NodeProps) {
   const { updateNodeData } = useReactFlow()
-  const connections = useWorkflowStore((s) => s.connections)
-  const llmConnections = connections.filter((c) => (LLM_TYPES as readonly string[]).includes(c.type))
 
   const [advancedOpen, setAdvancedOpen] = useState(false)
 
   const systemPrompt = (data?.system_prompt as string) ?? ''
   const userInput = (data?.user_input as string) ?? ''
-  const llmConnId = (data?.llm_connection_id as string) ?? ''
   const modelOverride = (data?.model_override as string) ?? ''
   const memorySessionId = (data?.memory_session_id as string) ?? ''
   const maxIters = (data?.max_iterations as number) ?? 8
@@ -64,22 +60,14 @@ export function AIAgentNode({ id, data, selected }: NodeProps) {
         <div className="px-3 py-2 space-y-2">
           <div>
             <p className="text-[10px] text-muted-foreground">LLM Connection (anthropic / openai / ollama)</p>
-            <Select
-              value={llmConnId || '__none__'}
-              onValueChange={(v) => updateNodeData(id, { llm_connection_id: v === '__none__' ? '' : v })}
-            >
-              <SelectTrigger className="nodrag h-7 text-xs">
-                <SelectValue placeholder="Select LLM connection" />
-              </SelectTrigger>
-              <SelectContent className="z-[9999]">
-                <SelectItem value="__none__">— Required —</SelectItem>
-                {llmConnections.map((c) => (
-                  <SelectItem key={c.id} value={c.id}>
-                    {c.name} ({c.type})
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <ConnectionPicker
+              nodeId={id}
+              connectionType={[...LLM_TYPES]}
+              data={data as Record<string, unknown>}
+              field="llm_connection_id"
+              variant="full"
+              requireExplicit
+            />
           </div>
 
           {/* System prompt */}

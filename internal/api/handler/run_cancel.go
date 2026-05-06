@@ -14,6 +14,7 @@
 package handler
 
 import (
+	"encoding/json"
 	"net/http"
 	"time"
 
@@ -75,12 +76,36 @@ func CancelRun(exec *workflow.WorkflowExecutor, runStore workflow.WorkflowRunSto
 		now := time.Now().UTC()
 		rec.FinishedAt = &now
 		rec.PendingApproval = nil
+		// Clear in-flight state so a future re-claim doesn't try to
+		// resume a run that the user explicitly killed. Also drop the
+		// lease so the worker's next CheckpointExecutionState fails
+		// with ErrLeaseNotHeld and the BFS aborts mid-run instead of
+		// finishing + overwriting our terminal status.
+		rec.ExecutionState = nil
+		rec.PausedAgent = nil
+		rec.LeaseOwner = ""
+		rec.LeaseExpiresAt = nil
 		if rec.Error == "" {
 			rec.Error = "force-cancelled by user"
 		}
 		if uerr := runStore.Update(c.Request.Context(), rec); uerr != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": uerr.Error()})
 			return
+		}
+		// Publish a synthetic run_done event onto the per-run event
+		// channel so any live canvas-WS subscriber (the run-streamer)
+		// flips terminal in the UI immediately. Without this, the
+		// browser keeps showing pending_approval / running until the
+		// next poll, and Cancel feels stuck.
+		if exec != nil && exec.ApprovalBroker != nil {
+			payload, _ := json.Marshal(workflow.RunEvent{
+				Type:   workflow.EventRunDone,
+				RunID:  runID,
+				Status: string(workflow.RunStatusCancelled),
+				Error:  rec.Error,
+			})
+			_, _ = exec.ApprovalBroker.PublishWithCount(c.Request.Context(),
+				workflow.RunEventChannel(runID), payload)
 		}
 		c.JSON(http.StatusOK, gin.H{"ok": true, "status": string(rec.Status)})
 	}

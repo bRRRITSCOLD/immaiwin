@@ -14,6 +14,7 @@ import (
 	"github.com/bRRRITSCOLD/burrow/internal/mongodb"
 	"github.com/bRRRITSCOLD/burrow/internal/rediss"
 	"github.com/bRRRITSCOLD/burrow/internal/workflow"
+	"github.com/oklog/ulid/v2"
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
@@ -100,6 +101,11 @@ func (w *workflowRabbitMQWorker) Run(ctx context.Context) error {
 		}
 	}()
 
+	runRepo, err := mongodb.NewWorkflowRunRepository(ctx, mc.DB())
+	if err != nil {
+		return fmt.Errorf("workflow-rabbitmq: create run repo: %w", err)
+	}
+
 	repo, err := mongodb.NewWorkflowRepository(ctx, mc.DB())
 	if err != nil {
 		return fmt.Errorf("workflow-rabbitmq: create workflow repo: %w", err)
@@ -131,7 +137,7 @@ func (w *workflowRabbitMQWorker) Run(ctx context.Context) error {
 
 	tracked := make(map[string]*trackedConsumer)
 
-	syncRMQConsumers(ctx, repo, connRepo, exec, tracked)
+	syncRMQConsumers(ctx, repo, runRepo, rc, connRepo, exec, tracked)
 
 	ticker := time.NewTicker(rmqSyncInterval)
 	defer ticker.Stop()
@@ -146,7 +152,7 @@ func (w *workflowRabbitMQWorker) Run(ctx context.Context) error {
 			}
 			return nil
 		case <-ticker.C:
-			syncRMQConsumers(ctx, repo, connRepo, exec, tracked)
+			syncRMQConsumers(ctx, repo, runRepo, rc, connRepo, exec, tracked)
 		}
 	}
 }
@@ -154,6 +160,8 @@ func (w *workflowRabbitMQWorker) Run(ctx context.Context) error {
 func syncRMQConsumers(
 	ctx context.Context,
 	repo *mongodb.WorkflowRepository,
+	runRepo *mongodb.WorkflowRunRepository,
+	rc *rediss.Client,
 	connRepo *mongodb.ConnectionRepository,
 	exec *workflow.WorkflowExecutor,
 	tracked map[string]*trackedConsumer,
@@ -198,7 +206,7 @@ func syncRMQConsumers(
 			info:      entry.info,
 		}
 
-		go consumeLoop(consumerCtx, repo, connRepo, exec, wfID, entry.name, entry.info)
+		go consumeLoop(consumerCtx, repo, runRepo, rc, connRepo, exec, wfID, entry.name, entry.info)
 		slog.Info("workflow-rabbitmq: started consumer", "workflow", wfID, "name", entry.name, "queue", entry.info.queue)
 	}
 
@@ -215,6 +223,8 @@ func syncRMQConsumers(
 func consumeLoop(
 	ctx context.Context,
 	repo *mongodb.WorkflowRepository,
+	runRepo *mongodb.WorkflowRunRepository,
+	rc *rediss.Client,
 	connRepo *mongodb.ConnectionRepository,
 	exec *workflow.WorkflowExecutor,
 	wfID, wfName string,
@@ -226,7 +236,7 @@ func consumeLoop(
 			return
 		}
 
-		err := consumeOnce(ctx, repo, connRepo, exec, wfID, wfName, info)
+		err := consumeOnce(ctx, repo, runRepo, rc, connRepo, exec, wfID, wfName, info)
 		if ctx.Err() != nil {
 			return // clean shutdown
 		}
@@ -248,6 +258,8 @@ func consumeLoop(
 func consumeOnce(
 	ctx context.Context,
 	repo *mongodb.WorkflowRepository,
+	runRepo *mongodb.WorkflowRunRepository,
+	rc *rediss.Client,
 	connRepo *mongodb.ConnectionRepository,
 	exec *workflow.WorkflowExecutor,
 	wfID, wfName string,
@@ -308,28 +320,38 @@ func consumeOnce(
 			if !ok {
 				return fmt.Errorf("delivery channel closed")
 			}
-			processDelivery(ctx, repo, exec, wfID, wfName, info, delivery)
+			processDelivery(ctx, repo, runRepo, rc, wfID, wfName, info, delivery)
 		}
 	}
 }
 
+// processDelivery dispatches the run via the lease worker (PR 3.4a)
+// instead of executing it inline. Each delivery:
+//   1. Fetches the workflow doc (still required to know the trigger
+//      shape exists and the workflow hasn't been deleted).
+//   2. Persists a queued WorkflowRun rec with the message body as
+//      trigger_input.
+//   3. Publishes a Redis wakeup so an idle workflow-executor picks
+//      it up immediately.
+//   4. Acks the AMQP delivery — the message is durable in Mongo
+//      from this point forward, so AMQP's redelivery is no longer
+//      needed for run-survival. Manual-ack mode preserves so a
+//      Mongo write failure still NACKs (requeue) before this point.
 func processDelivery(
 	ctx context.Context,
 	repo *mongodb.WorkflowRepository,
-	exec *workflow.WorkflowExecutor,
+	runRepo *mongodb.WorkflowRunRepository,
+	rc *rediss.Client,
 	wfID, wfName string,
 	info rmqTriggerInfo,
 	delivery amqp.Delivery,
 ) {
-	start := time.Now()
-
-	// Parse body: try JSON, fallback to string
+	// Parse body: try JSON, fallback to string.
 	var body any
 	if err := json.Unmarshal(delivery.Body, &body); err != nil {
 		body = string(delivery.Body)
 	}
 
-	// Fetch fresh workflow (picks up node changes without consumer restart)
 	wf, err := repo.GetByID(ctx, wfID)
 	if err != nil {
 		slog.Error("workflow-rabbitmq: fetch workflow", "workflow", wfID, "name", wfName, "err", err)
@@ -339,38 +361,29 @@ func processDelivery(
 		return
 	}
 
-	// Use RunResumable so the run gets persisted into WorkflowRunStore
-	// with a real run_id. Side-effect: pre-exec node-approval gates
-	// (`require_node_approval`) and per-tool agent gates (`require_approval`)
-	// can register against the executor's ApprovalRegistry, persist
-	// `pending_approval` state on the run record, and resolve via
-	// `POST /api/v1/workflow_runs/:id/approval` (OOB). With the legacy
-	// `exec.Run` path the gates auto-approved silently.
-	outcome, err := exec.RunResumable(ctx, wf, workflow.RunOpts{Input: body})
-	elapsed := time.Since(start).Round(time.Millisecond)
-
-	var errCount int
-	for _, s := range outcome.Steps {
-		if s.Error != "" {
-			errCount++
-		}
+	now := time.Now().UTC()
+	rec := workflow.WorkflowRun{
+		ID:           ulid.Make().String(),
+		WorkflowID:   wf.ID,
+		TenantID:     wf.TenantID,
+		QueuedAt:     now,
+		Status:       workflow.RunStatusQueued,
+		Params:       wf.Params,
+		TriggerInput: body,
 	}
-
-	if err != nil {
-		slog.Error("workflow-rabbitmq: run failed",
-			"workflow", wfID, "name", wfName,
-			"run_id", outcome.RunID, "status", outcome.Status,
-			"err", err, "elapsed", elapsed)
+	if _, cerr := runRepo.Create(ctx, rec); cerr != nil {
+		slog.Error("workflow-rabbitmq: persist run rec failed",
+			"workflow", wfID, "name", wfName, "err", cerr)
 		if !info.autoAck {
-			_ = delivery.Nack(false, true) // requeue
+			_ = delivery.Nack(false, true) // requeue — message survives, retry on next delivery
 		}
 		return
 	}
+	workflow.PublishWakeup(ctx, rc)
 
-	slog.Info("workflow-rabbitmq: run complete",
+	slog.Info("workflow-rabbitmq: dispatched",
 		"workflow", wfID, "name", wfName,
-		"run_id", outcome.RunID, "status", outcome.Status,
-		"steps", len(outcome.Steps), "errors", errCount, "elapsed", elapsed)
+		"run_id", rec.ID)
 	if !info.autoAck {
 		_ = delivery.Ack(false)
 	}

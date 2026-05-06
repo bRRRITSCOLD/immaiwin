@@ -80,7 +80,7 @@ function WorkflowsPage() {
   // stream reset (next run starts from a clean slate). Toast errors
   // surfaced via stream.events.
   useEffect(() => {
-    if (stream.status !== 'done' && stream.status !== 'error') return
+    if (stream.status !== 'done' && stream.status !== 'error' && stream.status !== 'cancelled') return
     setLastRun(liveRun)
     let hasError = false
     // Cost cap fires its own dedicated `cost_exceeded` event AND the
@@ -117,7 +117,9 @@ function WorkflowsPage() {
         hasError = true
       }
     }
-    if (!hasError && stream.status === 'done') {
+    if (stream.status === 'cancelled') {
+      toast.info('Workflow cancelled')
+    } else if (!hasError && stream.status === 'done') {
       toast.success('Workflow completed')
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -182,6 +184,16 @@ function WorkflowsPage() {
   async function handleSave(nodes: Node[], edges: Edge[], params: Record<string, string>) {
     const wf = activeWorkflow()
     if (!wf) return
+    // Pre-save validation: nodes that the picker marks `requireExplicit`
+    // need a real connection_id (or llm_connection_id for AI Agent).
+    // Saving without one ships a workflow that fires + immediately
+    // errors at trigger startup or first run — the loud thing to do is
+    // refuse the save and tell the author which node is missing.
+    const missing = validateRequiredConnections(nodes)
+    if (missing.length > 0) {
+      toast.error(`Cannot save — missing connection on ${missing.length} node${missing.length === 1 ? '' : 's'}: ${missing.join(', ')}`, { duration: 8000 })
+      return
+    }
     try {
       await api.put(`/api/v1/workflows/${wf.id}`, { ...wf, nodes, edges, params })
       toast.success('Workflow saved')
@@ -193,6 +205,15 @@ function WorkflowsPage() {
   async function handleRun(stopAt?: string | string[], input?: unknown) {
     const wf = activeWorkflow()
     if (!wf) return
+
+    // Same connection-presence check as handleSave — auto-save below
+    // would otherwise persist the half-wired graph + the run would
+    // dispatch + immediately fail.
+    const missing = validateRequiredConnections(wf.nodes as Node[])
+    if (missing.length > 0) {
+      toast.error(`Cannot run — missing connection on ${missing.length} node${missing.length === 1 ? '' : 's'}: ${missing.join(', ')}`, { duration: 8000 })
+      return
+    }
 
     // Auto-save before run so the server has the latest graph. Streaming
     // run won't pick up unsaved canvas changes either, so the auto-save
@@ -262,4 +283,34 @@ function WorkflowsPage() {
         </main>
       </div>
   )
+}
+
+// validateRequiredConnections walks every node in the graph and
+// returns the labels of any that need a connection_id but don't
+// have one. Mirrors the picker's `requireExplicit` flag client-side
+// so the save round-trip doesn't ship a half-wired graph that the
+// worker will then immediately fail on first dispatch.
+//
+// Currently the rules are: trigger nodes of type rabbitmq /
+// redis_subscribe, and ai_agent nodes (require an LLM connection).
+// Mongo + Redis request nodes are NOT yet in this list — pending
+// the FUTURE-FEATURES.md item that bans the env-default fallback
+// for those node types.
+function validateRequiredConnections(nodes: Node[]): string[] {
+  const missing: string[] = []
+  for (const n of nodes) {
+    const data = (n.data ?? {}) as Record<string, unknown>
+    const name = (data.name as string) || n.id
+    if (n.type === 'trigger') {
+      const tt = data.trigger_type as string | undefined
+      if ((tt === 'rabbitmq' || tt === 'redis_subscribe') && !data.connection_id) {
+        missing.push(`${name} (trigger)`)
+      }
+    } else if (n.type === 'ai_agent') {
+      if (!data.llm_connection_id) {
+        missing.push(`${name} (ai_agent — LLM)`)
+      }
+    }
+  }
+  return missing
 }

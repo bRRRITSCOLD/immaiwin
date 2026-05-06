@@ -94,11 +94,11 @@ func (s *WorkflowRunCheckpointIntegrationSuite) seedClaimedRun(id, workerID stri
 		WorkflowID: "wf-1",
 		TenantID:   "default",
 		Status:     workflow.RunStatusRunning,
-		StartedAt:  time.Now().UTC(),
+		QueuedAt:   time.Now().UTC(),
 	})
 	s.Require().NoError(err)
 	rec, ok, err := s.repo.ClaimLease(context.Background(), workerID, 30*time.Second,
-		[]workflow.RunStatus{workflow.RunStatusRunning})
+		[]workflow.RunStatus{workflow.RunStatusQueued, workflow.RunStatusRunning})
 	s.Require().NoError(err)
 	s.Require().True(ok, "claim must succeed on a freshly seeded run")
 	return rec
@@ -214,7 +214,7 @@ func (s *WorkflowRunCheckpointIntegrationSuite) TestApplyApprovalDecision_NoPend
 		WorkflowID: "wf-1",
 		TenantID:   "default",
 		Status:     workflow.RunStatusRunning,
-		StartedAt:  time.Now().UTC(),
+		QueuedAt:   time.Now().UTC(),
 	})
 	s.Require().NoError(err)
 

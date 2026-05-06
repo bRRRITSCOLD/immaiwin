@@ -32,7 +32,7 @@ export const Route = createFileRoute('/runs')({
 })
 
 
-type RunStatus = 'running' | 'success' | 'error' | 'cancelled' | 'paused' | 'pending_approval'
+type RunStatus = 'queued' | 'running' | 'success' | 'error' | 'cancelled' | 'paused' | 'pending_approval'
 
 interface UsageTotal {
   input_tokens?: number
@@ -50,7 +50,10 @@ interface WorkflowRun {
   id: string
   workflow_id: string
   tenant_id: string
-  started_at: string
+  // queued_at is dispatch time (always set). started_at is the
+  // moment a worker won the lease (nil while status=queued).
+  queued_at: string
+  started_at?: string
   finished_at?: string
   status: RunStatus
   usage?: UsageTotal
@@ -89,14 +92,22 @@ function statusBadgeClass(s: RunStatus): string {
       return 'bg-yellow-500 hover:bg-yellow-500 text-black border-transparent'
     case 'pending_approval':
       return 'bg-amber-500 hover:bg-amber-500 text-black border-transparent'
+    case 'queued':
+      // Distinct from running so the user can see at a glance that
+      // the run is sitting in the worker queue (not yet doing work).
+      // Slate / no-pulse — pulse is reserved for active execution.
+      return 'bg-slate-500 hover:bg-slate-500 text-white border-transparent'
     case 'running':
     default:
       return 'bg-blue-500 hover:bg-blue-500 text-white border-transparent animate-pulse'
   }
 }
 
-function formatDuration(start: string, end?: string): string {
-  if (!end) return '—'
+// formatDuration returns finished - started (run time only — queue
+// wait excluded). Returns "—" when the run hasn't started yet
+// (queued) or hasn't finished (running).
+function formatDuration(start?: string, end?: string): string {
+  if (!start || !end) return '—'
   const ms = new Date(end).getTime() - new Date(start).getTime()
   if (!Number.isFinite(ms) || ms < 0) return '—'
   if (ms < 1000) return `${ms}ms`
@@ -435,7 +446,7 @@ function RunsPage() {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Started</TableHead>
+                <TableHead>Queued</TableHead>
                 <TableHead>Workflow</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead className="text-right">Duration</TableHead>
@@ -458,7 +469,7 @@ function RunsPage() {
                   className="cursor-pointer hover:bg-muted/50"
                   onClick={() => navigate({ to: '/runs/$runId', params: { runId: r.id } })}
                 >
-                  <TableCell className="font-mono text-xs">{formatStarted(r.started_at)}</TableCell>
+                  <TableCell className="font-mono text-xs">{formatStarted(r.queued_at)}</TableCell>
                   <TableCell>{wfNameByID[r.workflow_id] ?? r.workflow_id}</TableCell>
                   <TableCell>
                     <div className="flex items-center gap-1.5">
@@ -486,7 +497,7 @@ function RunsPage() {
                   </TableCell>
                   <TableCell className="text-right">
                     <div className="flex items-center justify-end gap-2">
-                      {(r.status === 'running' || r.status === 'pending_approval' || r.status === 'paused') && (
+                      {(r.status === 'queued' || r.status === 'running' || r.status === 'pending_approval' || r.status === 'paused') && (
                         <button
                           type="button"
                           disabled={cancellingID === r.id}
