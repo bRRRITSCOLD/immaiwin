@@ -308,8 +308,83 @@ func (e *WorkflowExecutor) preExecApproval(ctx context.Context, env *runEnv, nod
 		return true, nil
 	}
 	if env.continueCh != nil {
-		// Live UI path — breakpoint-style pause.
+		// Live UI path — breakpoint-style pause. Persist the
+		// UI-facing pending mirror + flip status to pending_approval
+		// so OOB observers (a manager opening /runs/<id>, the
+		// SMTP/Slack approver clicking the magic link) see the run is
+		// waiting — the canvas user already sees it via the
+		// step_pending WS event, but anyone outside the WS would have
+		// no clue otherwise. Cleared after waitAtBreakpoint returns.
+		if env.runID != "" && e.RunRepo != nil {
+			_ = e.persistPendingApprovalMirror(ctx, env, node, input)
+		}
+		// OOB tee: register a per-run Redis subscriber so a Slack /
+		// email approval click reaches the breakpoint waiter. Without
+		// it the redeem handler publishes onto a channel no one in
+		// this process is listening on (count=0 → cancelOrphanedApproval
+		// writes the misleading "approval orphaned: api process
+		// restarted while paused" error even though the WS process is
+		// alive). Approved → release continueCh; rejected → release
+		// continueCh AND record the rejection so the BFS short-circuits
+		// the node. Defer Unregister so the subscription closes when
+		// preExecApproval returns.
+		var oobRejected bool
+		var oobRejectedReason string
+		if env.runID != "" {
+			if oobReg := e.approvalRegistryFor(); oobReg != nil {
+				redisCh := oobReg.Register(ctx, env.runID)
+				if redisCh != nil {
+					defer oobReg.Unregister(env.runID)
+					stopTee := make(chan struct{})
+					defer close(stopTee)
+					go func(target chan struct{}, src <-chan ApprovalDecision, runID string, stop <-chan struct{}) {
+						for {
+							select {
+							case <-stop:
+								return
+							case d, ok := <-src:
+								if !ok {
+									return
+								}
+								if !d.Approved {
+									oobRejected = true
+									oobRejectedReason = d.Reason
+								}
+								select {
+								case target <- struct{}{}:
+								case <-stop:
+									return
+								}
+							}
+						}
+					}(env.continueCh, redisCh, env.runID, stopTee)
+				}
+			}
+		}
 		env.waitAtBreakpoint(ctx, node)
+		if oobRejected {
+			if env.runID != "" && e.RunRepo != nil {
+				if rec, gerr := e.RunRepo.Get(ctx, env.runID); gerr == nil {
+					rec.Status = RunStatusRunning
+					rec.PendingApproval = nil
+					_ = e.RunRepo.Update(ctx, rec)
+				}
+			}
+			reason := oobRejectedReason
+			if reason == "" {
+				reason = "rejected by user"
+			}
+			return false, fmt.Errorf("node approval rejected (OOB): %s", reason)
+		}
+		if env.runID != "" && e.RunRepo != nil {
+			if rec, gerr := e.RunRepo.Get(ctx, env.runID); gerr == nil {
+				rec.Status = RunStatusRunning
+				rec.PendingApproval = nil
+				if uerr := e.RunRepo.Update(ctx, rec); uerr != nil {
+					slog.Warn("workflow: clear pending_approval (WS continue) failed", "run_id", env.runID, "err", uerr)
+				}
+			}
+		}
 		return true, nil
 	}
 	// Lease-yield path: persist the gate mirror + dispatch OOB +
@@ -872,6 +947,15 @@ type checkpointBundle struct {
 	workerID    string
 	priorState  *ExecutionState
 	pausedAgent *AgentPauseState
+	// Control channels populated when the worker has set up cross-
+	// process bridges to the WS handler. continueCh receives a token
+	// when the browser sends a `continue` frame (releasing a pre-exec
+	// breakpoint); breakpointsCh receives an updated node-ID list when
+	// the browser sets / clears breakpoints mid-run. Both are nil for
+	// non-canvas-driven runs (cron / webhook / API trigger), in which
+	// case the BFS treats the run as headless.
+	continueCh    chan struct{}
+	breakpointsCh chan []string
 }
 
 type resumeBundle struct {
@@ -942,7 +1026,8 @@ func (e *WorkflowExecutor) RunResumable(ctx context.Context, wf Workflow, opts R
 				ID:           rejectedID,
 				WorkflowID:   wf.ID,
 				TenantID:     wf.TenantID,
-				StartedAt:    now,
+				QueuedAt:     now,
+				StartedAt:    &now,
 				FinishedAt:   &now,
 				Status:       RunStatusError,
 				Params:       wf.Params,
@@ -972,13 +1057,20 @@ func (e *WorkflowExecutor) RunResumable(ctx context.Context, wf Workflow, opts R
 		if id == "" {
 			id = ulid.Make().String()
 		}
+		now := time.Now().UTC()
 		runRec := WorkflowRun{
 			ID:         id,
 			WorkflowID: wf.ID,
 			TenantID:   wf.TenantID,
-			StartedAt:  time.Now().UTC(),
-			Status:     RunStatusRunning,
-			Params:     wf.Params,
+			QueuedAt:   now,
+			// RunResumable is the legacy sync path (evals, cron,
+			// webhooks, rabbitmq, redis-sub triggers — pre-PR-3.4).
+			// It executes immediately in-process so StartedAt is
+			// stamped here too. Lease-path runs leave StartedAt nil
+			// at dispatch and ClaimLease fills it on first claim.
+			StartedAt: &now,
+			Status:    RunStatusRunning,
+			Params:    wf.Params,
 		}
 		if opts.Input != nil {
 			runRec.TriggerInput = opts.Input
@@ -1052,6 +1144,13 @@ func (e *WorkflowExecutor) RunResumable(ctx context.Context, wf Workflow, opts R
 				if stepErr != "" {
 					rec.Error = stepErr
 				}
+				// Match RunFromCheckpoint terminal cleanup so a legacy
+				// resume that lands terminal also drops the in-flight
+				// state — otherwise the run-detail UI keeps showing a
+				// stale PendingApproval banner on a completed run.
+				rec.ExecutionState = nil
+				rec.PausedAgent = nil
+				rec.PendingApproval = nil
 				_ = e.RunRepo.Update(ctx, rec)
 			} else {
 				status = RunStatusPaused
@@ -1136,26 +1235,29 @@ func (e *WorkflowExecutor) RunFromCheckpoint(ctx context.Context, wf Workflow, r
 		}
 	}
 	if e.RunRepo != nil {
-		if rcur, rerr := e.RunRepo.Get(ctx, rec.ID); rerr == nil {
-			if rcur.Status != RunStatusPaused {
-				rcur.Status = status
-				now := time.Now().UTC()
-				rcur.FinishedAt = &now
-				rcur.Steps = steps
-				rcur.Usage = aggregateUsage(rcur.AgentTraces)
-				if stepErr != "" {
-					rcur.Error = stepErr
-				}
-				// Clear execution_state + paused_agent on terminal — no
-				// further resume needed; keeps the doc tidy + prevents
-				// a stale PausedAgent from hydrating a future re-run.
-				rcur.ExecutionState = nil
-				rcur.PausedAgent = nil
-				if uerr := e.RunRepo.Update(ctx, rcur); uerr != nil {
-					slog.Warn("workflow: persist terminal state failed", "run_id", rec.ID, "err", uerr)
-				}
-			} else {
-				status = RunStatusPaused
+		rcur, rerr := e.RunRepo.Get(ctx, rec.ID)
+		if rerr != nil {
+			slog.Warn("workflow: terminal Get failed; skipping cleanup", "run_id", rec.ID, "err", rerr)
+		} else if rcur.Status == RunStatusPaused {
+			status = RunStatusPaused
+		} else {
+			rcur.Status = status
+			now := time.Now().UTC()
+			rcur.FinishedAt = &now
+			rcur.Steps = steps
+			rcur.Usage = aggregateUsage(rcur.AgentTraces)
+			if stepErr != "" {
+				rcur.Error = stepErr
+			}
+			// Clear all in-flight state on terminal — no further resume
+			// needed; keeps the doc tidy + prevents stale fields from
+			// hydrating a future re-run or the UI's pending-approval
+			// banner from sticking on a completed run.
+			rcur.ExecutionState = nil
+			rcur.PausedAgent = nil
+			rcur.PendingApproval = nil
+			if uerr := e.RunRepo.Update(ctx, rcur); uerr != nil {
+				slog.Warn("workflow: persist terminal state failed", "run_id", rec.ID, "err", uerr)
 			}
 		}
 	}

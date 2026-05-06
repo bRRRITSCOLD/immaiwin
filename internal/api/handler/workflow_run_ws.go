@@ -28,10 +28,12 @@ import (
 	"log/slog"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/bRRRITSCOLD/burrow/internal/workflow"
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
+	"github.com/oklog/ulid/v2"
 )
 
 // runWfWsRequest is the only client→server message we currently accept.
@@ -121,10 +123,28 @@ func writeWfWsError(ws *websocket.Conn, msg string) {
 }
 
 // RunWorkflowWS upgrades to WebSocket and streams a workflow run's events
-// to the browser. Closing the socket cancels the in-flight run via
-// context propagation; on the agent side that aborts any in-flight LLM
-// call (loopCtx is derived from the request ctx).
-func RunWorkflowWS(store WorkflowStore, exec *workflow.WorkflowExecutor) gin.HandlerFunc {
+// to the browser.
+//
+// As of the canvas-WS / lease unification: this handler does NOT execute
+// the workflow itself. It dispatches via the lease path (persists a run
+// record + publishes a wakeup) and subscribes to the per-run Redis event
+// channel that the worker publishes to. Browser frames that used to
+// drive the run inline (`continue`, `approve_tool`, `set_breakpoints`)
+// are no-ops here — they belong on REST endpoints + a control-channel
+// bridge that the worker listens on. For now, browsers should:
+//   - Approve a tool / node gate via `POST /api/v1/workflow_runs/:id/approval`
+//     (same endpoint the `/runs/:id` page uses).
+//   - Continue / set_breakpoints via TODO REST endpoints (Phase 2).
+//
+// Closing the socket cancels the WS context but does NOT cancel the
+// run — the worker holds the lease and finishes regardless. That's the
+// whole point of durable execution.
+//
+// resume_run_id is intentionally rejected here for now: the legacy
+// stopAt-pause resume flow used in-process channels, and migrating it
+// to lease is its own change (PR-3.4-ish). Use Replay on /runs/:id
+// instead.
+func RunWorkflowWS(store WorkflowStore, runStore workflow.WorkflowRunStore, exec *workflow.WorkflowExecutor) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id := c.Param("id")
 		if id == "" {
@@ -153,25 +173,19 @@ func RunWorkflowWS(store WorkflowStore, exec *workflow.WorkflowExecutor) gin.Han
 			writeWfWsError(ws, "first message must be 'run'")
 			return
 		}
+		if req.ResumeRunID != "" {
+			writeWfWsError(ws, "resume_run_id over WS is no longer supported — use Replay on /runs/:id (lease path)")
+			return
+		}
 
-		// Cancel-on-disconnect: derive a child context that cancels when
-		// either the request context ends OR the client closes the
-		// socket. The same goroutine also relays additional client
-		// frames into the run — `{type:"continue"}` releases a pre-exec
-		// breakpoint pause via env.continueCh.
 		runCtx, cancel := context.WithCancel(c.Request.Context())
 		defer cancel()
-		continueCh := make(chan struct{}, 4)
-		// Buffered approveCh holds verdicts that arrive before the agent
-		// loop reaches its waitForApproval read. 16 is generous — a single
-		// agent iter is gated sequentially, so 1 would suffice; the slack
-		// covers UI double-clicks + future parallel-tool dispatch.
-		approveCh := make(chan workflow.ApprovalDecision, 16)
-		// breakpointsCh lets the live UI mutate the run's breakpoint set
-		// mid-run via `set_breakpoints` frames. Buffered to absorb burst
-		// updates from rapid clicks; the executor's forwarder applies
-		// the most recent list.
-		breakpointsCh := make(chan []string, 8)
+
+		// Drain incoming frames so a closed socket cancels the WS ctx.
+		// We don't act on `continue` / `approve_tool` / `set_breakpoints`
+		// here any more — those are control signals that need to reach
+		// the worker, not this handler. Logged at info so a misbehaving
+		// front-end is visible without breaking the stream.
 		go func() {
 			for {
 				_, raw, err := ws.ReadMessage()
@@ -185,50 +199,14 @@ func RunWorkflowWS(store WorkflowStore, exec *workflow.WorkflowExecutor) gin.Han
 				if json.Unmarshal(raw, &head) != nil {
 					continue
 				}
-				switch head.Type {
-				case "continue":
-					select {
-					case continueCh <- struct{}{}:
-					default:
-						// Buffer full — drop to keep the read loop snappy.
-					}
-				case "approve_tool":
-					var msg struct {
-						Type       string `json:"type"`
-						ToolCallID string `json:"tool_call_id"`
-						Approved   bool   `json:"approved"`
-						Reason     string `json:"reason,omitempty"`
-					}
-					if json.Unmarshal(raw, &msg) != nil {
-						continue
-					}
-					select {
-					case approveCh <- workflow.ApprovalDecision{
-						ToolCallID: msg.ToolCallID,
-						Approved:   msg.Approved,
-						Reason:     msg.Reason,
-					}:
-					default:
-						// Buffer full — drop. Pathological under our 16-slot
-						// buffer; would mean the agent loop stopped reading.
-					}
-				case "set_breakpoints":
-					var msg struct {
-						Type    string   `json:"type"`
-						NodeIDs []string `json:"node_ids"`
-					}
-					if json.Unmarshal(raw, &msg) != nil {
-						continue
-					}
-					select {
-					case breakpointsCh <- msg.NodeIDs:
-					default:
-						// Buffer full — drop. The executor's forwarder
-						// applies the most recent list, so a missed burst
-						// just means the user has to click again.
-					}
+				if head.Type == "continue" || head.Type == "approve_tool" || head.Type == "set_breakpoints" {
+					// Legacy control frame from a UI build that predates
+					// the canvas-WS / lease unification. Drop it
+					// silently in production; a debug-level note keeps
+					// the breadcrumb without spamming logs.
+					slog.Debug("ws: ignoring legacy control frame; route via REST instead",
+						"type", head.Type)
 				}
-				// Future: handle "interrupt", etc.
 			}
 		}()
 
@@ -238,32 +216,72 @@ func RunWorkflowWS(store WorkflowStore, exec *workflow.WorkflowExecutor) gin.Han
 			return
 		}
 
-		emitter := &wsEventEmitter{ws: ws}
-
-		// RunResumable internally emits the terminal `run_done` event with
-		// the correct status + run_id from inside the BFS, so we don't
-		// need a duplicate emit on the WS handler side. (Earlier code
-		// double-emitted, which made the second frame land with a zero
-		// timestamp.) Keep the outcome captured for any future logic that
-		// needs the final status outside the stream.
-		stopAtIDs := parseStopAt(req.StopAt)
-		_, err = exec.RunResumable(runCtx, wf, workflow.RunOpts{
-			StopAtIDs:     stopAtIDs,
-			Input:         req.Input,
-			ResumeRunID:   req.ResumeRunID,
-			Emitter:       emitter,
-			ContinueCh:    continueCh,
-			ApproveCh:     approveCh,
-			BreakpointsCh: breakpointsCh,
-		})
-		if err != nil {
-			// Cost cap breaches already emit `cost_exceeded` from inside the
-			// executor; re-emitting as a generic `error` produces a duplicate
-			// toast. Suppress here for that one typed case.
-			if !workflow.IsCostExceeded(err) {
-				emitter.Emit(workflow.RunEvent{Type: "error", Error: err.Error()})
-			}
+		if runStore == nil || exec == nil || exec.ApprovalBroker == nil {
+			writeWfWsError(ws, "run dispatch not configured (run store or approval broker missing)")
 			return
+		}
+
+		// Allocate the run id, persist the record, kick the worker via
+		// wakeup. The worker will claim the lease, run the BFS, and
+		// publish RunEvents on `burrow:run_events:<runID>` — this
+		// handler subscribes below and forwards each event to the
+		// browser.
+		runID := ulid.Make().String()
+		rec := workflow.WorkflowRun{
+			ID:         runID,
+			WorkflowID: wf.ID,
+			TenantID:   wf.TenantID,
+			QueuedAt:   time.Now().UTC(),
+			// Same dispatch contract as POST /run: queued until a
+			// worker claims the lease + flips status=running atomically.
+			// StartedAt stays nil until ClaimLease stamps it.
+			Status:       workflow.RunStatusQueued,
+			Params:       wf.Params,
+			TriggerInput: req.Input,
+		}
+		if _, cerr := runStore.Create(runCtx, rec); cerr != nil {
+			writeWfWsError(ws, "create run: "+cerr.Error())
+			return
+		}
+		if _, perr := exec.ApprovalBroker.PublishWithCount(runCtx, workflow.WakeupChannel, []byte("1")); perr != nil {
+			slog.Warn("ws: wakeup publish failed", "run_id", runID, "err", perr)
+		}
+		slog.Info("ws: dispatched run via lease", "run_id", runID, "wf_id", wf.ID)
+
+		emitter := &wsEventEmitter{ws: ws}
+		// Send a synthetic run_started event so the UI knows which run
+		// id to navigate / track. The worker emits RunEvents from
+		// inside the BFS but doesn't include a "started" envelope; this
+		// is the canvas's first cue.
+		emitter.Emit(workflow.RunEvent{
+			Type:  workflow.EventRunStart,
+			RunID: runID,
+		})
+
+		// Subscribe to the per-run event channel and pump frames to the
+		// browser until either the run terminates (run_done event) or
+		// the socket closes.
+		sub := exec.ApprovalBroker.Subscribe(runCtx, workflow.RunEventChannel(runID))
+		defer func() { _ = sub.Close() }()
+		ch := sub.Channel()
+		for {
+			select {
+			case <-runCtx.Done():
+				return
+			case msg, ok := <-ch:
+				if !ok {
+					return
+				}
+				// Forward raw payload — already JSON-encoded RunEvent.
+				_ = ws.WriteMessage(websocket.TextMessage, []byte(msg.Payload))
+				// Decode just enough to detect the terminal event.
+				var ev workflow.RunEvent
+				if err := json.Unmarshal([]byte(msg.Payload), &ev); err == nil {
+					if ev.Type == workflow.EventRunDone {
+						return
+					}
+				}
+			}
 		}
 	}
 }

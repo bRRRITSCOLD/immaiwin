@@ -112,12 +112,12 @@ export function TriggerNode({ id, data, selected }: NodeProps) {
           <span className="text-sm font-medium">Trigger</span>
           {isRabbitMQ && (
             <div className="ml-auto">
-              <ConnectionPicker nodeId={id} connectionType="rabbitmq" data={data as Record<string, unknown>} activeColor="text-blue-500" />
+              <ConnectionPicker nodeId={id} connectionType="rabbitmq" data={data as Record<string, unknown>} activeColor="text-blue-500" requireExplicit />
             </div>
           )}
           {isRedisSubscribe && (
             <div className="ml-auto">
-              <ConnectionPicker nodeId={id} connectionType="redis" data={data as Record<string, unknown>} activeColor="text-blue-500" />
+              <ConnectionPicker nodeId={id} connectionType="redis" data={data as Record<string, unknown>} activeColor="text-blue-500" requireExplicit />
             </div>
           )}
         </div>

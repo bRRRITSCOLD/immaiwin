@@ -9,6 +9,7 @@
 
 ## Environment Variables
 * In code always use github.com/bRRRITSCOLD/enviro-go to load environment variables
+* Keep .env.example up to date with every env var used in the application
 
 ## Audit Logging
 * **Be vigilant.** Every time you add or modify a handler/endpoint that takes a meaningful action, **explicitly consider whether it should be audit-logged**. Don't ship the change without making the call.

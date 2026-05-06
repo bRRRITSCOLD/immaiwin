@@ -227,6 +227,34 @@ func (e *WorkflowExecutor) runAIAgent(ctx context.Context, node Node, data map[s
 	loopCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
 	defer cancel()
 
+	// 6b. WS-path OOB approval tee. The canvas WS path (env.approveCh
+	// non-nil) only listens to its own in-process channel — fed by the
+	// browser. A Slack/email approval click lands in the api process,
+	// which routes to ApprovalRegistry.Submit (Redis pub/sub on
+	// `burrow:approval:<run_id>`). Without a subscriber on that channel
+	// in the worker process, the publish drops with zero receivers and
+	// the handler marks the run as `approval orphaned`. Register once
+	// per agent invocation + forward decisions into env.approveCh so
+	// either source resolves the gate. waitForApproval matches by
+	// ToolCallID; an extra in-flight decision is harmless.
+	if env.approveCh != nil && env.runID != "" {
+		if oobReg := e.approvalRegistryFor(); oobReg != nil {
+			redisCh := oobReg.Register(loopCtx, env.runID)
+			if redisCh != nil {
+				defer oobReg.Unregister(env.runID)
+				go func(target chan ApprovalDecision, src <-chan ApprovalDecision, runID string) {
+					for d := range src {
+						select {
+						case target <- d:
+						default:
+							slog.Warn("ai_agent: approveCh full, dropping OOB decision", "run_id", runID, "tool_call_id", d.ToolCallID)
+						}
+					}
+				}(env.approveCh, redisCh, env.runID)
+			}
+		}
+	}
+
 	// 7. Build initial messages, or hydrate from a paused-run snapshot when
 	// the workflow run was started via `resume_run_id`. The hydrated path
 	// skips the user turn (already in messages) and starts the ReAct loop
@@ -387,7 +415,19 @@ func (e *WorkflowExecutor) runAIAgent(ctx context.Context, node Node, data map[s
 				"run_id":     env.runID,
 			}, nil
 		}
-		emitTrace(TraceEvent{Type: "iter_start", Iter: iter})
+		// Skip the iter_start emit when the iter is a resumed-from-
+		// yield re-entry — the original iter_start already lives in
+		// PausedAgent.Trace + the run's agent_traces history. Without
+		// this guard, every yield/resume cycle (per-tool gate, then
+		// node-level gate, then …) appends a duplicate iter_start to
+		// the trace, which the UI renders as repeated `iter_start`
+		// rows under the same iter index.
+		isResumedIter := env.resumeAgentState != nil &&
+			iter == env.resumeAgentState.Iter &&
+			len(env.resumeAgentState.PartialToolCalls) > 0
+		if !isResumedIter {
+			emitTrace(TraceEvent{Type: "iter_start", Iter: iter})
+		}
 
 		// Cost cap PRE-CALL gate. Same logic as post-call below, run BEFORE
 		// the chat to avoid burning one extra LLM call after the cap was
@@ -553,17 +593,28 @@ func (e *WorkflowExecutor) runAIAgent(ctx context.Context, node Node, data map[s
 			if startCallIdx > 0 && len(preDispatchedResults) > 0 {
 				results = append(results, preDispatchedResults...)
 			}
+			// resumedYieldIdx marks the call index that yielded on the
+			// previous run-pass — the call's `tool_call` trace event was
+			// already pushed before the yield, so re-emitting on resume
+			// would duplicate it in agent_traces. -1 means "not a
+			// resume" (fresh dispatch, all calls are new).
+			resumedYieldIdx := -1
+			if isResumedIter {
+				resumedYieldIdx = startCallIdx
+			}
 			for callIdx, call := range toolCalls {
 				if callIdx < startCallIdx {
 					continue
 				}
-				emitTrace(TraceEvent{
-					Type:     "tool_call",
-					Iter:     iter,
-					ToolName: call.Name,
-					ToolID:   call.ID,
-					ToolArgs: rawJSONToAny(call.Input),
-				})
+				if callIdx != resumedYieldIdx {
+					emitTrace(TraceEvent{
+						Type:     "tool_call",
+						Iter:     iter,
+						ToolName: call.Name,
+						ToolID:   call.ID,
+						ToolArgs: rawJSONToAny(call.Input),
+					})
+				}
 
 				// Approval gate. Three paths:
 				//   1. Pre-approved on resume — `env.approvedToolCallNames`
@@ -597,14 +648,24 @@ func (e *WorkflowExecutor) runAIAgent(ctx context.Context, node Node, data map[s
 						// Iter-end cleanup clears both maps after a
 						// successful full dispatch.
 						if !pre.Approved {
-							// Mirror the rejection path below: emit a
-							// rejected tool_result + skip dispatch.
+							// User explicitly rejected this tool call. We
+							// emit a rejected tool_result for trace
+							// continuity, then abort the agent loop with a
+							// terminal error so the run badge flips to
+							// `error` (rather than `success` after the
+							// model gracefully gives up). Per-tool reject
+							// USED to be recoverable — model would adapt
+							// and produce a final answer — but every user
+							// who clicked Reject expected the run to fail,
+							// so the contract changed: Reject == run
+							// fails. Use Cancel for a soft stop or just
+							// don't gate the tool if model-recoverability
+							// is desired.
 							reason := pre.Reason
 							if reason == "" {
 								reason = "rejected by user"
 							}
 							obs := "tool call rejected by user: " + reason
-							results = append(results, llm.ToolResultBlock(call.ID, obs, true))
 							emitTrace(TraceEvent{
 								Type:     "tool_result",
 								Iter:     iter,
@@ -613,7 +674,7 @@ func (e *WorkflowExecutor) runAIAgent(ctx context.Context, node Node, data map[s
 								Result:   obs,
 								IsError:  true,
 							})
-							continue
+							return nil, fmt.Errorf("ai_agent: tool %q rejected by user: %s", call.Name, reason)
 						}
 						// Approved: fall through to dispatch as if no gate.
 						goto dispatchTool
@@ -622,6 +683,37 @@ func (e *WorkflowExecutor) runAIAgent(ctx context.Context, node Node, data map[s
 				if requireApproval {
 					if approveCh != nil {
 						gateActive = true
+						// Persist the UI-facing pending mirror + flip
+						// status to pending_approval so OOB observers
+						// (a manager opening /runs/<id>, the SMTP/Slack
+						// approver clicking the magic link) see the run
+						// is waiting — the canvas user already sees it
+						// via the agent_tool_approval WS event, but
+						// anyone outside the WS would have no clue
+						// otherwise. Cleared at dispatchTool when the
+						// decision lands.
+						if env.runID != "" && e.RunRepo != nil {
+							pending := PendingApprovalState{
+								Kind:        "tool_call",
+								AgentNodeID: node.ID,
+								Iter:        iter,
+								ToolCallID:  call.ID,
+								ToolName:    call.Name,
+								ToolArgs:    rawJSONToAny(call.Input),
+								RequestedAt: time.Now().UTC(),
+								TokenID:     ulid.Make().String(),
+							}
+							if rec, gerr := e.RunRepo.Get(ctx, env.runID); gerr == nil {
+								rec.Status = RunStatusPendingApproval
+								rec.PendingApproval = &pending
+								if uerr := e.RunRepo.Update(ctx, rec); uerr != nil {
+									slog.Warn("ai_agent: persist pending-approval (WS) failed", "run_id", env.runID, "err", uerr)
+								}
+							}
+							if env.wf != nil {
+								e.dispatchApprovalNotification(*env.wf, env.runID, pending)
+							}
+						}
 					} else if env.yieldOnApproval && env.runID != "" && e.RunRepo != nil {
 						// Lease-yield path. Mirror the UI-facing
 						// PendingApproval (existing top-level field
@@ -762,7 +854,7 @@ func (e *WorkflowExecutor) runAIAgent(ctx context.Context, node Node, data map[s
 							Result:   obs,
 							IsError:  true,
 						})
-						if oob && env.runID != "" && e.RunRepo != nil {
+						if env.runID != "" && e.RunRepo != nil {
 							if rec, gerr := e.RunRepo.Get(ctx, env.runID); gerr == nil {
 								rec.PendingApproval = nil
 								_ = e.RunRepo.Update(ctx, rec)
@@ -773,7 +865,10 @@ func (e *WorkflowExecutor) runAIAgent(ctx context.Context, node Node, data map[s
 					// Decision arrived — flip status back to running and
 					// clear the pending state on the run record so the
 					// UI doesn't keep showing the Approve buttons.
-					if oob {
+					// Applies to BOTH WS (canvas) and OOB (Redis-channel)
+					// paths now that the WS path also writes the mirror
+					// at gate fire.
+					if env.runID != "" && e.RunRepo != nil {
 						if rec, gerr := e.RunRepo.Get(ctx, env.runID); gerr == nil {
 							rec.Status = RunStatusRunning
 							rec.PendingApproval = nil
@@ -782,6 +877,7 @@ func (e *WorkflowExecutor) runAIAgent(ctx context.Context, node Node, data map[s
 							}
 						}
 					}
+					_ = oob // legacy flag; cleanup is now path-agnostic
 					if !decision.Approved {
 						reason := decision.Reason
 						if reason == "" {

@@ -10,6 +10,9 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/bRRRITSCOLD/burrow/internal/email"
 )
@@ -113,7 +116,18 @@ func (n *MultiplexApprovalNotifier) sendSlackBot(ctx context.Context, req Approv
 	if apiBase == "" {
 		apiBase = "https://slack.com/api"
 	}
-	return postSlackBotMessage(ctx, n.HTTPClient, apiBase, botToken, channel, req)
+	// Per-connection timeout override. Lets tenants on slow/firewalled
+	// networks bump the dispatcher window without raising the global
+	// approval-notifier client timeout (which also affects SMTP +
+	// slack_webhook). Empty / unparseable / non-positive → fall back to
+	// the shared client.
+	client := n.HTTPClient
+	if raw := strings.TrimSpace(conn.Config["timeout_seconds"]); raw != "" {
+		if secs, perr := strconv.Atoi(raw); perr == nil && secs > 0 {
+			client = &http.Client{Timeout: time.Duration(secs) * time.Second}
+		}
+	}
+	return postSlackBotMessage(ctx, client, apiBase, botToken, channel, req)
 }
 
 // smtpApprovalBody renders the email body. Plain-text only — the

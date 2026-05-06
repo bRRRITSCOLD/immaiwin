@@ -14,6 +14,7 @@ import (
 	"github.com/bRRRITSCOLD/burrow/internal/mongodb"
 	"github.com/bRRRITSCOLD/burrow/internal/rediss"
 	"github.com/bRRRITSCOLD/burrow/internal/workflow"
+	"github.com/oklog/ulid/v2"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -104,6 +105,11 @@ func (w *workflowRedisSubscribeWorker) Run(ctx context.Context) error {
 		}
 	}()
 
+	runRepo, err := mongodb.NewWorkflowRunRepository(ctx, mc.DB())
+	if err != nil {
+		return fmt.Errorf("workflow-redis-subscribe: create run repo: %w", err)
+	}
+
 	repo, err := mongodb.NewWorkflowRepository(ctx, mc.DB())
 	if err != nil {
 		return fmt.Errorf("workflow-redis-subscribe: create workflow repo: %w", err)
@@ -135,7 +141,7 @@ func (w *workflowRedisSubscribeWorker) Run(ctx context.Context) error {
 
 	tracked := make(map[string]*trackedRedisSubscriber)
 
-	syncRedisSubscribers(ctx, repo, connRepo, exec, tracked)
+	syncRedisSubscribers(ctx, repo, runRepo, rc, connRepo, exec, tracked)
 
 	ticker := time.NewTicker(redisSubSyncInterval)
 	defer ticker.Stop()
@@ -149,7 +155,7 @@ func (w *workflowRedisSubscribeWorker) Run(ctx context.Context) error {
 			}
 			return nil
 		case <-ticker.C:
-			syncRedisSubscribers(ctx, repo, connRepo, exec, tracked)
+			syncRedisSubscribers(ctx, repo, runRepo, rc, connRepo, exec, tracked)
 		}
 	}
 }
@@ -157,6 +163,8 @@ func (w *workflowRedisSubscribeWorker) Run(ctx context.Context) error {
 func syncRedisSubscribers(
 	ctx context.Context,
 	repo *mongodb.WorkflowRepository,
+	runRepo *mongodb.WorkflowRunRepository,
+	rc *rediss.Client,
 	connRepo *mongodb.ConnectionRepository,
 	exec *workflow.WorkflowExecutor,
 	tracked map[string]*trackedRedisSubscriber,
@@ -198,7 +206,7 @@ func syncRedisSubscribers(
 			info:      entry.info,
 		}
 
-		go subscribeLoop(subCtx, repo, connRepo, exec, wfID, entry.name, entry.info)
+		go subscribeLoop(subCtx, repo, runRepo, rc, connRepo, exec, wfID, entry.name, entry.info)
 		slog.Info("workflow-redis-subscribe: started subscriber",
 			"workflow", wfID, "name", entry.name,
 			"channels", entry.info.channels, "patterns", entry.info.patterns)
@@ -216,6 +224,8 @@ func syncRedisSubscribers(
 func subscribeLoop(
 	ctx context.Context,
 	repo *mongodb.WorkflowRepository,
+	runRepo *mongodb.WorkflowRunRepository,
+	rc *rediss.Client,
 	connRepo *mongodb.ConnectionRepository,
 	exec *workflow.WorkflowExecutor,
 	wfID, wfName string,
@@ -226,7 +236,7 @@ func subscribeLoop(
 		if ctx.Err() != nil {
 			return
 		}
-		err := subscribeOnce(ctx, repo, connRepo, exec, wfID, wfName, info)
+		err := subscribeOnce(ctx, repo, runRepo, rc, connRepo, exec, wfID, wfName, info)
 		if ctx.Err() != nil {
 			return
 		}
@@ -245,6 +255,8 @@ func subscribeLoop(
 func subscribeOnce(
 	ctx context.Context,
 	repo *mongodb.WorkflowRepository,
+	runRepo *mongodb.WorkflowRunRepository,
+	rc *rediss.Client,
 	connRepo *mongodb.ConnectionRepository,
 	exec *workflow.WorkflowExecutor,
 	wfID, wfName string,
@@ -301,27 +313,30 @@ func subscribeOnce(
 			if !ok {
 				return fmt.Errorf("pubsub channel closed")
 			}
-			processRedisMessage(ctx, repo, exec, wfID, wfName, msg)
+			processRedisMessage(ctx, repo, runRepo, rc, wfID, wfName, msg)
 		}
 	}
 }
 
+// processRedisMessage dispatches the run via the lease worker
+// (PR 3.4a). Redis pub/sub has no ack — once we persist the run
+// record + publish wakeup, the message is durable. Worker SIGKILL
+// before persistence loses the message (matches pub/sub semantics:
+// fire-and-forget).
 func processRedisMessage(
 	ctx context.Context,
 	repo *mongodb.WorkflowRepository,
-	exec *workflow.WorkflowExecutor,
+	runRepo *mongodb.WorkflowRunRepository,
+	rc *rediss.Client,
 	wfID, wfName string,
 	msg *redis.Message,
 ) {
-	start := time.Now()
-
 	// Parse payload: try JSON, fall back to string.
 	var payload any
 	if err := json.Unmarshal([]byte(msg.Payload), &payload); err != nil {
 		payload = msg.Payload
 	}
 
-	// Wrap with channel + pattern metadata so workflows can filter on source.
 	body := map[string]any{
 		"channel": msg.Channel,
 		"pattern": msg.Pattern,
@@ -334,32 +349,23 @@ func processRedisMessage(
 		return
 	}
 
-	// Use RunResumable so the run gets persisted into WorkflowRunStore
-	// with a real run_id. Side-effect: pre-exec node-approval gates
-	// (`require_node_approval`) and per-tool agent gates (`require_approval`)
-	// can register against the executor's ApprovalRegistry, persist
-	// `pending_approval` state on the run record, and resolve via
-	// `POST /api/v1/workflow_runs/:id/approval` (OOB). With the legacy
-	// `exec.Run` path the gates auto-approved silently.
-	outcome, err := exec.RunResumable(ctx, wf, workflow.RunOpts{Input: body})
-	elapsed := time.Since(start).Round(time.Millisecond)
-
-	var errCount int
-	for _, s := range outcome.Steps {
-		if s.Error != "" {
-			errCount++
-		}
+	now := time.Now().UTC()
+	rec := workflow.WorkflowRun{
+		ID:           ulid.Make().String(),
+		WorkflowID:   wf.ID,
+		TenantID:     wf.TenantID,
+		QueuedAt:     now,
+		Status:       workflow.RunStatusQueued,
+		Params:       wf.Params,
+		TriggerInput: body,
 	}
-
-	if err != nil {
-		slog.Error("workflow-redis-subscribe: run failed",
-			"workflow", wfID, "name", wfName, "channel", msg.Channel,
-			"run_id", outcome.RunID, "status", outcome.Status,
-			"err", err, "elapsed", elapsed)
+	if _, cerr := runRepo.Create(ctx, rec); cerr != nil {
+		slog.Error("workflow-redis-subscribe: persist run rec failed",
+			"workflow", wfID, "name", wfName, "channel", msg.Channel, "err", cerr)
 		return
 	}
-	slog.Info("workflow-redis-subscribe: run complete",
-		"workflow", wfID, "name", wfName, "channel", msg.Channel,
-		"run_id", outcome.RunID, "status", outcome.Status,
-		"steps", len(outcome.Steps), "errors", errCount, "elapsed", elapsed)
+	workflow.PublishWakeup(ctx, rc)
+
+	slog.Info("workflow-redis-subscribe: dispatched",
+		"workflow", wfID, "name", wfName, "channel", msg.Channel, "run_id", rec.ID)
 }

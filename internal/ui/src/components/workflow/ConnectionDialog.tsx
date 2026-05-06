@@ -406,6 +406,17 @@ function SlackFields({ config, setField }: { config: Record<string, string>; set
         placeholder="C01234ABCDE"
         description="Channel ID (or DM user ID) used when the workflow's approval channel doesn't override it. Leave empty to require per-workflow override."
       />
+
+      <Section title="Advanced">
+        <ConfigInput
+          label="Timeout (seconds)"
+          configKey="timeout_seconds"
+          config={config}
+          setField={setField}
+          placeholder="5"
+          description="Per-call HTTP timeout for chat.postMessage. Bump on slow / firewalled networks where the default 5s isn't enough. Empty = use the global notifier client's timeout."
+        />
+      </Section>
     </FieldGroup>
   )
 }

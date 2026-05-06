@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { buildWSURL } from '~/lib/api'
+import { api, buildWSURL } from '~/lib/api'
 
-export type RunStatus = 'idle' | 'connecting' | 'running' | 'done' | 'error'
+export type RunStatus = 'idle' | 'connecting' | 'running' | 'done' | 'error' | 'cancelled'
 
 // Wire shape — mirrors workflow.RunEvent in Go
 // (`internal/workflow/events.go`). Keep in sync.
 export interface RunEvent {
   type:
+    | 'run_start'
     | 'step_start'
     | 'step_done'
     | 'step_pending'
@@ -162,6 +163,14 @@ export function useWorkflowRunStream(): WorkflowRunStream {
       }
 
       switch (ev.type) {
+        case 'run_start': {
+          // Synthetic envelope from the WS handler so the hook learns the
+          // server-side run_id ASAP — needed by approveTool / cancel which
+          // both POST to /api/v1/workflow_runs/<id>/... and would silently
+          // drop the click without a run id to target.
+          if (ev.run_id) setLastRunID(ev.run_id)
+          break
+        }
         case 'step_start': {
           const n = ensure()
           next[id] = { ...n, status: 'running', nodeType: ev.node_type ?? n.nodeType }
@@ -193,11 +202,19 @@ export function useWorkflowRunStream(): WorkflowRunStream {
         }
         case 'agent_iter': {
           const n = ensure()
-          // Append new AgentIter entry if iter index isn't already tracked.
-          const existing = n.iters.find((i) => i.iter === (ev.iter ?? 0))
+          const iterIdx = ev.iter ?? 0
+          const existing = n.iters.find((i) => i.iter === iterIdx)
+          // Receiving an agent_iter for an iter index already in
+          // n.iters means the agent restarted from iter 0 — the
+          // worker died mid-run and a fresh worker re-claimed the
+          // run and re-ran the agent (no per-iter checkpoint yet,
+          // see FUTURE-FEATURES.md). Drop the dead attempt's iters
+          // so the live canvas reflects the active execution; the
+          // historical view on /runs/:id keeps every attempt and
+          // groups them by attempt boundary.
           const iters = existing
-            ? n.iters
-            : [...n.iters, { iter: ev.iter ?? 0, toolCalls: [] }]
+            ? [{ iter: iterIdx, toolCalls: [] }]
+            : [...n.iters, { iter: iterIdx, toolCalls: [] }]
           next[id] = { ...n, iters }
           break
         }
@@ -310,7 +327,18 @@ export function useWorkflowRunStream(): WorkflowRunStream {
           break
         }
         case 'run_done': {
-          setStatus('done')
+          // Distinct hook statuses for distinct terminal outcomes so
+          // the route's toast can pick the right copy. Cancelled and
+          // error get their own toasts; only `success` gets the green
+          // "Workflow completed" message.
+          if (ev.status === 'cancelled') {
+            setStatus('cancelled')
+          } else if (ev.status === 'error') {
+            setStatus('error')
+            if (ev.error) setError(ev.error)
+          } else {
+            setStatus('done')
+          }
           if (ev.run_id) setLastRunID(ev.run_id)
           // Track paused run ID separately so a subsequent run() call
           // can choose to send `resume_run_id`. Clear on any non-paused
@@ -402,15 +430,25 @@ export function useWorkflowRunStream(): WorkflowRunStream {
   )
 
   const cancel = useCallback(() => {
-    if (wsRef.current) {
-      wsRef.current.close()
-      wsRef.current = null
+    // Lease unification: the WS handler no longer drives execution —
+    // the worker owns the run via the lease. Closing the socket does
+    // NOT cancel the run; we have to hit POST /cancel so the worker
+    // record flips terminal and the lease releases. Best-effort —
+    // network failures still close the socket so the UI stops
+    // streaming, but log so the user can retry from /runs/:id.
+    const id = lastRunID
+    if (id) {
+      api.post(`/api/v1/workflow_runs/${id}/cancel`).catch((err: unknown) => {
+        console.warn('cancel run failed; the run may keep running on the worker', err)
+      })
     }
-    // Server context cancel doesn't reach the UI as a step_done event
-    // (the WS is already gone by the time the goroutine winds down), so
-    // synthesise the terminal state here. Any node still in-flight at
-    // cancel time gets marked `cancelled` — distinct from `error` (which
-    // implies the workflow itself failed).
+    // Don't synthesise terminal state here — the cancel handler
+    // publishes a `run_done` envelope on the per-run event channel,
+    // and the WS subscriber forwards it to the browser. Optimistic
+    // status='done' would fire the "Workflow completed" toast a
+    // round-trip too early (and incorrectly, since the run was
+    // cancelled, not completed). Just nudge in-flight nodes so the
+    // canvas doesn't look frozen for the ~50ms before run_done lands.
     setNodes((prev) => {
       const next = { ...prev }
       for (const id of Object.keys(next)) {
@@ -421,26 +459,28 @@ export function useWorkflowRunStream(): WorkflowRunStream {
       }
       return next
     })
-    setStatus('done')
     setPausedRunID(null)
-  }, [])
+  }, [lastRunID])
 
   const approveTool = useCallback((toolId: string, approved: boolean, reason?: string) => {
-    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+    // Lease unification: the agent runs in the worker; the WS handler
+    // is just an event subscriber. Approval decisions cross the
+    // process boundary via POST /approval (same endpoint the
+    // /runs/:id page uses) → ApplyApprovalDecision → wakeup → the
+    // worker re-claims and feeds the decision into the agent loop.
+    const id = lastRunID
+    if (!id) {
       return false
     }
-    wsRef.current.send(
-      JSON.stringify({
-        type: 'approve_tool',
+    api
+      .post(`/api/v1/workflow_runs/${id}/approval`, {
         tool_call_id: toolId,
         approved,
         ...(reason ? { reason } : {}),
-      }),
-    )
-    // Optimistically clear pendingApproval so the timeline doesn't lag
-    // behind the WS round-trip. Authoritative clear comes from the
-    // server's agent_tool_result event when the tool finishes (or is
-    // rejected on the server side).
+      })
+      .catch((err: unknown) => {
+        console.warn('approve tool failed', err)
+      })
     setNodes((prev) => {
       const next = { ...prev }
       for (const id of Object.keys(next)) {
@@ -456,33 +496,25 @@ export function useWorkflowRunStream(): WorkflowRunStream {
       return next
     })
     return true
-  }, [])
+  }, [lastRunID])
 
-  const setBreakpoints = useCallback((nodeIds: string[]) => {
-    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
-      return false
-    }
-    wsRef.current.send(JSON.stringify({ type: 'set_breakpoints', node_ids: nodeIds }))
-    return true
+  const setBreakpoints = useCallback((_nodeIds: string[]) => {
+    // Phase 2 TODO: route through a Redis control channel so the
+    // worker can mutate the run's breakpoint set mid-flight. The old
+    // WS frame doesn't reach the worker any more (lease unification);
+    // this is a no-op until the control bridge lands. Surfacing as a
+    // false return so callers know nothing happened.
+    console.warn('setBreakpoints: control channel not yet wired (Phase 2)')
+    return false
   }, [])
 
   const continue_ = useCallback(() => {
-    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
-      return false
-    }
-    wsRef.current.send(JSON.stringify({ type: 'continue' }))
-    // Optimistically flip every paused node back to running so the UI
-    // doesn't lag behind the WS round-trip. Server will resync via
-    // step_start when the breakpoint actually unblocks.
-    setNodes((prev) => {
-      const next = { ...prev }
-      for (const id of Object.keys(next)) {
-        const n = next[id]!
-        if (n.status === 'paused') next[id] = { ...n, status: 'running' }
-      }
-      return next
-    })
-    return true
+    // Phase 2 TODO: same story as setBreakpoints — needs a control
+    // channel so the worker's runEnv can release a breakpoint pause
+    // from outside its process. Until then, breakpoint pauses on
+    // canvas runs require restarting the run.
+    console.warn('continue: control channel not yet wired (Phase 2)')
+    return false
   }, [])
 
   const reset = useCallback(() => {

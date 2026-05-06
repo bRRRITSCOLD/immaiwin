@@ -225,7 +225,8 @@ func claimAndRun(
 	// lands, at which point the worker picks it up. Claiming the
 	// pending-approval status here would just busy-loop the gate.
 	rec, claimed, err := runRepo.ClaimLease(ctx, workerID, executorLeaseDur, []workflow.RunStatus{
-		workflow.RunStatusRunning,
+		workflow.RunStatusQueued,  // dispatched-but-unclaimed; ClaimLease flips → running atomically
+		workflow.RunStatusRunning, // resumed / recovered runs that already have a status of running
 	})
 	if err != nil {
 		slog.Warn("workflow-executor: claim lease failed", "worker", workerID, "err", err)
@@ -260,7 +261,18 @@ func claimAndRun(
 	hbDone := make(chan struct{})
 	go heartbeatLease(hbCtx, runRepo, rec.ID, workerID, hbDone)
 
-	_, err = exec.RunFromCheckpoint(ctx, wf, rec, workerID, exec.Events)
+	// Per-run event emitter publishes RunEvents to a Redis pub/sub
+	// topic so the WS handler can stream them to the browser. Without
+	// this, canvas runs would have no live updates because the worker
+	// runs out-of-process.
+	var emitter workflow.EventEmitter = exec.Events
+	if exec.ApprovalBroker != nil {
+		emitter = &workflow.RedisRunEventEmitter{
+			Pub:   exec.ApprovalBroker, // shared rediss.Client; satisfies RunEventPublisher
+			RunID: rec.ID,
+		}
+	}
+	_, err = exec.RunFromCheckpoint(ctx, wf, rec, workerID, emitter)
 
 	hbCancel()
 	<-hbDone

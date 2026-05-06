@@ -433,8 +433,15 @@ func RunWorkflow(store WorkflowStore, runStore workflow.WorkflowRunStore, wakeup
 			ID:           runID,
 			WorkflowID:   wf.ID,
 			TenantID:     wf.TenantID,
-			Status:       workflow.RunStatusRunning,
-			StartedAt:    now,
+			// Dispatched but unclaimed — ClaimLease flips it to
+			// running atomically when a worker picks it up. Without
+			// the queued status the UI shows "running" the whole
+			// time the run sits in the worker queue (which can be
+			// noticeable under burst load or a cold worker pool).
+			Status:       workflow.RunStatusQueued,
+			QueuedAt:     now,
+			// StartedAt stays nil until ClaimLease stamps it on first
+			// worker pickup — duration math then excludes queue time.
 			Params:       wf.Params,
 			TriggerInput: req.Input,
 		}
@@ -447,7 +454,7 @@ func RunWorkflow(store WorkflowStore, runStore workflow.WorkflowRunStore, wakeup
 		workflow.PublishWakeup(c.Request.Context(), wakeup)
 		c.JSON(http.StatusAccepted, gin.H{
 			"run_id": runID,
-			"status": workflow.RunStatusRunning,
+			"status": workflow.RunStatusQueued,
 		})
 	}
 }

@@ -199,7 +199,7 @@ func runInTestExecutorWorker(
 		case <-tick.C:
 		}
 		rec, ok, err := runRepo.ClaimLease(ctx, workerID, 30*time.Second,
-			[]workflow.RunStatus{workflow.RunStatusRunning})
+			[]workflow.RunStatus{workflow.RunStatusQueued, workflow.RunStatusRunning})
 		if err != nil || !ok {
 			continue
 		}
@@ -341,7 +341,7 @@ func (s *WorkflowRunIntegrationSuite) TestRun_TriggerOnly_PersistsSuccessRow() {
 	body, _ := io.ReadAll(resp.Body)
 	s.Require().NoError(json.Unmarshal(body, &runOut))
 	s.NotEmpty(runOut.RunID, "run_id must be returned")
-	s.Equal("running", runOut.Status, "fresh dispatch enqueues with status=running")
+	s.Equal("queued", runOut.Status, "fresh dispatch returns status=queued; ClaimLease atomically promotes to running on worker pickup")
 
 	s.waitForRunStatus(client, runOut.RunID, "success", 5*time.Second)
 
@@ -1026,7 +1026,7 @@ func (s *WorkflowRunIntegrationSuite) TestApprovalSubmit_OrphanedPendingRun_Auto
 		WorkflowID: wfID,
 		TenantID:   tenantID,
 		Status:     workflow.RunStatusPendingApproval,
-		StartedAt:  time.Now().UTC().Add(-1 * time.Hour),
+		QueuedAt:   time.Now().UTC().Add(-1 * time.Hour),
 		PendingApproval: &workflow.PendingApprovalState{
 			Kind:        "node",
 			NodeID:      "notify-1",

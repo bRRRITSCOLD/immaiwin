@@ -14,7 +14,18 @@ type WorkflowRun struct {
 	ID           string                  `bson:"_id"            json:"id"`           // ULID
 	WorkflowID   string                  `bson:"workflow_id"    json:"workflow_id"`
 	TenantID     string                  `bson:"tenant_id"      json:"tenant_id"`    // "default" until multi-tenant
-	StartedAt    time.Time               `bson:"started_at"     json:"started_at"`
+	// QueuedAt is the wall-clock moment the run record was created —
+	// dispatch time, when /run was POSTed (or canvas WS opened, or a
+	// trigger worker fired). Used for FIFO claim ordering and to
+	// surface "queued for X seconds" in the UI.
+	QueuedAt     time.Time               `bson:"queued_at"            json:"queued_at"`
+	// StartedAt is the wall-clock moment a worker won the lease and
+	// flipped the run from queued to running. Duration is computed as
+	// FinishedAt - StartedAt so queue time is excluded — a run that
+	// sat in the worker queue for two minutes doesn't display a
+	// 2-minute duration when it actually ran for 3 seconds. Nil
+	// while the run is still queued.
+	StartedAt    *time.Time              `bson:"started_at,omitempty"  json:"started_at,omitempty"`
 	FinishedAt   *time.Time              `bson:"finished_at,omitempty" json:"finished_at,omitempty"`
 	Status       RunStatus               `bson:"status"         json:"status"`
 	TriggerInput any                     `bson:"trigger_input,omitempty" json:"trigger_input,omitempty"`
@@ -244,6 +255,13 @@ type AgentPauseState struct {
 type RunStatus string
 
 const (
+	// RunStatusQueued is the dispatched-but-unclaimed state. Set when a
+	// run record is created (POST /run, canvas WS, cron, webhook, etc.)
+	// and cleared atomically by ClaimLease's findAndModify when a worker
+	// picks the run up. Visible to the user as "queued" so the UI
+	// doesn't claim the run is "running" for the seconds (or minutes,
+	// under a cold worker pool) it spends sitting in the claim queue.
+	RunStatusQueued    RunStatus = "queued"
 	RunStatusRunning   RunStatus = "running"
 	RunStatusSuccess   RunStatus = "success"
 	RunStatusError     RunStatus = "error"
@@ -315,6 +333,14 @@ type WorkflowRunStore interface {
 	// the daily-cost-cap enforcement path (executor pre-run + agent
 	// loop mid-run). Returns 0 when the store has no matching docs.
 	SumCostSince(ctx context.Context, workflowID string, since time.Time) (float64, error)
+
+	// CountInFlightForWorkflow returns the number of non-terminal runs
+	// for the given workflow_id (status ∈ {queued, running,
+	// pending_approval, paused}). Used by the cron trigger worker to
+	// honour `skip_if_running`: if a previous tick's run is still
+	// in flight, the next tick can skip dispatch instead of stacking
+	// concurrent runs of the same workflow.
+	CountInFlightForWorkflow(ctx context.Context, workflowID string) (int64, error)
 
 	// ClaimLease atomically acquires the lease on a non-terminal run
 	// matching one of `statuses`. Predicate also requires the run to be

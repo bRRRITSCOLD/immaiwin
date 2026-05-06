@@ -232,7 +232,7 @@ func NewServer(
 	r.POST("/api/v1/workflows/:id/duplicate", requireAuth, handler.DuplicateWorkflow(handler.WorkflowDuplicateDeps{Store: wfStore, Audit: audit}))
 	r.DELETE("/api/v1/workflows/:id", requireAuth, handler.DeleteWorkflow(wfStore))
 	r.POST("/api/v1/workflows/:id/run", requireAuth, handler.RunWorkflow(wfStore, wfRunStore, rc, wfExec))
-	r.GET("/api/v1/workflows/:id/run/stream", requireAuth, handler.RunWorkflowWS(wfStore, wfExec))
+	r.GET("/api/v1/workflows/:id/run/stream", requireAuth, handler.RunWorkflowWS(wfStore, wfRunStore, wfExec))
 
 	// Workflow runs (history page). Register the static `daily_total`
 	// route BEFORE `:id` so gin's radix tree doesn't route the literal
