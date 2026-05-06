@@ -947,15 +947,11 @@ type checkpointBundle struct {
 	workerID    string
 	priorState  *ExecutionState
 	pausedAgent *AgentPauseState
-	// Control channels populated when the worker has set up cross-
-	// process bridges to the WS handler. continueCh receives a token
-	// when the browser sends a `continue` frame (releasing a pre-exec
-	// breakpoint); breakpointsCh receives an updated node-ID list when
-	// the browser sets / clears breakpoints mid-run. Both are nil for
-	// non-canvas-driven runs (cron / webhook / API trigger), in which
-	// case the BFS treats the run as headless.
-	continueCh    chan struct{}
-	breakpointsCh chan []string
+	// Reserved for the Phase-2 control-channel bridge (canvas
+	// Continue + set_breakpoints). Currently no field on the
+	// bundle — when the bridge lands it'll add continueCh and
+	// breakpointsCh chans here, populated by the worker before
+	// invoking RunFromCheckpoint.
 }
 
 type resumeBundle struct {

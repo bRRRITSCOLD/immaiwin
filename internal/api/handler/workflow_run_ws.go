@@ -77,38 +77,6 @@ func (e *wsEventEmitter) Emit(ev workflow.RunEvent) {
 	_ = e.ws.WriteMessage(websocket.TextMessage, data)
 }
 
-// parseStopAt accepts either a JSON string or array of strings and
-// returns a deduplicated []string. Empty/null returns nil.
-func parseStopAt(raw json.RawMessage) []string {
-	if len(raw) == 0 {
-		return nil
-	}
-	// Try array first.
-	var arr []string
-	if err := json.Unmarshal(raw, &arr); err == nil {
-		return dedupeNonEmpty(arr)
-	}
-	// Fall back to single string.
-	var s string
-	if err := json.Unmarshal(raw, &s); err == nil && s != "" {
-		return []string{s}
-	}
-	return nil
-}
-
-func dedupeNonEmpty(in []string) []string {
-	seen := make(map[string]bool, len(in))
-	out := make([]string, 0, len(in))
-	for _, s := range in {
-		if s == "" || seen[s] {
-			continue
-		}
-		seen[s] = true
-		out = append(out, s)
-	}
-	return out
-}
-
 // writeWfWsError is a one-off error frame writer for failures that
 // happen before the run starts (bad upgrade, missing workflow, etc.).
 func writeWfWsError(ws *websocket.Conn, msg string) {

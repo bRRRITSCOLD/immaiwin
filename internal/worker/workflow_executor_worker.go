@@ -265,7 +265,7 @@ func claimAndRun(
 	// topic so the WS handler can stream them to the browser. Without
 	// this, canvas runs would have no live updates because the worker
 	// runs out-of-process.
-	var emitter workflow.EventEmitter = exec.Events
+	emitter := exec.Events
 	if exec.ApprovalBroker != nil {
 		emitter = &workflow.RedisRunEventEmitter{
 			Pub:   exec.ApprovalBroker, // shared rediss.Client; satisfies RunEventPublisher
