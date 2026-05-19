@@ -11,11 +11,13 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/bRRRITSCOLD/burrow/internal/sandbox"
@@ -165,9 +167,15 @@ type runCtx map[string]StepContext
 
 // WorkflowExecutor runs a Workflow graph node by node.
 type WorkflowExecutor struct {
-	HTTPClient   *http.Client
-	DB           MongoClient
-	Redis        RedisClient
+	HTTPClient *http.Client
+	// AllowPrivateHTTPHosts disables the http_request SSRF dial-guard
+	// (loopback / link-local / RFC1918 / multicast / unspecified are
+	// refused by default). Off in production; integration tests that
+	// dial httptest servers on 127.0.0.1 flip this on. Per-node
+	// `allowed_hosts` is the production opt-in path.
+	AllowPrivateHTTPHosts bool
+	DB                    MongoClient
+	Redis                 RedisClient
 	ConnResolver *ConnectionResolver
 	SandboxRT    sandbox.Runtime
 	// AI agent dependencies (optional — agent nodes error if unset).
@@ -2303,8 +2311,21 @@ func (e *WorkflowExecutor) runHTTPRequest(ctx context.Context, data map[string]a
 		req.SetBasicAuth(applyTemplate(u, input, wfCtx), applyTemplate(p, input, wfCtx))
 	}
 
+	// SSRF guard: refuse to dial loopback / link-local / private /
+	// multicast / unspecified addresses unless the operator explicitly
+	// added the target hostname to data.allowed_hosts. The Control
+	// hook fires at the moment of DIAL (after DNS resolution), which
+	// closes the DNS-rebind window — a hostname that flips to a
+	// private IP between parse + connect is still rejected because
+	// the Control sees the actual resolved IP. Skipped entirely when
+	// the URL hostname is in the allow-list (operator opted in).
+	var dialCtrl func(network, address string, c syscall.RawConn) error
+	if !e.AllowPrivateHTTPHosts {
+		dialCtrl = ssrfDialControl(stringSliceData(data, "allowed_hosts"), parsedURL.Hostname())
+	}
+
 	// Client (per-request to honour timeout/redirects/TLS overrides)
-	client := buildHTTPClient(e.HTTPClient, data)
+	client := buildHTTPClient(e.HTTPClient, data, dialCtrl)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -2359,7 +2380,7 @@ func (e *WorkflowExecutor) runHTTPRequest(ctx context.Context, data map[string]a
 // buildHTTPClient produces an http.Client honouring per-request overrides:
 // timeout, redirect policy, TLS skip-verify. Falls back to base when no
 // overrides apply (preserving any shared transport).
-func buildHTTPClient(base *http.Client, data map[string]any) *http.Client {
+func buildHTTPClient(base *http.Client, data map[string]any, dialCtrl func(network, address string, c syscall.RawConn) error) *http.Client {
 	timeout := 30 * time.Second
 	if v, ok := numberData(data, "timeout_seconds"); ok && v > 0 {
 		timeout = time.Duration(v) * time.Second
@@ -2376,10 +2397,31 @@ func buildHTTPClient(base *http.Client, data map[string]any) *http.Client {
 
 	insecure, _ := data["tls_insecure_skip_verify"].(bool)
 
-	// If no TLS override and base client present, reuse its transport with our
-	// timeout + redirect policy. Otherwise build a fresh transport.
+	// SSRF guard wins over base-transport sharing: when a dial control
+	// is supplied we MUST build a fresh transport whose underlying
+	// dialer carries our Control hook, otherwise the IP check is
+	// bypassed via the shared client's pooled connections. Without the
+	// guard, reuse the base transport (proxy / pool / etc.).
 	var transport http.RoundTripper
-	if insecure {
+	if dialCtrl != nil {
+		dialer := &net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+			Control:   dialCtrl,
+		}
+		tr := &http.Transport{
+			DialContext:           dialer.DialContext,
+			ForceAttemptHTTP2:     true,
+			MaxIdleConns:          100,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+		}
+		if insecure {
+			tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // user-opt-in
+		}
+		transport = tr
+	} else if insecure {
 		transport = &http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // user-opt-in
 		}
@@ -2404,6 +2446,122 @@ func buildHTTPClient(base *http.Client, data map[string]any) *http.Client {
 		}
 	}
 	return c
+}
+
+// stringSliceData coerces data[key] into []string. Accepts a []any (most
+// JSON decoders), a []string (rare; defensive), or a single comma-
+// separated string (UI legacy). Returns nil when missing/empty so the
+// caller can branch on `len(...)==0`.
+func stringSliceData(data map[string]any, key string) []string {
+	v, ok := data[key]
+	if !ok || v == nil {
+		return nil
+	}
+	switch x := v.(type) {
+	case []string:
+		return x
+	case []any:
+		out := make([]string, 0, len(x))
+		for _, item := range x {
+			if s, ok := item.(string); ok && s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	case string:
+		if x == "" {
+			return nil
+		}
+		parts := strings.Split(x, ",")
+		out := make([]string, 0, len(parts))
+		for _, p := range parts {
+			if p = strings.TrimSpace(p); p != "" {
+				out = append(out, p)
+			}
+		}
+		return out
+	}
+	return nil
+}
+
+// ssrfDialControl returns a net.Dialer.Control hook that refuses to
+// dial loopback / link-local / private / multicast / unspecified IPs.
+// Closes the SSRF surface (cloud metadata 169.254.169.254, internal
+// services on 10/8 etc.) and is DNS-rebind safe: the Control fires at
+// dial time after the resolver returns, so a hostname that flips to a
+// private IP between parse and connect is still caught.
+//
+// Returns nil (no guard) when urlHost is on the allow-list — operator
+// explicitly opted into reaching that target (e.g. a same-vpc
+// service). Match is exact + lowercased; CIDR-style allow-listing is
+// a follow-up.
+func ssrfDialControl(allowedHosts []string, urlHost string) func(network, address string, c syscall.RawConn) error {
+	if urlHost != "" {
+		h := strings.ToLower(urlHost)
+		for _, a := range allowedHosts {
+			if strings.ToLower(strings.TrimSpace(a)) == h {
+				return nil // opt-in bypass
+			}
+		}
+	}
+	return func(network, address string, _ syscall.RawConn) error {
+		// `address` arrives as "ip:port" (the resolver already ran).
+		host, _, err := net.SplitHostPort(address)
+		if err != nil {
+			return fmt.Errorf("http_request: refused — could not parse dial address %q: %w", address, err)
+		}
+		ip := net.ParseIP(host)
+		if ip == nil {
+			return fmt.Errorf("http_request: refused — non-IP dial target %q", host)
+		}
+		if isPrivateOrReservedIP(ip) {
+			return fmt.Errorf("http_request: refused — target IP %s is in a disallowed range (loopback / link-local / private / multicast). Add the hostname to node.data.allowed_hosts to opt-in", ip.String())
+		}
+		return nil
+	}
+}
+
+// isPrivateOrReservedIP returns true for IPs that should never be
+// dialed from a tenant workflow without an explicit allow-list entry.
+// Covers cloud-metadata link-local (169.254.169.254), RFC1918, CGNAT,
+// loopback, multicast, unspecified, and IPv6 ULA / link-local.
+func isPrivateOrReservedIP(ip net.IP) bool {
+	if ip.IsLoopback() ||
+		ip.IsUnspecified() ||
+		ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() ||
+		ip.IsInterfaceLocalMulticast() ||
+		ip.IsMulticast() {
+		return true
+	}
+	if v4 := ip.To4(); v4 != nil {
+		// RFC1918
+		if v4[0] == 10 {
+			return true
+		}
+		if v4[0] == 172 && v4[1]&0xf0 == 16 { // 172.16.0.0/12
+			return true
+		}
+		if v4[0] == 192 && v4[1] == 168 {
+			return true
+		}
+		// CGNAT 100.64.0.0/10
+		if v4[0] == 100 && v4[1]&0xc0 == 64 {
+			return true
+		}
+		// 0.0.0.0/8 (covered by IsUnspecified for 0.0.0.0 itself; this
+		// catches the rest of the reserved block).
+		if v4[0] == 0 {
+			return true
+		}
+		return false
+	}
+	// IPv6: unique-local fc00::/7 + the standard private/reserved
+	// helpers above already caught link-local + loopback + unspec.
+	if len(ip) == net.IPv6len && ip[0]&0xfe == 0xfc {
+		return true
+	}
+	return false
 }
 
 // stringMap coerces an arbitrary value into map[string]string. Accepts

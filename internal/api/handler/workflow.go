@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/bRRRITSCOLD/burrow/internal/auth"
@@ -201,6 +202,52 @@ func UpsertWorkflow(store WorkflowStore) gin.HandlerFunc {
 				})
 				return
 			}
+		}
+
+		// Required-connection validation (defense-in-depth for the
+		// worker-side refusal shipped in PR #78). Reject a half-wired
+		// workflow at SAVE time so a direct API client can't bypass
+		// the canvas's `requireExplicit` UX guard and ship a workflow
+		// the worker will only error on at run-time:
+		//   - mongo_request / redis_request   → connection_id required
+		//     (platform Mongo/Redis are NEVER reachable from a workflow)
+		//   - trigger (rabbitmq / redis_subscribe) → connection_id required
+		//   - ai_agent                        → llm_connection_id required
+		type missingConn struct {
+			NodeID   string `json:"node_id"`
+			NodeName string `json:"node_name,omitempty"`
+			NodeType string `json:"node_type"`
+			Missing  string `json:"missing_field"`
+		}
+		var missing []missingConn
+		needs := func(data map[string]any, key string) bool {
+			v, _ := data[key].(string)
+			return strings.TrimSpace(v) == ""
+		}
+		for _, n := range wf.Nodes {
+			name, _ := n.Data["name"].(string)
+			switch n.Type {
+			case workflow.NodeTypeMongoRequest, workflow.NodeTypeRedisRequest:
+				if needs(n.Data, "connection_id") {
+					missing = append(missing, missingConn{n.ID, name, string(n.Type), "connection_id"})
+				}
+			case workflow.NodeTypeTrigger:
+				tt, _ := n.Data["trigger_type"].(string)
+				if (tt == "rabbitmq" || tt == "redis_subscribe") && needs(n.Data, "connection_id") {
+					missing = append(missing, missingConn{n.ID, name, string(n.Type) + ":" + tt, "connection_id"})
+				}
+			case workflow.NodeTypeAIAgent:
+				if needs(n.Data, "llm_connection_id") {
+					missing = append(missing, missingConn{n.ID, name, string(n.Type), "llm_connection_id"})
+				}
+			}
+		}
+		if len(missing) > 0 {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error":   "workflow has nodes missing a required connection",
+				"missing": missing,
+			})
+			return
 		}
 
 		saved, err := store.Upsert(c.Request.Context(), wf)

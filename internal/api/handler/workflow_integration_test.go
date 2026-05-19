@@ -488,3 +488,92 @@ func (s *WorkflowCRUDIntegrationSuite) TestWorkflowDuplicate_ForeignTenant_Retur
 	_, aliceList := s.listWorkflows(alice)
 	s.Len(aliceList, 1)
 }
+
+// TestWorkflowUpsert_MissingNodeConnection_Rejected400 verifies the
+// server-side guard that mirrors the canvas's `requireExplicit` UX
+// rule. A workflow whose mongo_request / redis_request node, agent,
+// or rabbitmq / redis_subscribe trigger lacks the required
+// connection_id (or llm_connection_id for the agent) is rejected at
+// save time with 400 + a `missing` array — defense-in-depth for the
+// worker's run-time refusal in PR #78, so a direct API client can't
+// ship a workflow the worker will only error on later.
+func (s *WorkflowCRUDIntegrationSuite) TestWorkflowUpsert_MissingNodeConnection_Rejected400() {
+	client, _ := s.authedClient(fmt.Sprintf("alice-missing-conn-%d@example.com", time.Now().UnixNano()))
+
+	cases := []struct {
+		label   string
+		node    map[string]any
+		missing string // expected missing_field
+	}{
+		{
+			"mongo_request without connection_id",
+			map[string]any{"id": "n-mongo", "type": "mongo_request", "position": map[string]any{"x": 0, "y": 0},
+				"data": map[string]any{"operation": "find", "collection": "anything"}},
+			"connection_id",
+		},
+		{
+			"redis_request without connection_id",
+			map[string]any{"id": "n-redis", "type": "redis_request", "position": map[string]any{"x": 0, "y": 0},
+				"data": map[string]any{"operation": "publish", "channel": "x"}},
+			"connection_id",
+		},
+		{
+			"ai_agent without llm_connection_id",
+			map[string]any{"id": "n-agent", "type": "ai_agent", "position": map[string]any{"x": 0, "y": 0},
+				"data": map[string]any{"system_prompt": "x", "user_input": "y"}},
+			"llm_connection_id",
+		},
+		{
+			"rabbitmq trigger without connection_id",
+			map[string]any{"id": "n-rabbit", "type": "trigger", "position": map[string]any{"x": 0, "y": 0},
+				"data": map[string]any{"trigger_type": "rabbitmq"}},
+			"connection_id",
+		},
+		{
+			"redis_subscribe trigger without connection_id",
+			map[string]any{"id": "n-redis-sub", "type": "trigger", "position": map[string]any{"x": 0, "y": 0},
+				"data": map[string]any{"trigger_type": "redis_subscribe"}},
+			"connection_id",
+		},
+	}
+	for _, tc := range cases {
+		s.Run(tc.label, func() {
+			wfID := fmt.Sprintf("wf-missing-%d", time.Now().UnixNano())
+			status, body := s.putWorkflow(client, wfID, map[string]any{
+				"name":   "no-conn",
+				"params": map[string]any{},
+				"nodes":  []map[string]any{tc.node},
+				"edges":  []map[string]any{},
+			})
+			s.Require().Equal(http.StatusBadRequest, status, "save must refuse a node missing its required connection")
+			missing, _ := body["missing"].([]any)
+			s.Require().Len(missing, 1, "exactly one missing-connection entry expected")
+			entry, _ := missing[0].(map[string]any)
+			s.Equal(tc.missing, entry["missing_field"])
+		})
+	}
+}
+
+// TestWorkflowUpsert_NodeWithConnection_Accepted verifies the guard's
+// negative form: the SAME node types pass validation when the
+// required field is set (regression: don't over-refuse).
+func (s *WorkflowCRUDIntegrationSuite) TestWorkflowUpsert_NodeWithConnection_Accepted() {
+	client, _ := s.authedClient(fmt.Sprintf("alice-has-conn-%d@example.com", time.Now().UnixNano()))
+	wfID := fmt.Sprintf("wf-conn-ok-%d", time.Now().UnixNano())
+	status, _ := s.putWorkflow(client, wfID, map[string]any{
+		"name":   "with-conn",
+		"params": map[string]any{},
+		"nodes": []map[string]any{
+			{"id": "trigger-1", "type": "trigger", "position": map[string]any{"x": 0, "y": 0},
+				"data": map[string]any{"trigger_type": "manual"}},
+			{"id": "mongo-1", "type": "mongo_request", "position": map[string]any{"x": 200, "y": 0},
+				"data": map[string]any{"connection_id": "any-conn", "operation": "find", "collection": "x"}},
+			{"id": "redis-1", "type": "redis_request", "position": map[string]any{"x": 400, "y": 0},
+				"data": map[string]any{"connection_id": "any-conn", "operation": "publish", "channel": "x"}},
+			{"id": "agent-1", "type": "ai_agent", "position": map[string]any{"x": 600, "y": 0},
+				"data": map[string]any{"llm_connection_id": "any-conn"}},
+		},
+		"edges": []map[string]any{},
+	})
+	s.Equal(http.StatusOK, status, "all required connections present — save must succeed")
+}
