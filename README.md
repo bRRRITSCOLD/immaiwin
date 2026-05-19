@@ -507,6 +507,16 @@ What each touches:
 
 Supported types: `mongodb`, `redis`, `rabbitmq`, `anthropic`, `openai`, `ollama`.
 
+> **Security:** `mongo_request` / `redis_request` nodes and
+> `rabbitmq` / `redis_subscribe` triggers **require** an explicit
+> user connection — they can never fall back to Burrow's platform
+> Mongo/Redis (workflow records, run history, audit log, lease &
+> approval state, chat memory). The worker refuses an empty
+> `connection_id` for these node types and the canvas picker has
+> no "Default (env)" option for them. Prevents a tenant workflow
+> from reading/destroying platform or cross-tenant state (e.g.
+> `mongo_request{op:"delete_many",collection:"workflows"}`).
+
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/api/v1/connections` | List saved connections |

@@ -302,7 +302,7 @@ export function RedisRequestNode({ id, data, selected }: NodeProps) {
         <div className="flex items-center gap-2 px-4 py-2.5 border-b border-orange-500/40">
           <Radio className="h-4 w-4 text-orange-400 shrink-0" />
           <span className="text-sm font-medium flex-1">Redis Request</span>
-          <ConnectionPicker nodeId={id} connectionType="redis" data={data as Record<string, unknown>} activeColor="text-orange-400" />
+          <ConnectionPicker nodeId={id} connectionType="redis" data={data as Record<string, unknown>} activeColor="text-orange-400" requireExplicit />
         </div>
         <StepNameInput id={id} data={data} />
 

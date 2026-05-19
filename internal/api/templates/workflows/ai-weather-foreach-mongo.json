@@ -1,6 +1,6 @@
 {
   "name": "AI Weather Agent — Mongo + for_each fan-out",
-  "description": "Reads a list of cities from a Mongo collection, then loops over every document with a for_each. Each iteration runs the SAME AI agent as the base AI Weather templates (get_weather via HTTP as_tool → weather-formatter skill → publish_weather via Redis as_tool) for that city. Demonstrates: mongo_request find, the for_each `items` selector (`{{input.docs}}` un-nests the find envelope so the loop body runs once per document), an AI agent as the for_each body, and `on_error: continue` on the agent's get_weather tool so one flaky city doesn't abort the agent.\n\nNo connection records needed for Mongo — mongo_request uses the default burrow DB. The agent still needs an LLM connection: replace REPLACE_WITH_LLM_CONNECTION_ID. Seed the collection first:\n\n  go run ./.private/scripts/seed-cities/main.go Boise Reno Bend\n\nThen run the workflow (manual trigger) and watch the channel:\n\n  go run ./.private/scripts/listen-redis/main.go weather.alerts\n\nSmoke variant (SMOKE-TEST-ON-ERROR.md §7): point get_weather `url` at an unreachable host (e.g. https://127.0.0.1:1/). Because the tool target carries `on_error: continue`, the error is fed back to the LLM instead of aborting the agent; the loop still completes every city and the run lands `success`.",
+  "description": "Reads a list of cities from a Mongo collection, then loops over every document with a for_each. Each iteration runs the SAME AI agent as the base AI Weather templates (get_weather via HTTP as_tool → weather-formatter skill → publish_weather via Redis as_tool) for that city. Demonstrates: mongo_request find, the for_each `items` selector (`{{input.docs}}` un-nests the find envelope so the loop body runs once per document), an AI agent as the for_each body, and `on_error: continue` on the agent's get_weather tool so one flaky city doesn't abort the agent.\n\nConnections required (workflows never reach Burrow's platform DB/Redis): replace REPLACE_WITH_MONGO_CONNECTION_ID (load_cities), REPLACE_WITH_REDIS_CONNECTION_ID (publish_weather), and REPLACE_WITH_LLM_CONNECTION_ID (agent). Seed the cities collection into the SAME Mongo that connection points at:\n\n  go run ./.private/scripts/seed-cities/main.go Boise Reno Bend\n\nThen run the workflow (manual trigger) and watch the channel:\n\n  go run ./.private/scripts/listen-redis/main.go weather.alerts\n\nSmoke variant (SMOKE-TEST-ON-ERROR.md §7): point get_weather `url` at an unreachable host (e.g. https://127.0.0.1:1/). Because the tool target carries `on_error: continue`, the error is fed back to the LLM instead of aborting the agent; the loop still completes every city and the run lands `success`.",
   "category": "AI",
   "workflow": {
     "name": "AI Weather Agent — Mongo + for_each fan-out",
@@ -29,6 +29,7 @@
         "position": { "x": -80, "y": 0 },
         "data": {
           "name": "load_cities",
+          "connection_id": "REPLACE_WITH_MONGO_CONNECTION_ID",
           "operation": "find",
           "collection": "{{params.cities_collection}}",
           "filter": {},
@@ -115,6 +116,7 @@
         "position": { "x": 920, "y": 200 },
         "data": {
           "name": "publish_weather",
+          "connection_id": "REPLACE_WITH_REDIS_CONNECTION_ID",
           "operation": "publish",
           "channel": "{{params.redis_channel}}",
           "as_tool": {
