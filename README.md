@@ -516,6 +516,16 @@ Supported types: `mongodb`, `redis`, `rabbitmq`, `anthropic`, `openai`, `ollama`
 > no "Default (env)" option for them. Prevents a tenant workflow
 > from reading/destroying platform or cross-tenant state (e.g.
 > `mongo_request{op:"delete_many",collection:"workflows"}`).
+> Layered defense: `PUT /api/v1/workflows/:id` also rejects the
+> half-wired workflow at SAVE time with `400 {error, missing[...]}`,
+> so a direct API client can't bypass the canvas guard.
+>
+> **HTTP SSRF guard:** `http_request` refuses to dial loopback,
+> link-local (incl. cloud metadata `169.254.169.254`), RFC1918,
+> CGNAT, multicast, unspecified, and IPv6 ULA / link-local by
+> default — DNS-rebind safe (check fires at dial time, after
+> resolution). Opt in to a specific target with
+> `node.data.allowed_hosts: ["api.internal.example"]`.
 
 | Method | Path | Description |
 |--------|------|-------------|

@@ -99,6 +99,7 @@ func (s *WorkflowHTTPNodeIntegrationSuite) SetupSuite() {
 
 	// Real executor — http_request needs HTTPClient + RunRepo.
 	wfExec := &workflow.WorkflowExecutor{
+		AllowPrivateHTTPHosts: true, // test httptest mockSrv lives on 127.0.0.1
 		HTTPClient: &http.Client{Timeout: 10 * time.Second},
 		DB:         mongodb.NewMongoClient(s.db),
 		RunRepo:    runRepo,

@@ -97,6 +97,7 @@ func (s *WorkflowMongoRedisNodeIntegrationSuite) SetupSuite() {
 	// the same services the test inspects — while still exercising
 	// the security guard's non-empty requirement.
 	wfExec := &workflow.WorkflowExecutor{
+		AllowPrivateHTTPHosts: true, // test httptest mockSrv lives on 127.0.0.1
 		HTTPClient: &http.Client{Timeout: 10 * time.Second},
 		DB:         mongodb.NewMongoClient(s.db),
 		Redis:      s.redis,
@@ -413,52 +414,91 @@ func (s *WorkflowMongoRedisNodeIntegrationSuite) TestRedisNode_UnknownOp_FailsRu
 }
 
 // TestMongoNode_NoConnection_RefusedBeforePlatformDB is a SECURITY
-// regression guard: a mongo_request with an empty connection_id must
-// be refused outright (the platform Mongo — workflow records, audit
-// log, lease state — is NOT reachable from a user workflow). The run
-// lands `error` and the step error names the missing connection; the
-// op never executes.
+// regression guard for the LAYERED defense:
+//
+//   - API guard (UpsertWorkflow, this PR): 400 at save time; the
+//     half-wired workflow never reaches the worker. Asserted here.
+//   - Worker guard (PR #78): runMongoRequest refuses an empty
+//     connection_id at exec time. Unreachable from this suite now
+//     that save is blocked first; still covered by unit tests on
+//     the executor + matches the same error string.
+//
+// A mongo_request with an empty connection_id must NEVER ship — the
+// platform Mongo (workflow records, audit log, lease state) is not
+// reachable from a user workflow.
 func (s *WorkflowMongoRedisNodeIntegrationSuite) TestMongoNode_NoConnection_RefusedBeforePlatformDB() {
 	suffix := time.Now().UnixNano()
 	client := s.authedClient(fmt.Sprintf("alice-mongo-noconn-%d@example.com", suffix))
-	wfID := s.putRequestNodeWorkflow(client, suffix, "mongo_request", map[string]any{
-		"connection_id": "", // explicit empty → helper does NOT auto-fill
-		"operation":     "delete_many",
-		"collection":    "workflows", // would nuke platform data if the guard were absent
-		"filter":        map[string]any{},
-	})
-	steps, status := s.runWorkflow(client, wfID)
-	s.Equal("error", status, "empty connection_id must refuse — platform DB is off-limits")
-	var reqStep map[string]any
-	for _, st := range steps {
-		if id, _ := st["node_id"].(string); id == "request-1" {
-			reqStep = st
-		}
+	wfID := fmt.Sprintf("wf-mongo-noconn-%d", suffix)
+	payload := map[string]any{
+		"name":   "no-conn-mongo",
+		"params": map[string]any{},
+		"nodes": []map[string]any{
+			{"id": "trigger-1", "type": "trigger", "position": map[string]any{"x": 0, "y": 0},
+				"data": map[string]any{"trigger_type": "manual"}},
+			{"id": "request-1", "type": "mongo_request", "position": map[string]any{"x": 200, "y": 0},
+				"data": map[string]any{
+					"connection_id": "", // explicit empty
+					"operation":     "delete_many",
+					"collection":    "workflows", // would nuke platform data if unguarded
+					"filter":        map[string]any{},
+				}},
+		},
+		"edges": []map[string]any{{"id": "e1", "source": "trigger-1", "target": "request-1"}},
 	}
-	s.Require().NotNil(reqStep)
-	s.Contains(fmt.Sprint(reqStep["error"]), "connection is required",
-		"error must explain the platform DB is not reachable")
+	body, _ := json.Marshal(payload)
+	req, _ := http.NewRequest(http.MethodPut, s.apiSrv.URL+"/api/v1/workflows/"+wfID, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	s.Require().NoError(err)
+	defer resp.Body.Close() //nolint:errcheck
+	s.Require().Equal(http.StatusBadRequest, resp.StatusCode,
+		"empty connection_id on mongo_request must be rejected at save — platform DB off-limits")
+	var out map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&out)
+	missing, _ := out["missing"].([]any)
+	s.Require().Len(missing, 1)
+	entry, _ := missing[0].(map[string]any)
+	s.Equal("connection_id", entry["missing_field"])
+	s.Equal("mongo_request", entry["node_type"])
 }
 
-// TestRedisNode_NoConnection_RefusedBeforePlatformRedis — same guard
-// for redis_request (platform Redis: lease, run-event bus, approval
-// registry, rate-limit keys).
+// TestRedisNode_NoConnection_RefusedBeforePlatformRedis — same
+// layered guard for redis_request (platform Redis: lease, run-event
+// bus, approval registry, rate-limit keys). Asserts the API-side
+// refusal added in this PR; the worker-side refusal (PR #78) is
+// unreachable from here now that save is blocked first.
 func (s *WorkflowMongoRedisNodeIntegrationSuite) TestRedisNode_NoConnection_RefusedBeforePlatformRedis() {
 	suffix := time.Now().UnixNano()
 	client := s.authedClient(fmt.Sprintf("alice-redis-noconn-%d@example.com", suffix))
-	wfID := s.putRequestNodeWorkflow(client, suffix, "redis_request", map[string]any{
-		"connection_id": "",
-		"operation":     "keys",
-		"pattern":       "*", // would enumerate every platform key if unguarded
-	})
-	steps, status := s.runWorkflow(client, wfID)
-	s.Equal("error", status, "empty connection_id must refuse — platform Redis is off-limits")
-	var reqStep map[string]any
-	for _, st := range steps {
-		if id, _ := st["node_id"].(string); id == "request-1" {
-			reqStep = st
-		}
+	wfID := fmt.Sprintf("wf-redis-noconn-%d", suffix)
+	payload := map[string]any{
+		"name":   "no-conn-redis",
+		"params": map[string]any{},
+		"nodes": []map[string]any{
+			{"id": "trigger-1", "type": "trigger", "position": map[string]any{"x": 0, "y": 0},
+				"data": map[string]any{"trigger_type": "manual"}},
+			{"id": "request-1", "type": "redis_request", "position": map[string]any{"x": 200, "y": 0},
+				"data": map[string]any{
+					"connection_id": "",
+					"operation":     "keys",
+					"pattern":       "*", // would enumerate every platform key if unguarded
+				}},
+		},
+		"edges": []map[string]any{{"id": "e1", "source": "trigger-1", "target": "request-1"}},
 	}
-	s.Require().NotNil(reqStep)
-	s.Contains(fmt.Sprint(reqStep["error"]), "connection is required")
+	body, _ := json.Marshal(payload)
+	req, _ := http.NewRequest(http.MethodPut, s.apiSrv.URL+"/api/v1/workflows/"+wfID, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	s.Require().NoError(err)
+	defer resp.Body.Close() //nolint:errcheck
+	s.Require().Equal(http.StatusBadRequest, resp.StatusCode)
+	var out map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&out)
+	missing, _ := out["missing"].([]any)
+	s.Require().Len(missing, 1)
+	entry, _ := missing[0].(map[string]any)
+	s.Equal("connection_id", entry["missing_field"])
+	s.Equal("redis_request", entry["node_type"])
 }
