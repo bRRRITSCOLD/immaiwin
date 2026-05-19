@@ -8,6 +8,7 @@ import { StepNameInput } from './StepNameInput'
 import { DynamicHandles } from './DynamicHandles'
 import { AsToolPanel } from './AsToolPanel'
 import { NodeDebugPanel, BreakpointMarker, ApprovalMarker } from '../RunResultsContext'
+import { OnErrorPolicySelect } from './OnErrorPolicySelect'
 import { SandboxDebugDialog, type DialogMode } from '../SandboxDebugDialog'
 
 const LANGUAGES = [
@@ -277,6 +278,9 @@ export function SandboxScriptNode({ id, data, selected }: NodeProps) {
           defaultName="sandbox_script"
           defaultSchema={{ type: 'object', properties: { input: {} }, additionalProperties: true }}
         />
+        <div className="px-3 py-2 border-t border-border/50">
+          <OnErrorPolicySelect nodeId={id} value={(data?.on_error as string) ?? 'stop'} />
+        </div>
         <NodeDebugPanel id={id} />
       </div>
 

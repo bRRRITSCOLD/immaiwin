@@ -24,6 +24,7 @@ const (
 	EventRunStart            EventType = "run_start" // emitted by the WS handler when the run is dispatched, gives the browser the run_id ASAP
 	EventStepStart           EventType = "step_start"
 	EventStepDone            EventType = "step_done"
+	EventLoopIterStart       EventType = "loop_iter_start" // for_each advanced to a new iteration — resets every body node to idle for iter K/M
 	EventStepPending         EventType = "step_pending" // pre-exec breakpoint pause
 	EventCostExceeded        EventType = "cost_exceeded" // workflow CostLimits cap breached
 	EventAgentIter           EventType = "agent_iter"
@@ -49,6 +50,8 @@ type RunEvent struct {
 	NodeID     string    `json:"node_id,omitempty"`
 	NodeType   NodeType  `json:"node_type,omitempty"`
 	Iter       int       `json:"iter,omitempty"`
+	LoopIter   int       `json:"loop_iter,omitempty"`  // 1-based for_each iteration (0 = not looped)
+	LoopTotal  int       `json:"loop_total,omitempty"` // total for_each iterations (M) — denominator for "iter K/M"
 	Text       string    `json:"text,omitempty"`
 	ToolName   string    `json:"tool_name,omitempty"`
 	ToolID     string    `json:"tool_id,omitempty"`

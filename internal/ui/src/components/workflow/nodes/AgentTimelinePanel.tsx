@@ -24,27 +24,37 @@ export function AgentTimelinePanel({ id }: { id: string }) {
   const ctx = useContext(AgentRunContext)
   const approveTool = useContext(ToolApprovalContext)
   const iters = ctx?.[id] ?? []
-  const [expanded, setExpanded] = useState<Record<number, boolean>>({})
+  // Keyed by `${loopIter}:${iter}` so the same ReAct iter index across
+  // different for_each loop iterations doesn't share collapse state.
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({})
 
   if (iters.length === 0) return null
 
-  return (
-    <div className="nodrag border-t border-border/40 bg-muted/10">
-      <div className="px-3 py-1.5 text-[10px] font-medium text-muted-foreground/80 uppercase tracking-wider">
-        Agent timeline · {iters.length} iter{iters.length === 1 ? '' : 's'}
-      </div>
-      <div className="space-y-0.5 px-2 pb-2">
-        {iters.map((iter) => {
-          const open = expanded[iter.iter] ?? true
+  // for_each body: the agent re-runs once per loop element, so iters
+  // carry a loopIter and the same `iter` index repeats. Group by
+  // loopIter and render "loop iteration N of M" sections to mirror the
+  // run-detail page. Non-looped runs (loopIter absent) render flat as
+  // before — one implicit group.
+  const loopVals = Array.from(
+    new Set(iters.map((i) => i.loopIter ?? 0).filter((n) => n > 0)),
+  ).sort((a, b) => a - b)
+  const isLoop = loopVals.length > 0
+  const groups = isLoop
+    ? loopVals.map((L) => ({ loop: L, items: iters.filter((i) => (i.loopIter ?? 0) === L) }))
+    : [{ loop: 0, items: iters }]
+
+  const renderIter = (iter: (typeof iters)[number]) => {
+          const ekey = `${iter.loopIter ?? 0}:${iter.iter}`
+          const open = expanded[ekey] ?? true
           const inTok = iter.llm?.usage?.input_tokens ?? 0
           const outTok = iter.llm?.usage?.output_tokens ?? 0
           const cost = iter.llm?.usage?.cost_usd ?? 0
           return (
-            <div key={iter.iter} className="rounded border border-border/30">
+            <div key={ekey} className="rounded border border-border/30">
               <button
                 type="button"
                 onClick={() =>
-                  setExpanded((prev) => ({ ...prev, [iter.iter]: !open }))
+                  setExpanded((prev) => ({ ...prev, [ekey]: !open }))
                 }
                 className="nodrag flex w-full items-center gap-1.5 px-2 py-1 text-[10px] hover:bg-muted/40"
               >
@@ -150,7 +160,28 @@ export function AgentTimelinePanel({ id }: { id: string }) {
               )}
             </div>
           )
-        })}
+  }
+
+  return (
+    <div className="nodrag border-t border-border/40 bg-muted/10">
+      <div className="px-3 py-1.5 text-[10px] font-medium text-muted-foreground/80 uppercase tracking-wider">
+        Agent timeline · {isLoop
+          ? `${groups.length} loop iteration${groups.length === 1 ? '' : 's'}`
+          : `${iters.length} iter${iters.length === 1 ? '' : 's'}`}
+      </div>
+      <div className="space-y-1.5 px-2 pb-2">
+        {groups.map((g) => (
+          <div key={g.loop} className="space-y-0.5">
+            {isLoop && (
+              <div className="px-1 pt-0.5">
+                <span className="inline-block rounded border border-violet-500/40 px-1.5 py-0.5 text-[9px] font-medium text-violet-300">
+                  loop iteration {g.loop} of {groups.length}
+                </span>
+              </div>
+            )}
+            {g.items.map(renderIter)}
+          </div>
+        ))}
       </div>
     </div>
   )

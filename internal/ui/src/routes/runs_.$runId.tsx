@@ -50,12 +50,18 @@ interface StepResult {
   node_type: string
   output?: unknown
   error?: string
+  // Continued is set by the executor when a node errored but its
+  // `on_error: continue` policy suppressed run-status promotion.
+  // Renders as a distinct amber "continued" badge instead of red
+  // "error" so the suppressed failure stays visible.
+  continued?: boolean
 }
 
 interface TraceEvent {
   at: string
   type: 'iter_start' | 'llm_call' | 'tool_call' | 'tool_result' | 'final'
   iter?: number
+  loop_iter?: number // 1-based for_each iteration (0/absent = not looped)
   tool_name?: string
   tool_id?: string
   tool_args?: unknown
@@ -546,10 +552,17 @@ function RunDetailPage() {
                           <div className="text-sm font-medium">
                             {nodeLabel(data.workflow, s.node_id, s.node_type)}
                           </div>
-                          {s.error && <Badge variant="destructive">error</Badge>}
+                          {s.error && s.continued && (
+                            <Badge className="bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/40 hover:bg-amber-500/20">
+                              continued
+                            </Badge>
+                          )}
+                          {s.error && !s.continued && <Badge variant="destructive">error</Badge>}
                         </div>
                         {s.error && (
-                          <div className="mt-2 text-sm text-destructive">{s.error}</div>
+                          <div className={`mt-2 text-sm ${s.continued ? 'text-amber-600 dark:text-amber-400' : 'text-destructive'}`}>
+                            {s.error}
+                          </div>
                         )}
                         {s.output !== undefined && (
                           <div className="mt-2">
@@ -649,6 +662,29 @@ function AgentTraceBlock({ title, events }: { title: string; events: TraceEvent[
     byAttempt[a][i].push(ev)
   }
 
+  // for_each body: the same agent node re-runs once per loop element,
+  // so its agent_traces are concatenated and each iteration restarts
+  // the ReAct loop at iter 0. tagAttempts() would read every iter-0
+  // re-entry as a NEW attempt and label all but the last "abandoned
+  // (worker died)" — wrong, they completed fine. When the backend
+  // stamped loop_iter (TraceEvent.LoopIter), group by THAT instead and
+  // render neutral "loop iteration N" sections. Non-looped runs
+  // (loop_iter absent) keep the attempt/abandoned path unchanged.
+  const loopIters = Array.from(
+    new Set(tagged.map((e) => e.loop_iter ?? 0).filter((n) => n > 0)),
+  ).sort((x, y) => x - y)
+  const isLoop = loopIters.length > 0
+  const byLoop: Record<number, Record<number, EventWithAttempt[]>> = {}
+  if (isLoop) {
+    for (const ev of tagged) {
+      const L = ev.loop_iter ?? 0
+      const i = ev.iter ?? 0
+      if (!byLoop[L]) byLoop[L] = {}
+      if (!byLoop[L][i]) byLoop[L][i] = []
+      byLoop[L][i].push(ev)
+    }
+  }
+
   // Agent total — same numbers as AgentCostBadge on the workflow canvas.
   let totalIn = 0
   let totalOut = 0
@@ -692,34 +728,64 @@ function AgentTraceBlock({ title, events }: { title: string; events: TraceEvent[
         )}
       </div>
       <div className="space-y-3">
-        {Array.from({ length: attemptCount }, (_, a) => {
-          const iters = byAttempt[a] ?? {}
-          const iterKeys = Object.keys(iters)
-            .map(Number)
-            .sort((x, y) => x - y)
-          const isAbandoned = a < attemptCount - 1
-          return (
-            <div key={a} className={isAbandoned ? 'opacity-70' : ''}>
-              {attemptCount > 1 && (
-                <div className="flex items-center gap-2 mb-1 text-[11px] text-muted-foreground">
-                  <Badge variant="outline" className={`text-[10px] ${isAbandoned ? 'border-amber-500/40 text-amber-400' : ''}`}>
-                    attempt {a + 1}{isAbandoned ? ' · abandoned (worker died)' : ''}
-                  </Badge>
+        {isLoop
+          ? loopIters.map((L, idx) => {
+              const iters = byLoop[L] ?? {}
+              const iterKeys = Object.keys(iters)
+                .map(Number)
+                .sort((x, y) => x - y)
+              const isLast = idx === loopIters.length - 1
+              return (
+                <div key={`loop-${L}`}>
+                  <div className="flex items-center gap-2 mb-1 text-[11px] text-muted-foreground">
+                    <Badge
+                      variant="outline"
+                      className="text-[10px] border-violet-500/40 text-violet-300"
+                    >
+                      loop iteration {L} of {loopIters.length}
+                    </Badge>
+                  </div>
+                  <div className="space-y-2">
+                    {iterKeys.map((i) => (
+                      <IterSection
+                        key={i}
+                        iter={i}
+                        events={iters[i]!}
+                        defaultOpen={isLast && i === iterKeys[0]}
+                      />
+                    ))}
+                  </div>
                 </div>
-              )}
-              <div className="space-y-2">
-                {iterKeys.map((i) => (
-                  <IterSection
-                    key={i}
-                    iter={i}
-                    events={iters[i]!}
-                    defaultOpen={a === attemptCount - 1 && i === iterKeys[0]}
-                  />
-                ))}
-              </div>
-            </div>
-          )
-        })}
+              )
+            })
+          : Array.from({ length: attemptCount }, (_, a) => {
+              const iters = byAttempt[a] ?? {}
+              const iterKeys = Object.keys(iters)
+                .map(Number)
+                .sort((x, y) => x - y)
+              const isAbandoned = a < attemptCount - 1
+              return (
+                <div key={a} className={isAbandoned ? 'opacity-70' : ''}>
+                  {attemptCount > 1 && (
+                    <div className="flex items-center gap-2 mb-1 text-[11px] text-muted-foreground">
+                      <Badge variant="outline" className={`text-[10px] ${isAbandoned ? 'border-amber-500/40 text-amber-400' : ''}`}>
+                        attempt {a + 1}{isAbandoned ? ' · abandoned (worker died)' : ''}
+                      </Badge>
+                    </div>
+                  )}
+                  <div className="space-y-2">
+                    {iterKeys.map((i) => (
+                      <IterSection
+                        key={i}
+                        iter={i}
+                        events={iters[i]!}
+                        defaultOpen={a === attemptCount - 1 && i === iterKeys[0]}
+                      />
+                    ))}
+                  </div>
+                </div>
+              )
+            })}
       </div>
     </div>
   )

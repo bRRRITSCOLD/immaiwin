@@ -100,6 +100,27 @@ type MongoClient interface {
 	Distinct(ctx context.Context, collection, field string, filter bson.M) ([]any, error)
 }
 
+// onErrorPolicy returns the per-node failure policy. Recognised values:
+//
+//	"stop"     — default; first node error promotes the run to `error`.
+//	"continue" — node error is recorded on the StepResult but the run-
+//	             status aggregate skips it during promotion. The error
+//	             edge (`sourceHandle: "error"`) still routes children
+//	             exactly as it does today, so authors can wire diagnostics
+//	             / fallback branches without losing the success badge.
+//
+// Any other value (including missing key) falls back to "stop".
+// Empty data → "stop". Lookup is case-insensitive on the value.
+func onErrorPolicy(data map[string]any) string {
+	if v, ok := data["on_error"].(string); ok {
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "continue":
+			return "continue"
+		}
+	}
+	return "stop"
+}
+
 // StepResult holds the outcome of a single node execution.
 type StepResult struct {
 	NodeID   string   `bson:"node_id"            json:"node_id"`
@@ -117,6 +138,14 @@ type StepResult struct {
 	// red badge via the step_done(IsError) event, which is
 	// independent of this flag.
 	ViaAgentTool bool `bson:"via_agent_tool,omitempty" json:"via_agent_tool,omitempty"`
+	// Continued is true when the node errored but its `on_error`
+	// policy is `continue`, so the run-status aggregate skips this
+	// step's Error during promotion. Run still lands `success` if
+	// nothing else failed; the UI surfaces the step distinctly so
+	// the suppressed failure is still visible to the operator.
+	// Default false → legacy strict behaviour (any non-tool error
+	// promotes the run to error).
+	Continued bool `bson:"continued,omitempty" json:"continued,omitempty"`
 }
 
 // StepContext holds the input, output, and (for for_each) current item of a named step.
@@ -682,6 +711,14 @@ type runEnv struct {
 	// "not executed". Skill tools / built-ins aren't in this map (no
 	// canvas node behind them) — those just stay invisible on rejection.
 	toolNameToNodeID map[string]string
+	// toolNameToOnError maps tool name → the target node's on_error
+	// policy (`stop` default, `continue` opt-in). The agent's tool-
+	// dispatch loop reads this when a tool errors: `stop` aborts the
+	// agent (run flips to error), `continue` feeds the error back to
+	// the LLM as a tool_result so the model can pivot — the legacy
+	// "agent recovers from flaky upstream" behavior, now opt-in.
+	// Built-in tools without an as_tool node default to `stop`.
+	toolNameToOnError map[string]string
 
 	// workerID is the lease-holding worker's identifier for runs
 	// executing under the Phase 3 lease-based path. Empty for legacy
@@ -847,6 +884,34 @@ var runEnvKey runEnvKeyT
 func envFromCtx(ctx context.Context) (*runEnv, bool) {
 	v, ok := ctx.Value(runEnvKey).(*runEnv)
 	return v, ok
+}
+
+type forEachIterKeyT struct{}
+
+var forEachIterKey forEachIterKeyT
+
+type forEachLoop struct{ iter, total int }
+
+// withForEachLoop stamps the 1-based for_each iteration index AND the
+// total iteration count onto ctx. Body steps + an agent run in the
+// loop body read it (forEachIterFromCtx / forEachLoopFromCtx) to tag
+// every step/trace event with LoopIter+LoopTotal, so the UI can group
+// agent traces by iteration and show a uniform "iter K/M" across the
+// whole body subgraph.
+func withForEachLoop(ctx context.Context, iter, total int) context.Context {
+	return context.WithValue(ctx, forEachIterKey, forEachLoop{iter: iter, total: total})
+}
+
+func forEachLoopFromCtx(ctx context.Context) (iter, total int) {
+	if v, ok := ctx.Value(forEachIterKey).(forEachLoop); ok {
+		return v.iter, v.total
+	}
+	return 0, 0
+}
+
+func forEachIterFromCtx(ctx context.Context) int {
+	i, _ := forEachLoopFromCtx(ctx)
+	return i
 }
 
 // adjEntry is one outgoing edge from a node.
@@ -1122,6 +1187,13 @@ func (e *WorkflowExecutor) RunResumable(ctx context.Context, wf Workflow, opts R
 			if s.ViaAgentTool {
 				continue
 			}
+			// `on_error: continue` policy — error recorded on the step
+			// but suppressed for run-status promotion. UI distinguishes
+			// the suppressed-error step via the Continued flag so the
+			// failure stays visible to operators.
+			if s.Continued {
+				continue
+			}
 			if s.Error != "" {
 				status = RunStatusError
 				stepErr = s.Error
@@ -1221,6 +1293,11 @@ func (e *WorkflowExecutor) RunFromCheckpoint(ctx context.Context, wf Workflow, r
 			// error. Tool errors the agent recovered from via LLM
 			// retry must not retroactively flip the run.
 			if s.ViaAgentTool {
+				continue
+			}
+			// `on_error: continue` — same suppression rule as the
+			// RunResumable terminal scan above. See StepResult.Continued.
+			if s.Continued {
 				continue
 			}
 			if s.Error != "" {
@@ -1439,7 +1516,15 @@ func (e *WorkflowExecutor) RunWithEvents(ctx context.Context, wf Workflow, stopA
 					}
 					emitter.Emit(stampNow(RunEvent{Type: EventStepStart, NodeID: pg.NodeID, NodeType: gatedNode.Type}))
 					emitter.Emit(stampNow(RunEvent{Type: EventStepDone, NodeID: pg.NodeID, NodeType: gatedNode.Type, Error: rejErr, IsError: true}))
-					results = append(results, StepResult{NodeID: pg.NodeID, NodeType: gatedNode.Type, Error: rejErr})
+					// Approval rejection is a SECURITY VETO, not a node
+					// fault. `on_error` does NOT apply: a human said no,
+					// so the run must land `error` regardless of the
+					// gate node's policy — otherwise `on_error: continue`
+					// would be a config-level bypass of the gate, which
+					// defeats its purpose. Continued stays false; only
+					// error edges route (legacy behaviour, no dual-edge).
+					rejStep := StepResult{NodeID: pg.NodeID, NodeType: gatedNode.Type, Error: rejErr}
+					results = append(results, rejStep)
 					// Drop the gated node from the queue front; route
 					// any error-edge children in its place.
 					var nextQueue []queueItem
@@ -1453,7 +1538,8 @@ func (e *WorkflowExecutor) RunWithEvents(ctx context.Context, wf Workflow, stopA
 					}
 					queue = nextQueue
 					for _, et := range adj[pg.NodeID] {
-						if et.sourceHandle == "error" && !visited[et.targetID] {
+						matches := et.sourceHandle == "error"
+						if matches && !visited[et.targetID] {
 							queue = append(queue, queueItem{nodeID: et.targetID, input: pg.Input})
 						}
 					}
@@ -1591,16 +1677,21 @@ func (e *WorkflowExecutor) RunWithEvents(ctx context.Context, wf Workflow, stopA
 					Error:    rejErr,
 					IsError:  true,
 				}))
-				results = append(results, StepResult{
+				// Approval rejection is a SECURITY VETO, not a node
+				// fault. `on_error` does NOT apply (see the durable-
+				// resume rejection path above for the rationale): a
+				// human veto always flips the run to `error` and routes
+				// only error edges, regardless of the gate's policy.
+				rejStep := StepResult{
 					NodeID:   node.ID,
 					NodeType: node.Type,
 					Error:    rejErr,
-				})
+				}
+				results = append(results, rejStep)
 				for _, et := range adj[item.nodeID] {
-					if et.sourceHandle == "error" {
-						if !visited[et.targetID] {
-							queue = append(queue, queueItem{nodeID: et.targetID, input: item.input})
-						}
+					matches := et.sourceHandle == "error"
+					if matches && !visited[et.targetID] {
+						queue = append(queue, queueItem{nodeID: et.targetID, input: item.input})
 					}
 				}
 				continue
@@ -1645,7 +1736,10 @@ func (e *WorkflowExecutor) RunWithEvents(ctx context.Context, wf Workflow, stopA
 		if err != nil {
 			sr.Error = err.Error()
 			handle = "error"
-			slog.Warn("workflow: node error", "node", node.ID, "type", node.Type, "err", err)
+			if onErrorPolicy(node.Data) == "continue" {
+				sr.Continued = true
+			}
+			slog.Warn("workflow: node error", "node", node.ID, "type", node.Type, "err", err, "continued", sr.Continued)
 		}
 		results = append(results, sr)
 
@@ -1693,7 +1787,16 @@ func (e *WorkflowExecutor) RunWithEvents(ctx context.Context, wf Workflow, stopA
 			if et.sourceHandle == "item" {
 				continue // for_each body; not traversed by main BFS
 			}
-			if et.sourceHandle == handle || et.sourceHandle == "" || et.sourceHandle == "start" {
+			matches := et.sourceHandle == handle || et.sourceHandle == "" || et.sourceHandle == "start"
+			// `on_error: continue` + node errored → also fire success
+			// edges so the happy path keeps rolling. Error edges
+			// already matched above (handle == "error"). Output is nil
+			// from a failing handler; downstream nodes see nil input
+			// and discriminate explicitly if needed.
+			if !matches && sr.Continued && et.sourceHandle == "success" {
+				matches = true
+			}
+			if matches {
 				if !visited[et.targetID] {
 					queue = append(queue, queueItem{nodeID: et.targetID, input: output})
 				}
@@ -1765,7 +1868,30 @@ func (e *WorkflowExecutor) runForEach(
 	wfCtx runCtx,
 	params map[string]string,
 ) (any, []StepResult, error) {
+	// By default for_each iterates its raw input. An optional `items`
+	// selector lets it iterate a field of the input instead — e.g. a
+	// preceding mongo_request `find` emits {docs:[…],cursor:{…}}, so
+	// `items: "{{input.docs}}"` loops per document rather than once over
+	// the whole result envelope. expandSlice widens any slice kind
+	// ([]bson.M from mongo, []any from JSON, …); a non-slice falls back
+	// to toSlice's single-element-wrap contract.
 	items := toSlice(input)
+	if sel, ok := node.Data["items"].(string); ok {
+		if sel = strings.TrimSpace(sel); sel != "" {
+			if v, ok := resolveTemplateValue(sel, input, wfCtx); ok {
+				if s, ok := expandSlice(v); ok {
+					items = s
+				} else {
+					items = toSlice(v)
+				}
+			} else {
+				// selector set but unresolved → empty loop, not a
+				// silent full-input pass. Authors opted into a field;
+				// honour that intent rather than masking a typo.
+				items = nil
+			}
+		}
+	}
 
 	var itemTargetIDs []string
 	for _, et := range adj[node.ID] {
@@ -1774,12 +1900,54 @@ func (e *WorkflowExecutor) runForEach(
 		}
 	}
 
+	// Body subgraph (every node reachable from an item target). At the
+	// start of each iteration we emit a loop_iter_start for ALL of them
+	// so the UI uniformly resets the whole body to "idle · iter K/M" —
+	// not just the first node — and the denominator stays M even for a
+	// node that isn't traversed every iteration (e.g. an error branch
+	// when nothing errored).
+	bodySeen := make(map[string]bool)
+	{
+		q := append([]string{}, itemTargetIDs...)
+		for len(q) > 0 {
+			bid := q[0]
+			q = q[1:]
+			if bodySeen[bid] {
+				continue
+			}
+			bodySeen[bid] = true
+			for _, et := range adj[bid] {
+				if !bodySeen[et.targetID] {
+					q = append(q, et.targetID)
+				}
+			}
+		}
+	}
+	env, _ := envFromCtx(ctx)
+	total := len(items)
+
 	var allResults []StepResult
 	var outputs []any
 
 	forEachName, _ := node.Data["name"].(string)
 
-	for _, item := range items {
+	// for_each's own on_error is a LOOP-ABORT policy, distinct from a
+	// leaf node's run-status fault:
+	//   stop (default) — the first item whose body chain ends with an
+	//                    UNSUPPRESSED error (Error != "" && !Continued)
+	//                    aborts the loop; remaining items are skipped.
+	//   continue       — run every item regardless.
+	// Either way the failing body StepResult is already in allResults,
+	// so run-status promotion flips the run on its own — this policy
+	// only decides whether the REMAINING items still run. A body node
+	// with on_error=continue suppresses its error (Continued=true), so
+	// it's never "unsuppressed" here: §7's best-effort loop is
+	// unchanged regardless of the for_each policy.
+	abortOnErr := onErrorPolicy(node.Data) == "stop"
+	var abortErr error
+	anyFatal := false
+
+	for idx, item := range items {
 		// clone parent context per iteration so body steps don't bleed across iterations
 		iterCtx := make(runCtx, len(wfCtx))
 		for k, v := range wfCtx {
@@ -1790,17 +1958,65 @@ func (e *WorkflowExecutor) runForEach(
 		if forEachName != "" {
 			iterCtx[forEachName] = StepContext{Input: input, Item: item}
 		}
+		// Reset every body node to idle for this iteration BEFORE any
+		// of them run, so a downstream node still showing the previous
+		// iteration's "done" flips to "idle · iter K/M" the moment the
+		// loop advances (not only when it personally re-executes).
+		if env != nil && env.events != nil {
+			for bid := range bodySeen {
+				env.events.Emit(stampNow(RunEvent{
+					Type:      EventLoopIterStart,
+					NodeID:    bid,
+					NodeType:  byID[bid].Type,
+					LoopIter:  idx + 1,
+					LoopTotal: total,
+				}))
+			}
+		}
+		// Tag the iteration (1-based) + total onto ctx so body steps
+		// (and an agent body) stamp LoopIter+LoopTotal — the UI groups
+		// agent traces by iteration and shows a uniform "iter K/M".
+		loopCtx := withForEachLoop(ctx, idx+1, total)
 
+		fatal := false
 		for _, startID := range itemTargetIDs {
-			chainResults, lastOut := e.runBodyChain(ctx, startID, item, adj, byID, iterCtx, params)
+			chainResults, lastOut := e.runBodyChain(loopCtx, startID, item, adj, byID, iterCtx, params)
 			allResults = append(allResults, chainResults...)
 			if len(chainResults) > 0 && chainResults[len(chainResults)-1].Error == "" {
 				outputs = append(outputs, lastOut)
 			}
+			for _, sr := range chainResults {
+				if sr.Error != "" && !sr.Continued {
+					fatal = true
+				}
+			}
+		}
+		if fatal {
+			anyFatal = true
+		}
+		if abortOnErr && fatal {
+			slog.Warn("for_each: unsuppressed body error — aborting loop (on_error=stop)",
+				"node", node.ID, "item_index", idx, "remaining", len(items)-idx-1)
+			// stop: abort the loop now and surface a node-level error
+			// so the main BFS routes ONLY the for_each `error` edge
+			// (Continued=false → no dual success edge) + flips the run.
+			abortErr = fmt.Errorf("for_each: loop aborted at item %d on unsuppressed body error (on_error=stop)", idx)
+			break
 		}
 	}
 
-	return outputs, allResults, nil
+	// continue: every item ran (best-effort) but at least one ended
+	// with an unsuppressed fault. Still surface a node-level error so
+	// the main BFS fires the for_each `error` edge — and because the
+	// for_each node's policy is `continue`, the BFS marks it Continued
+	// so the `success` edge fires too (dual-edge, same ideology as a
+	// per-node continue). Run-status still flips via the unsuppressed
+	// body step. (abortOnErr already returned above with abortErr.)
+	if abortErr == nil && anyFatal {
+		abortErr = fmt.Errorf("for_each: completed with unsuppressed body error(s) (on_error=continue)")
+	}
+
+	return outputs, allResults, abortErr
 }
 
 // runBodyChain executes a linear chain starting from startID with the given input.
@@ -1816,26 +2032,48 @@ func (e *WorkflowExecutor) runBodyChain(
 ) ([]StepResult, any) {
 	env, _ := envFromCtx(ctx)
 	var results []StepResult
-	currentID := startID
-	currentInput := input
 	visited := make(map[string]bool)
+	type bodyItem struct {
+		nodeID string
+		input  any
+	}
+	queue := []bodyItem{{nodeID: startID, input: input}}
+	var lastOut any
 
-	for currentID != "" {
-		if visited[currentID] {
-			break
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		if cur.nodeID == "" || visited[cur.nodeID] {
+			continue
 		}
-		visited[currentID] = true
+		visited[cur.nodeID] = true
 
-		node, ok := byID[currentID]
+		node, ok := byID[cur.nodeID]
 		if !ok {
-			break
+			continue
 		}
 
-		output, err := e.runNode(ctx, node, currentInput, wfCtx, params)
+		// for_each body nodes run outside the main BFS, so they must
+		// emit their own step_start/step_done — otherwise the live
+		// canvas never lights them and they show "not executed" even
+		// though they ran (and produced side effects). LoopIter lets
+		// the UI attribute the step to its iteration.
+		loopIter, loopTotal := forEachLoopFromCtx(ctx)
+		if env != nil && env.events != nil {
+			env.events.Emit(stampNow(RunEvent{
+				Type:      EventStepStart,
+				NodeID:    node.ID,
+				NodeType:  node.Type,
+				LoopIter:  loopIter,
+				LoopTotal: loopTotal,
+			}))
+		}
+
+		output, err := e.runNode(ctx, node, cur.input, wfCtx, params)
 
 		// Populate context for named body nodes
 		if name, _ := node.Data["name"].(string); name != "" {
-			wfCtx[name] = StepContext{Input: currentInput, Output: output}
+			wfCtx[name] = StepContext{Input: cur.input, Output: output}
 		}
 
 		sr := StepResult{NodeID: node.ID, NodeType: node.Type, Output: output}
@@ -1843,27 +2081,53 @@ func (e *WorkflowExecutor) runBodyChain(
 		if err != nil {
 			sr.Error = err.Error()
 			handle = "error"
-			slog.Warn("for_each body: node error", "node", node.ID, "err", err)
+			if onErrorPolicy(node.Data) == "continue" {
+				sr.Continued = true
+			}
+			slog.Warn("for_each body: node error", "node", node.ID, "err", err, "continued", sr.Continued)
 		}
 		results = append(results, sr)
+		lastOut = output
+
+		if env != nil && env.events != nil {
+			done := RunEvent{
+				Type:      EventStepDone,
+				NodeID:    node.ID,
+				NodeType:  node.Type,
+				Output:    output,
+				LoopIter:  loopIter,
+				LoopTotal: loopTotal,
+			}
+			if err != nil {
+				done.Error = err.Error()
+				done.IsError = true
+			}
+			env.events.Emit(stampNow(done))
+		}
 		if env != nil && env.isBreakpoint(node.ID) {
 			return results, output
 		}
-		currentInput = output
 
-		currentID = ""
+		// Edge routing mirrors the main BFS EXACTLY so the for_each
+		// body honours the same `on_error: continue` dual-edge rule:
+		// a continued error fires BOTH the error edge AND the success
+		// edge (happy path keeps rolling, error edge = optional
+		// sidecar). The old single-successor `break` made the success
+		// branch unreachable whenever an error edge was also wired.
 		for _, et := range adj[node.ID] {
-			if et.sourceHandle == handle || et.sourceHandle == "" {
-				currentID = et.targetID
-				break
+			if et.sourceHandle == "item" {
+				continue // nested for_each body marker; not this chain
+			}
+			matches := et.sourceHandle == handle || et.sourceHandle == ""
+			if !matches && sr.Continued && et.sourceHandle == "success" {
+				matches = true
+			}
+			if matches && !visited[et.targetID] {
+				queue = append(queue, bodyItem{nodeID: et.targetID, input: output})
 			}
 		}
 	}
 
-	var lastOut any
-	if len(results) > 0 {
-		lastOut = results[len(results)-1].Output
-	}
 	return results, lastOut
 }
 
@@ -3474,6 +3738,61 @@ func applyTemplate(s string, input any, wfCtx runCtx) string {
 		}
 	}
 	return s
+}
+
+// resolveTemplateValue resolves a string that is EXACTLY a single
+// `{{…}}` token to the raw underlying value (slice, map, number — not
+// stringified). applyTemplate is for embedding scalars into a larger
+// string; this is for selectors that must preserve type, currently the
+// for_each `items` field where `{{input.docs}}` has to stay a slice.
+//
+// Supported paths (mirrors applyTemplate's surface):
+//
+//	{{input.<key>}}
+//	{{context.<name>.input.<key>}}
+//	{{context.<name>.output.<key>}}
+//	{{context.<name>.item.<key>}}
+//
+// Returns ok=false when s is not a lone token or the path doesn't
+// resolve, so the caller keeps its existing fallback behaviour.
+func resolveTemplateValue(s string, input any, wfCtx runCtx) (any, bool) {
+	s = strings.TrimSpace(s)
+	if !strings.HasPrefix(s, "{{") || !strings.HasSuffix(s, "}}") {
+		return nil, false
+	}
+	expr := strings.TrimSpace(s[2 : len(s)-2])
+	if strings.Contains(expr, "{{") {
+		return nil, false // not a lone token
+	}
+	parts := strings.Split(expr, ".")
+
+	get := func(container any, key string) (any, bool) {
+		m, ok := mapAny(container)
+		if !ok {
+			return nil, false
+		}
+		v, ok := m[key]
+		return v, ok
+	}
+
+	switch {
+	case len(parts) == 2 && parts[0] == "input":
+		return get(input, parts[1])
+	case len(parts) == 4 && parts[0] == "context":
+		sc, ok := wfCtx[parts[1]]
+		if !ok {
+			return nil, false
+		}
+		switch parts[2] {
+		case "input":
+			return get(sc.Input, parts[3])
+		case "output":
+			return get(sc.Output, parts[3])
+		case "item":
+			return get(sc.Item, parts[3])
+		}
+	}
+	return nil, false
 }
 
 // runSandboxScript executes user code in an isolated Docker container.

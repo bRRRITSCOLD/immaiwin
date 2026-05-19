@@ -12,6 +12,7 @@ import { StepNameInput } from './StepNameInput'
 import { DynamicHandles } from './DynamicHandles'
 import { AsToolPanel } from './AsToolPanel'
 import { NodeDebugPanel, BreakpointMarker, ApprovalMarker } from '../RunResultsContext'
+import { OnErrorPolicySelect } from './OnErrorPolicySelect'
 
 const METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'] as const
 type Method = (typeof METHODS)[number]
@@ -611,6 +612,9 @@ export function HTTPRequestNode({ id, data, selected }: NodeProps) {
           defaultName="http_request"
           defaultSchema={HTTP_REQUEST_TOOL_SCHEMA}
         />
+        <div className="px-3 py-2 border-t border-border/50">
+          <OnErrorPolicySelect nodeId={id} value={(data?.on_error as string) ?? 'stop'} />
+        </div>
         <NodeDebugPanel id={id} />
       </div>
       <DynamicHandles nodeId={id} nodeType="http_request" data={data as Record<string, unknown>} />

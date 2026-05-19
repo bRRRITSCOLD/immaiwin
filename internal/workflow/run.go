@@ -283,6 +283,13 @@ type TraceEvent struct {
 	At        time.Time      `bson:"at"                 json:"at"`
 	Type      string         `bson:"type"               json:"type"` // "iter_start"|"llm_call"|"tool_call"|"tool_result"|"final"
 	Iter      int            `bson:"iter,omitempty"     json:"iter,omitempty"`
+	// LoopIter is the 1-based for_each iteration this agent run belongs
+	// to (0 = not inside a for_each). The same agent node re-runs once
+	// per loop element, concatenating all iterations under one
+	// agent_traces key; without this discriminator the UI can't tell a
+	// completed loop iteration from a worker-death restart and labels
+	// the earlier ones "abandoned".
+	LoopIter  int            `bson:"loop_iter,omitempty" json:"loop_iter,omitempty"`
 	ToolName  string         `bson:"tool_name,omitempty" json:"tool_name,omitempty"`
 	ToolID    string         `bson:"tool_id,omitempty"   json:"tool_id,omitempty"` // tool_use_id
 	ToolArgs  any            `bson:"tool_args,omitempty" json:"tool_args,omitempty"`

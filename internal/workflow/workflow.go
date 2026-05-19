@@ -68,9 +68,8 @@ type Edge struct {
 // Workflow is a named node-edge graph that describes a pipeline.
 // ID is a client-supplied string (e.g. UUID) to support idempotent PUT.
 //
-// Params holds workflow-level key-value constants accessible in node fields and JS transforms:
-//   - In any string data field: {{params.key}}
-//   - In JS transform scripts:  params.key  (available as a global)
+// Params holds workflow-level key-value constants accessible via
+// `{{params.key}}` interpolation in any string data field on a node.
 type Workflow struct {
 	ID        string            `bson:"_id,omitempty" json:"id"`
 	TenantID  string            `bson:"tenant_id"     json:"tenant_id"` // multi-tenant scoping

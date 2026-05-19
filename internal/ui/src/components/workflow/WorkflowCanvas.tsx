@@ -31,6 +31,7 @@ import { WorkflowCostLimitsPanel } from './WorkflowCostLimitsPanel'
 import { WorkflowApprovalChannelPanel } from './WorkflowApprovalChannelPanel'
 import { WorkflowHelpLegend } from './WorkflowHelpLegend'
 import { RunResultsContext, RunStatusContext, AgentRunContext, DebugContext, ToolApprovalContext, type RunResults, type AgentIterSummary } from './RunResultsContext'
+import { isAsToolEnabled } from './nodes/DynamicHandles'
 
 const nodeTypes: NodeTypes = {
   trigger: TriggerNode,
@@ -81,7 +82,6 @@ const defaultNodeData: Record<string, Record<string, unknown>> = {
     temperature: 1,
     timeout_seconds: 300,
     require_approval: false,
-    stop_on_tool_error: false,
     output_schema: '',
     skills: [],
   },
@@ -157,8 +157,40 @@ function applyEdgeStyle(
   const labelStyle = { fill: '#ffffff' }
   const dash = '8 4'
 
-  // Palette-typed edge — fast path
   const pt = edge.data?.paletteType as string | undefined
+
+  // for_each-body edges take precedence over the palette fast-path.
+  // onConnect stamps data.paletteType on handle-drawn edges, which
+  // would otherwise short-circuit to the generic solid styling and
+  // lose the dashed per-iteration "<kind> (item)" treatment. Resolve
+  // the kind from paletteType OR sourceHandle so body edges render
+  // dashed regardless of how they were created. Covers success/error
+  // AND tool (an ai_agent inside a for_each body dispatches its tools
+  // once per loop element, so that agent→tool edge is per-item too).
+  const kind = (pt || h).toLowerCase()
+  if (
+    bodyIds.has(edge.source) &&
+    (kind === 'success' || kind === 'error' || kind === 'tool')
+  ) {
+    const c =
+      kind === 'error'
+        ? { normal: '#ef4444', selected: '#fca5a5' }
+        : kind === 'tool'
+        ? { normal: '#c084fc', selected: '#e9d5ff' }
+        : { normal: '#22c55e', selected: '#86efac' }
+    return {
+      ...edge,
+      type: routing,
+      style: {
+        stroke: sel ? c.selected : c.normal,
+        strokeDasharray: dash,
+      },
+      labelStyle,
+      label: edge.label ?? `${kind} (item)`,
+    }
+  }
+
+  // Palette-typed edge — fast path
   if (pt && paletteColorMap[pt]) {
     const c = paletteColorMap[pt]
     return {
@@ -303,6 +335,30 @@ function isPaletteConnectionValid(
   }
 }
 
+/**
+ * Full-isolation rule for `as_tool` nodes: an agent-dispatched tool
+ * node bypasses the BFS entirely, so the ONLY legitimate edge is the
+ * AI Agent's inbound "tool" edge. No outbound from it, and no inbound
+ * from anything other than an ai_agent. Used by onConnect (block at
+ * draw time), isValidConnection (block the drag), and a self-heal
+ * effect (prune edges that became invalid when as_tool was toggled on
+ * or a legacy/template workflow loaded).
+ */
+function asToolEdgeAllowed(
+  src: Node | undefined,
+  tgt: Node | undefined,
+): boolean {
+  if (src && isAsToolEnabled(src.data as Record<string, unknown>)) return false
+  if (
+    tgt &&
+    isAsToolEnabled(tgt.data as Record<string, unknown>) &&
+    src?.type !== 'ai_agent'
+  ) {
+    return false
+  }
+  return true
+}
+
 export function WorkflowCanvas(props: Props) {
   return (
     <ReactFlowProvider>
@@ -343,6 +399,21 @@ function WorkflowCanvasInner({ workflow, onSave, onRun, onCancel, onContinue, on
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [setSelectedEdgeType, setAttachingFrom])
 
+  // Self-heal: prune edges that violate as_tool full-isolation —
+  // covers toggling as_tool ON after edges were drawn, and loading a
+  // legacy/template workflow whose tool node still carries inert
+  // success/error edges. Returns the same ref when nothing changed so
+  // this doesn't loop.
+  useEffect(() => {
+    setEdges((eds) => {
+      const byId = new Map(nodes.map((n) => [n.id, n]))
+      const next = eds.filter((e) =>
+        asToolEdgeAllowed(byId.get(e.source), byId.get(e.target)),
+      )
+      return next.length === eds.length ? eds : next
+    })
+  }, [nodes, setEdges])
+
   // Ref keeps latest nodes + palette type for isValidConnection (no re-render dep)
   const nodesRef = useRef(nodes)
   nodesRef.current = nodes
@@ -350,9 +421,12 @@ function WorkflowCanvasInner({ workflow, onSave, onRun, onCancel, onContinue, on
   paletteRef.current = selectedEdgeType
 
   const isValidConnection = useCallback((connection: Edge | Connection) => {
+    const srcNode = nodesRef.current.find((n) => n.id === connection.source)
+    const tgtNode = nodesRef.current.find((n) => n.id === connection.target)
+    // as_tool full-isolation guard applies regardless of palette.
+    if (!asToolEdgeAllowed(srcNode, tgtNode)) return false
     const pt = paletteRef.current
     if (!pt) return true // no palette → allow (legacy behavior)
-    const srcNode = nodesRef.current.find((n) => n.id === connection.source)
     return isPaletteConnectionValid(srcNode?.type, pt)
   }, [])
 
@@ -373,6 +447,12 @@ function WorkflowCanvasInner({ workflow, onSave, onRun, onCancel, onContinue, on
 
   const onConnect = useCallback(
     (connection: Connection) => {
+      // as_tool full-isolation: only an ai_agent may wire into a tool
+      // node, and a tool node has no outbound edges.
+      const srcN = nodes.find((n) => n.id === connection.source)
+      const tgtN = nodes.find((n) => n.id === connection.target)
+      if (!asToolEdgeAllowed(srcN, tgtN)) return
+
       // Guard: validate palette type vs source node
       if (selectedEdgeType) {
         const srcNode = nodes.find((n) => n.id === connection.source)

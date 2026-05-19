@@ -281,8 +281,11 @@ func (s *AgentToolErrorIntegrationSuite) authedClient(emailAddr string) (*http.C
 //
 //	trigger → ai_agent → http_request (`as_tool`, name=fail_tool)
 //
-// `stopOnToolError` toggles the new flag. Returns the workflow ID.
-func (s *AgentToolErrorIntegrationSuite) putAgentToolWorkflow(client *http.Client, tenantID string, stopOnToolError bool) (wfID, connID string) {
+// `toolOnError` sets the tool target's per-node `on_error` policy
+// (`stop` default, `continue` opt-in for legacy LLM-recovery behavior).
+// Empty string → omit the field, exercising the default. Returns the
+// workflow ID.
+func (s *AgentToolErrorIntegrationSuite) putAgentToolWorkflow(client *http.Client, tenantID string, toolOnError string) (wfID, connID string) {
 	suffix := time.Now().UnixNano()
 	connID = fmt.Sprintf("anthropic-toolerr-%d", suffix)
 	_, cerr := s.connRepo.Upsert(context.Background(), workflow.Connection{
@@ -312,28 +315,33 @@ func (s *AgentToolErrorIntegrationSuite) putAgentToolWorkflow(client *http.Clien
 				"type":     "ai_agent",
 				"position": map[string]any{"x": 200, "y": 0},
 				"data": map[string]any{
-					"llm_connection_id":  connID,
-					"system_prompt":      "you are a test agent",
-					"user_input":         "do the thing",
-					"max_iterations":     3,
-					"stop_on_tool_error": stopOnToolError,
+					"llm_connection_id": connID,
+					"system_prompt":     "you are a test agent",
+					"user_input":        "do the thing",
+					"max_iterations":    3,
 				},
 			},
 			{
 				"id":       "fail_tool",
 				"type":     "http_request",
 				"position": map[string]any{"x": 400, "y": 0},
-				"data": map[string]any{
-					"name":   "fail_tool",
-					"url":    s.mockSrv.URL,
-					"method": "GET",
-					"as_tool": map[string]any{
-						"enabled":      true,
-						"name":         "fail_tool",
-						"description":  "always fails",
-						"input_schema": map[string]any{"type": "object"},
-					},
-				},
+				"data": (func() map[string]any {
+					d := map[string]any{
+						"name":   "fail_tool",
+						"url":    s.mockSrv.URL,
+						"method": "GET",
+						"as_tool": map[string]any{
+							"enabled":      true,
+							"name":         "fail_tool",
+							"description":  "always fails",
+							"input_schema": map[string]any{"type": "object"},
+						},
+					}
+					if toolOnError != "" {
+						d["on_error"] = toolOnError
+					}
+					return d
+				})(),
 			},
 		},
 		"edges": []map[string]any{
@@ -385,42 +393,44 @@ func (s *AgentToolErrorIntegrationSuite) dispatchAndPoll(client *http.Client, wf
 	return dispatch.RunID, last
 }
 
-// TestAgent_StopOnToolError_True_ToolErrors_RunStatusError verifies
-// the new flag's strict behaviour: the http_request as_tool returns
-// a 500, the agent's catalog handler bubbles the err, the agent
-// loop aborts, BFS marks the agent's StepResult.Error, RunFromCheckpoint
-// promotes status to error.
-func (s *AgentToolErrorIntegrationSuite) TestAgent_StopOnToolError_True_ToolErrors_RunStatusError() {
-	client, tenantID := s.authedClient(fmt.Sprintf("alice-stopon-%d@example.com", time.Now().UnixNano()))
+// TestAgent_DefaultPolicy_StopOnToolTargetError_AgentAborts is the
+// PR 4.x core path: with no `on_error` set on the tool target, the
+// per-node default (`stop`) aborts the agent on the first tool
+// error. Agent loop ends; run flips to error. This is the only
+// abort knob now — the legacy `stop_on_tool_error` agent-wide flag
+// was removed because its behavior is the natural default.
+func (s *AgentToolErrorIntegrationSuite) TestAgent_DefaultPolicy_StopOnToolTargetError_AgentAborts() {
+	client, tenantID := s.authedClient(fmt.Sprintf("alice-default-stop-%d@example.com", time.Now().UnixNano()))
 	s.mockMu.Lock()
 	s.mockHandler = func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte(`{"err":"upstream blew up"}`))
 	}
 	s.mockMu.Unlock()
-	wfID, _ := s.putAgentToolWorkflow(client, tenantID, true)
+	wfID, _ := s.putAgentToolWorkflow(client, tenantID, "")
 
 	_, status := s.dispatchAndPoll(client, wfID, []string{"success", "error", "cancelled"})
-	s.Equal("error", status, "stop_on_tool_error=true should flip run to error on the first tool error")
-	s.Equal(int32(1), s.stubProvider.chatCalls.Load(), "agent must abort after the first tool error — model is not re-prompted")
+	s.Equal("error", status, "default per-tool on_error=stop should abort the agent on first tool error")
+	s.Equal(int32(1), s.stubProvider.chatCalls.Load(), "agent must abort — model is not re-prompted under default-stop policy")
 }
 
-// TestAgent_StopOnToolError_False_ToolErrors_LLMRetriesAndCompletes
-// preserves legacy behaviour: a non-infra tool error is fed back to
-// the LLM as a tool_result, which lets the model pivot. Stub emits
-// end_turn on call 2 → run lands success. Validates we didn't
-// regress the default path.
-func (s *AgentToolErrorIntegrationSuite) TestAgent_StopOnToolError_False_ToolErrors_LLMRetriesAndCompletes() {
-	client, tenantID := s.authedClient(fmt.Sprintf("alice-stopoff-%d@example.com", time.Now().UnixNano()))
+// TestAgent_ToolOnErrorContinue_LLMRetriesAndCompletes confirms the
+// opt-in recovery path: when the tool target carries
+// `on_error: continue`, the agent feeds the error back to the LLM
+// as a tool_result and the model can pivot. Stub emits end_turn on
+// call 2 → run lands success. Restores the legacy "agent recovers
+// from a flaky upstream" behavior on a per-tool basis.
+func (s *AgentToolErrorIntegrationSuite) TestAgent_ToolOnErrorContinue_LLMRetriesAndCompletes() {
+	client, tenantID := s.authedClient(fmt.Sprintf("alice-tool-continue-%d@example.com", time.Now().UnixNano()))
 	s.mockMu.Lock()
 	s.mockHandler = func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte(`{"err":"transient"}`))
 	}
 	s.mockMu.Unlock()
-	wfID, _ := s.putAgentToolWorkflow(client, tenantID, false)
+	wfID, _ := s.putAgentToolWorkflow(client, tenantID, "continue")
 
 	_, status := s.dispatchAndPoll(client, wfID, []string{"success", "error", "cancelled"})
-	s.Equal("success", status, "stop_on_tool_error=false (default) should let the LLM observe the tool error and finish via end_turn")
+	s.Equal("success", status, "tool target on_error=continue should let the LLM observe the tool error and finish via end_turn")
 	s.Equal(int32(2), s.stubProvider.chatCalls.Load(), "agent should re-prompt once after the tool error before the model emits end_turn")
 }

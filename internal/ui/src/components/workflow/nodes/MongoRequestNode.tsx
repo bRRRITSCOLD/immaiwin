@@ -13,6 +13,7 @@ import { DynamicHandles } from './DynamicHandles'
 import { AsToolPanel } from './AsToolPanel'
 import { ConnectionPicker } from './ConnectionPicker'
 import { NodeDebugPanel, BreakpointMarker, ApprovalMarker } from '../RunResultsContext'
+import { OnErrorPolicySelect } from './OnErrorPolicySelect'
 
 // ── operation list ───────────────────────────────────────────────────────────
 
@@ -478,6 +479,9 @@ export function MongoRequestNode({ id, data, selected }: NodeProps) {
           defaultName="mongo_request"
           defaultSchema={MONGO_REQUEST_TOOL_SCHEMA}
         />
+        <div className="px-3 py-2 border-t border-border/50">
+          <OnErrorPolicySelect nodeId={id} value={(data?.on_error as string) ?? 'stop'} />
+        </div>
         <NodeDebugPanel id={id} />
       </div>
       <DynamicHandles nodeId={id} nodeType="mongo_request" data={data as Record<string, unknown>} />

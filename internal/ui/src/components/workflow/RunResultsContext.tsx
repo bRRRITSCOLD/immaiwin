@@ -1,4 +1,4 @@
-import { createContext, useContext, useState } from 'react'
+import { createContext, useContext, useEffect, useRef, useState } from 'react'
 
 export interface StepResult {
   node_id: string
@@ -10,6 +10,19 @@ export interface StepResult {
   // Streaming runs set this to 'running' while in flight and 'done'/'error'
   // when the corresponding step_done event arrives.
   status?: 'running' | 'done' | 'error' | 'paused' | 'cancelled'
+  // Continued is true when the node errored but its `on_error` policy
+  // is "continue" — the run-level aggregate skipped this step's
+  // failure during status promotion. The step still has `error`
+  // populated; the UI surfaces the combination distinctly (amber
+  // "completed with error") so the suppressed failure stays visible.
+  continued?: boolean
+  // for_each per-iteration extras. `pending` = this iteration was
+  // reset to idle (loop advanced) but the node hasn't run it yet.
+  // `loopTotal` = M, the uniform "iter K/M" denominator across the
+  // whole body subgraph (a node skipped in some iterations would
+  // otherwise show a wrong per-node count as the denominator).
+  pending?: boolean
+  loopTotal?: number
 }
 
 export type RunResults = Record<string, StepResult[]>
@@ -28,6 +41,7 @@ export const RunStatusContext = createContext<{ running: boolean }>({ running: f
 // be consumed without dragging in WS-specific code.
 export interface AgentIterSummary {
   iter: number
+  loopIter?: number // for_each iteration this belongs to (0/undef = not looped)
   llm?: {
     text?: string
     usage?: { input_tokens?: number; output_tokens?: number; total_tokens?: number; cost_usd?: number }
@@ -143,6 +157,17 @@ export function NodeDebugPanel({ id }: { id: string }) {
   const { running } = useContext(RunStatusContext)
   const [expanded, setExpanded] = useState(false)
   const [iterIdx, setIterIdx] = useState(0)
+  // While a for_each loops, auto-follow the newest iteration so the
+  // panel tracks live progress — unless the user manually paged, in
+  // which case respect their selection.
+  const userPaged = useRef(false)
+  const stepCount = results?.[id]?.length ?? 0
+  useEffect(() => {
+    if (running && !userPaged.current && stepCount > 0) {
+      setIterIdx(stepCount - 1)
+    }
+    if (!running) userPaged.current = false
+  }, [stepCount, running])
 
   if (results === null) return null
 
@@ -173,16 +198,33 @@ export function NodeDebugPanel({ id }: { id: string }) {
   const idx = Math.min(iterIdx, total - 1)
   const step = steps[idx]!
   const hasError = !!step.error || step.status === 'error'
-  const isRejected = hasError && (step.error ?? '').startsWith('rejected by user')
+  // `on_error: continue` step. Run-level aggregate skipped this
+  // step's failure during status promotion, so the run can land
+  // green even though this step has an Error. Distinct amber badge
+  // + "continued" label keeps the suppressed fault visible.
+  const isContinued = hasError && !!step.continued
+  // Rejection precedence rule: a continued-policy gate rejection is
+  // still surfaced as "continued" (the more important fact for the
+  // operator is that the run kept going).
+  const isRejected = hasError && !isContinued && (step.error ?? '').startsWith('rejected by user')
   const isRunning = step.status === 'running'
   const isPaused = step.status === 'paused'
   const isCancelled = step.status === 'cancelled'
-  const isMulti = total > 1
+  // pending = for_each reset this node to idle for the current
+  // iteration; it hasn't run THIS iteration yet.
+  const isPending = !hasError && !isRunning && !!step.pending
+  // Denominator is the loop total (M) — uniform across the body
+  // subgraph — falling back to the entry count for non-looped nodes.
+  const denom = step.loopTotal && step.loopTotal > 0 ? step.loopTotal : total
+  const isMulti = denom > 1 || total > 1
 
-  // Live status indicator — rejected > error > cancelled > paused > running > success.
-  // Rejected gets amber to match the awaiting-approval colour and to
-  // visually distinguish "user vetoed this" from "node blew up".
-  const dotClass = isRejected
+  // Live status indicator — continued > rejected > error > cancelled > paused > running > success.
+  // Continued + rejected both use amber; the label disambiguates.
+  // (Continued = "node blew up but on_error=continue let the run keep
+  // going", rejected = "user vetoed it via approval gate".)
+  const dotClass = isContinued
+    ? 'bg-amber-500'
+    : isRejected
     ? 'bg-amber-500'
     : hasError
     ? 'bg-red-500'
@@ -190,10 +232,14 @@ export function NodeDebugPanel({ id }: { id: string }) {
     ? 'bg-zinc-500'
     : isPaused
     ? 'bg-yellow-500'
+    : isPending
+    ? 'bg-amber-500'
     : isRunning
     ? 'bg-blue-500 animate-pulse'
     : 'bg-green-500'
-  const label = isRejected
+  const label = isContinued
+    ? 'continued'
+    : isRejected
     ? 'rejected'
     : hasError
     ? 'error'
@@ -201,6 +247,8 @@ export function NodeDebugPanel({ id }: { id: string }) {
     ? 'cancelled'
     : isPaused
     ? 'paused'
+    : isPending
+    ? 'idle'
     : isRunning
     ? 'running'
     : 'success'
@@ -216,7 +264,7 @@ export function NodeDebugPanel({ id }: { id: string }) {
         />
         <span className="text-xs text-muted-foreground flex-1">
           {label}
-          {isMulti && ` · iter ${idx + 1}/${total}`}
+          {isMulti && ` · iter ${idx + 1}/${denom}`}
         </span>
         {isMulti && (
           <span
@@ -226,14 +274,14 @@ export function NodeDebugPanel({ id }: { id: string }) {
             <button
               className="nodrag text-sm px-1 rounded hover:bg-muted/50 disabled:opacity-30"
               disabled={idx === 0}
-              onClick={() => setIterIdx((i) => Math.max(0, i - 1))}
+              onClick={() => { userPaged.current = true; setIterIdx((i) => Math.max(0, i - 1)) }}
             >
               ‹
             </button>
             <button
               className="nodrag text-sm px-1 rounded hover:bg-muted/50 disabled:opacity-30"
               disabled={idx === total - 1}
-              onClick={() => setIterIdx((i) => Math.min(total - 1, i + 1))}
+              onClick={() => { userPaged.current = true; setIterIdx((i) => Math.min(total - 1, i + 1)) }}
             >
               ›
             </button>

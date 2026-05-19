@@ -10,6 +10,7 @@ export interface RunEvent {
     | 'run_start'
     | 'step_start'
     | 'step_done'
+    | 'loop_iter_start'
     | 'step_pending'
     | 'agent_iter'
     | 'agent_llm'
@@ -25,6 +26,8 @@ export interface RunEvent {
   node_id?: string
   node_type?: string
   iter?: number
+  loop_iter?: number // 1-based for_each iteration (0/absent = not looped)
+  loop_total?: number // total for_each iterations (M) — "iter K/M" denominator
   text?: string
   tool_name?: string
   tool_id?: string
@@ -56,6 +59,22 @@ export interface NodeRunState {
   status: 'pending' | 'running' | 'done' | 'error' | 'paused' | 'cancelled'
   output?: unknown
   error?: string
+  // for_each body nodes run once per loop element; without this the
+  // single status/output slot is overwritten every iteration and the
+  // canvas can't show which iteration it's on (or that it re-ran).
+  // One snapshot per loop_iter — workflows.tsx maps this to the
+  // per-iteration StepResult[] that NodeDebugPanel already pages
+  // ("iter N/total"). Empty/absent for non-looped nodes.
+  loopSteps?: {
+    loopIter: number
+    status: NodeRunState['status']
+    output?: unknown
+    error?: string
+  }[]
+  // Loop total (M) from the for_each — the "iter K/M" denominator,
+  // uniform across the whole body subgraph even for a node that
+  // doesn't run every iteration.
+  loopTotal?: number
   // Agent-specific accumulators
   iters: AgentIter[]
   finalText?: string
@@ -63,6 +82,7 @@ export interface NodeRunState {
 
 export interface AgentIter {
   iter: number
+  loopIter?: number // for_each iteration this belongs to (0/undef = not looped)
   llm?: { text?: string; usage?: RunEvent['usage']; provider?: string; model?: string }
   toolCalls: AgentToolCall[]
 }
@@ -128,6 +148,26 @@ export interface WorkflowRunStream {
  * Cancel closes the socket; the server's runCtx then cancels and aborts
  * any in-flight LLM call (loopCtx is derived from request ctx).
  */
+// upsertLoopStep returns a new loopSteps array with the entry for
+// `loopIter` created or shallow-merged. Keeps one snapshot per
+// for_each iteration so the canvas can page them ("iter N/total")
+// instead of collapsing every iteration into one overwritten slot.
+function upsertLoopStep(
+  prev: NodeRunState['loopSteps'],
+  loopIter: number,
+  patch: Partial<NonNullable<NodeRunState['loopSteps']>[number]>,
+): NodeRunState['loopSteps'] {
+  const arr = prev ? [...prev] : []
+  const i = arr.findIndex((s) => s.loopIter === loopIter)
+  if (i === -1) {
+    arr.push({ loopIter, status: 'running', ...patch })
+  } else {
+    arr[i] = { ...arr[i]!, ...patch }
+  }
+  arr.sort((a, b) => a.loopIter - b.loopIter)
+  return arr
+}
+
 export function useWorkflowRunStream(): WorkflowRunStream {
   const [status, setStatus] = useState<RunStatus>('idle')
   const [events, setEvents] = useState<RunEvent[]>([])
@@ -171,9 +211,34 @@ export function useWorkflowRunStream(): WorkflowRunStream {
           if (ev.run_id) setLastRunID(ev.run_id)
           break
         }
+        case 'loop_iter_start': {
+          // for_each advanced — reset THIS body node to idle/pending
+          // for the new iteration before it (maybe) runs, so a node
+          // still showing the previous iteration's "done" flips to
+          // "idle · iter K/M" the instant the loop moves on.
+          const n = ensure()
+          const li = ev.loop_iter ?? 0
+          next[id] = {
+            ...n,
+            status: 'pending',
+            nodeType: ev.node_type ?? n.nodeType,
+            loopTotal: ev.loop_total ?? n.loopTotal,
+            loopSteps:
+              li > 0 ? upsertLoopStep(n.loopSteps, li, { status: 'pending' }) : n.loopSteps,
+          }
+          break
+        }
         case 'step_start': {
           const n = ensure()
-          next[id] = { ...n, status: 'running', nodeType: ev.node_type ?? n.nodeType }
+          const li = ev.loop_iter ?? 0
+          next[id] = {
+            ...n,
+            status: 'running',
+            nodeType: ev.node_type ?? n.nodeType,
+            loopTotal: ev.loop_total ?? n.loopTotal,
+            loopSteps:
+              li > 0 ? upsertLoopStep(n.loopSteps, li, { status: 'running' }) : n.loopSteps,
+          }
           break
         }
         case 'step_pending': {
@@ -191,37 +256,51 @@ export function useWorkflowRunStream(): WorkflowRunStream {
           if (ev.is_error) s = 'error'
           else if (ev.status === 'paused') s = 'paused'
           else s = 'done'
+          const li = ev.loop_iter ?? 0
           next[id] = {
             ...n,
             status: s,
             output: ev.output,
             error: ev.error,
             nodeType: ev.node_type ?? n.nodeType,
+            loopTotal: ev.loop_total ?? n.loopTotal,
+            loopSteps:
+              li > 0
+                ? upsertLoopStep(n.loopSteps, li, {
+                    status: s,
+                    output: ev.output,
+                    error: ev.error,
+                  })
+                : n.loopSteps,
           }
           break
         }
         case 'agent_iter': {
           const n = ensure()
           const iterIdx = ev.iter ?? 0
-          const existing = n.iters.find((i) => i.iter === iterIdx)
-          // Receiving an agent_iter for an iter index already in
-          // n.iters means the agent restarted from iter 0 — the
-          // worker died mid-run and a fresh worker re-claimed the
-          // run and re-ran the agent (no per-iter checkpoint yet,
-          // see FUTURE-FEATURES.md). Drop the dead attempt's iters
-          // so the live canvas reflects the active execution; the
-          // historical view on /runs/:id keeps every attempt and
-          // groups them by attempt boundary.
-          const iters = existing
-            ? [{ iter: iterIdx, toolCalls: [] }]
-            : [...n.iters, { iter: iterIdx, toolCalls: [] }]
+          const loopIdx = ev.loop_iter ?? 0
+          // Seeing the SAME (iter, loop_iter) pair again = a genuine
+          // restart: the worker died and a fresh worker re-ran the
+          // whole run from scratch (no per-iter checkpoint, see
+          // FUTURE-FEATURES.md). Reset so the live canvas shows only
+          // the active attempt; /runs/:id keeps full history.
+          // A new loop_iter (for_each advancing to the next element)
+          // is NOT a restart — it's a different (iter, loop) pair, so
+          // it appends and every loop iteration stays visible without
+          // bleeding into the previous one.
+          const restarted = n.iters.some(
+            (i) => i.iter === iterIdx && (i.loopIter ?? 0) === loopIdx,
+          )
+          const iters = restarted
+            ? [{ iter: iterIdx, loopIter: loopIdx, toolCalls: [] }]
+            : [...n.iters, { iter: iterIdx, loopIter: loopIdx, toolCalls: [] }]
           next[id] = { ...n, iters }
           break
         }
         case 'agent_llm': {
           const n = ensure()
           const iters = n.iters.map((it) =>
-            it.iter === (ev.iter ?? 0)
+            it.iter === (ev.iter ?? 0) && (it.loopIter ?? 0) === (ev.loop_iter ?? 0)
               ? { ...it, llm: { text: ev.text, usage: ev.usage, provider: ev.provider, model: ev.model } }
               : it,
           )
@@ -231,7 +310,7 @@ export function useWorkflowRunStream(): WorkflowRunStream {
         case 'agent_tool_call': {
           const n = ensure()
           const iters = n.iters.map((it) =>
-            it.iter === (ev.iter ?? 0)
+            it.iter === (ev.iter ?? 0) && (it.loopIter ?? 0) === (ev.loop_iter ?? 0)
               ? {
                   ...it,
                   toolCalls: [
@@ -272,7 +351,7 @@ export function useWorkflowRunStream(): WorkflowRunStream {
           // flag so the timeline renders the buttons.
           const n = ensure()
           const iters = n.iters.map((it) =>
-            it.iter === (ev.iter ?? 0)
+            it.iter === (ev.iter ?? 0) && (it.loopIter ?? 0) === (ev.loop_iter ?? 0)
               ? {
                   ...it,
                   toolCalls: it.toolCalls.map((tc) =>
@@ -294,7 +373,7 @@ export function useWorkflowRunStream(): WorkflowRunStream {
         case 'agent_tool_result': {
           const n = ensure()
           const iters = n.iters.map((it) =>
-            it.iter === (ev.iter ?? 0)
+            it.iter === (ev.iter ?? 0) && (it.loopIter ?? 0) === (ev.loop_iter ?? 0)
               ? {
                   ...it,
                   toolCalls: it.toolCalls.map((tc) =>
