@@ -253,13 +253,16 @@ func claimAndRun(
 		return
 	}
 
-	// Heartbeat lease while we execute. ctx-scoped cancel so the
-	// goroutine exits cleanly when execute returns. Dropping a
-	// heartbeat round-trip out of every loop iteration would be
-	// cleaner long-term; for now a goroutine is the simplest path.
-	hbCtx, hbCancel := context.WithCancel(ctx)
+	// Heartbeat lease while we execute. runCtx is what the run-pass
+	// uses; the heartbeat CANCELS it the moment the lease is lost
+	// (force-cancel drops lease_owner, or a partition). Without this
+	// cancellation a long internal loop (for_each / agent ReAct)
+	// keeps running until the NEXT BFS-level checkpoint — a cancel
+	// mid-for_each couldn't stop the loop. ctx-cancel makes every
+	// ctx-aware op (http dial, loop iteration guards) abort promptly.
+	runCtx, runCancel := context.WithCancel(ctx)
 	hbDone := make(chan struct{})
-	go heartbeatLease(hbCtx, runRepo, rec.ID, workerID, hbDone)
+	go heartbeatLease(runCtx, runRepo, rec.ID, workerID, runCancel, hbDone)
 
 	// Per-run event emitter publishes RunEvents to a Redis pub/sub
 	// topic so the WS handler can stream them to the browser. Without
@@ -272,9 +275,9 @@ func claimAndRun(
 			RunID: rec.ID,
 		}
 	}
-	_, err = exec.RunFromCheckpoint(ctx, wf, rec, workerID, emitter)
+	_, err = exec.RunFromCheckpoint(runCtx, wf, rec, workerID, emitter)
 
-	hbCancel()
+	runCancel() // stop the heartbeat once the run-pass returns
 	<-hbDone
 
 	switch {
@@ -296,7 +299,7 @@ func claimAndRun(
 // as fatal — we lost the lease (network partition, slow heartbeat),
 // nothing further to do; the caller will see the same error from its
 // own RunFromCheckpoint and abort.
-func heartbeatLease(ctx context.Context, runRepo *mongodb.WorkflowRunRepository, runID, workerID string, done chan<- struct{}) {
+func heartbeatLease(ctx context.Context, runRepo *mongodb.WorkflowRunRepository, runID, workerID string, onLeaseLost context.CancelFunc, done chan<- struct{}) {
 	defer close(done)
 	t := time.NewTicker(executorHeartbeatDur)
 	defer t.Stop()
@@ -307,7 +310,13 @@ func heartbeatLease(ctx context.Context, runRepo *mongodb.WorkflowRunRepository,
 		case <-t.C:
 			if err := runRepo.ExtendLease(ctx, runID, workerID, executorLeaseDur); err != nil {
 				if errors.Is(err, workflow.ErrLeaseNotHeld) {
-					slog.Warn("workflow-executor: lease lost during heartbeat", "run_id", runID, "worker", workerID)
+					slog.Warn("workflow-executor: lease lost during heartbeat — cancelling run ctx", "run_id", runID, "worker", workerID)
+					// Cancel the run-pass ctx so a long internal loop
+					// (for_each / agent) aborts NOW instead of running
+					// to the next BFS checkpoint. The BFS still surfaces
+					// ErrLeaseNotHeld so the run-pass is abandoned and
+					// the cancelled status isn't overwritten.
+					onLeaseLost()
 					return
 				}
 				slog.Warn("workflow-executor: heartbeat extend failed", "run_id", runID, "err", err)
