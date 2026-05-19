@@ -431,6 +431,35 @@ export function useWorkflowRunStream(): WorkflowRunStream {
           // the gate either resolved (success / error follow), got
           // cancelled, or rejected.
           setPendingApprovalRunID(null)
+          // Sweep stuck nodes: on a cancelled/error terminal the worker
+          // abandons mid-graph, so an in-flight node's own step_done
+          // may never arrive (e.g. cancelled for_each body / http).
+          // Without this it spins "Running" forever. Flip any
+          // non-terminal node (and its loop iterations) to 'cancelled'.
+          if (ev.status === 'cancelled' || ev.status === 'error') {
+            for (const nid of Object.keys(next)) {
+              const nn = next[nid]!
+              const stuck =
+                nn.status === 'running' ||
+                nn.status === 'pending' ||
+                nn.status === 'paused'
+              let lsChanged = false
+              const ls = nn.loopSteps?.map((s) => {
+                if (s.status === 'running' || s.status === 'pending') {
+                  lsChanged = true
+                  return { ...s, status: 'cancelled' as const }
+                }
+                return s
+              })
+              if (stuck || lsChanged) {
+                next[nid] = {
+                  ...nn,
+                  status: stuck ? 'cancelled' : nn.status,
+                  loopSteps: lsChanged ? ls : nn.loopSteps,
+                }
+              }
+            }
+          }
           break
         }
       }

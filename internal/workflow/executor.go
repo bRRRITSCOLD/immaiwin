@@ -1623,6 +1623,18 @@ func (e *WorkflowExecutor) RunWithEvents(ctx context.Context, wf Workflow, stopA
 	}
 
 	for len(queue) > 0 {
+		// Cancellation / lease-loss: the heartbeat cancels the run ctx
+		// on lease-loss, and force-cancel drops the lease. Bail BEFORE
+		// running or edge-routing the next node — otherwise a for_each
+		// returning `context canceled` (with on_error=continue) would
+		// still fire its dual edges and march the queued downstream
+		// nodes, each erroring on the dead ctx. Returning ctx.Err()
+		// abandons the run-pass; the run record is already terminal
+		// (cancel endpoint set `cancelled`) so nothing reclaims it.
+		if cerr := ctx.Err(); cerr != nil {
+			slog.Warn("workflow: ctx cancelled mid-BFS — abandoning run-pass", "run_id", env.runID, "worker", env.workerID, "err", cerr)
+			return results, cerr
+		}
 		item := queue[0]
 		queue = queue[1:]
 		if visited[item.nodeID] || forEachBodies[item.nodeID] {
@@ -1806,8 +1818,15 @@ func (e *WorkflowExecutor) RunWithEvents(ctx context.Context, wf Workflow, stopA
 		// Per-visit checkpoint (lease-held runs only). On lease loss
 		// abort the loop without writing further state.
 		if cerr := checkpointBFS(); cerr != nil {
-			if errors.Is(cerr, ErrLeaseNotHeld) {
-				slog.Warn("workflow: lease lost mid-BFS — abandoning run-pass", "run_id", env.runID, "node", node.ID, "worker", env.workerID)
+			// ErrLeaseNotHeld = lost the lease. context.Canceled /
+			// DeadlineExceeded = the run ctx was cancelled (heartbeat
+			// killed it on lease-loss, OR force-cancel). All three are
+			// fatal: abandon the run-pass instead of treating it as a
+			// transient write failure and marching on.
+			if errors.Is(cerr, ErrLeaseNotHeld) ||
+				errors.Is(cerr, context.Canceled) ||
+				errors.Is(cerr, context.DeadlineExceeded) {
+				slog.Warn("workflow: lease lost / ctx cancelled mid-BFS — abandoning run-pass", "run_id", env.runID, "node", node.ID, "worker", env.workerID, "err", cerr)
 				return results, cerr
 			}
 			slog.Warn("workflow: BFS checkpoint write failed", "run_id", env.runID, "node", node.ID, "err", cerr)
@@ -1948,6 +1967,17 @@ func (e *WorkflowExecutor) runForEach(
 	anyFatal := false
 
 	for idx, item := range items {
+		// Honour cancellation between iterations. On force-cancel /
+		// lease-loss the heartbeat cancels the run ctx; without this
+		// check the loop would run every remaining item to completion
+		// before the next BFS-level checkpoint noticed. Stop spawning
+		// iterations now; the post-for_each checkpointBFS surfaces
+		// ErrLeaseNotHeld and the run-pass is abandoned.
+		if cerr := ctx.Err(); cerr != nil {
+			slog.Warn("for_each: ctx cancelled — stopping loop", "node", node.ID, "item_index", idx, "err", cerr)
+			abortErr = cerr
+			break
+		}
 		// clone parent context per iteration so body steps don't bleed across iterations
 		iterCtx := make(runCtx, len(wfCtx))
 		for k, v := range wfCtx {
@@ -2041,6 +2071,11 @@ func (e *WorkflowExecutor) runBodyChain(
 	var lastOut any
 
 	for len(queue) > 0 {
+		// Honour cancellation between body nodes — a long body chain
+		// under a cancelled run should stop here, not run to the end.
+		if ctx.Err() != nil {
+			break
+		}
 		cur := queue[0]
 		queue = queue[1:]
 		if cur.nodeID == "" || visited[cur.nodeID] {
