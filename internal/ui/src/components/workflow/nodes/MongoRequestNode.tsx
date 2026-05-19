@@ -266,7 +266,7 @@ export function MongoRequestNode({ id, data, selected }: NodeProps) {
         <div className="flex items-center gap-2 px-4 py-2.5 border-b border-green-600/40">
           <Database className="h-4 w-4 text-green-500 shrink-0" />
           <span className="text-sm font-medium flex-1">Mongo Request</span>
-          <ConnectionPicker nodeId={id} connectionType="mongodb" data={data as Record<string, unknown>} />
+          <ConnectionPicker nodeId={id} connectionType="mongodb" data={data as Record<string, unknown>} requireExplicit />
         </div>
         <StepNameInput id={id} data={data} />
 

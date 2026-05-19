@@ -2469,6 +2469,17 @@ func (e *WorkflowExecutor) runMongoRequest(ctx context.Context, data map[string]
 		return e.mongoCursorFetch(ctx, data)
 	}
 
+	// SECURITY: a user-authored workflow MUST NOT reach Burrow's
+	// platform Mongo (workflow records, run history, audit log,
+	// lease/approval state, chat memory). An empty connection_id used
+	// to silently fall back to e.DB — a multi-tenant data-loss / leak
+	// / DoS vector (e.g. mongo_request{op:"delete_many",db:"burrow"}).
+	// Require an explicit user connection; the UI mirrors this with
+	// `requireExplicit` on the picker.
+	if cid, _ := data["connection_id"].(string); strings.TrimSpace(cid) == "" {
+		return nil, fmt.Errorf("mongo_request: a connection is required — the platform database is not reachable from workflows; select or create a MongoDB connection")
+	}
+
 	collection, _ := data["collection"].(string)
 	if collection == "" {
 		return nil, fmt.Errorf("mongo_request: collection is required")
@@ -2960,6 +2971,16 @@ func (e *WorkflowExecutor) runRedisRequest(ctx context.Context, data map[string]
 	op := strings.ToLower(strings.TrimSpace(getStringData(data, "operation")))
 	if op == "" {
 		op = "publish" // backward-friendly default — original node was publish-only
+	}
+
+	// SECURITY: same rule as mongo_request — a workflow must not reach
+	// Burrow's platform Redis (lease state, run-event bus, approval
+	// registry, rate-limit keys). Empty connection_id used to fall
+	// back to the platform client (e.g. redis_request{op:"keys",
+	// pattern:"*"} / {op:"del"} against platform keys). Require an
+	// explicit user connection.
+	if cid, _ := data["connection_id"].(string); strings.TrimSpace(cid) == "" {
+		return nil, fmt.Errorf("redis_request: a connection is required — the platform Redis is not reachable from workflows; select or create a Redis connection")
 	}
 
 	rc, err := e.resolveRedis(ctx, data)

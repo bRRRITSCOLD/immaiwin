@@ -90,9 +90,12 @@ func (s *WorkflowMongoRedisNodeIntegrationSuite) SetupSuite() {
 	auditRepo, err := mongodb.NewAuditRepository(ctx, s.db)
 	s.Require().NoError(err)
 
-	// Real executor — both DB + Redis wired so default-connection
-	// dispatch (no `connection_id` data field) lands on the same
-	// services the test directly inspects.
+	// Real executor — both DB + Redis wired. mongo_request /
+	// redis_request now REQUIRE a non-empty connection_id (platform
+	// DB/Redis are off-limits to workflows). ConnResolver is nil
+	// here, so a set connection_id resolves back to e.DB / e.Redis —
+	// the same services the test inspects — while still exercising
+	// the security guard's non-empty requirement.
 	wfExec := &workflow.WorkflowExecutor{
 		HTTPClient: &http.Client{Timeout: 10 * time.Second},
 		DB:         mongodb.NewMongoClient(s.db),
@@ -181,6 +184,15 @@ func (s *WorkflowMongoRedisNodeIntegrationSuite) authedClient(emailAddr string) 
 // to a single mongo_request or redis_request node. Returns the
 // workflow id so the test can run it.
 func (s *WorkflowMongoRedisNodeIntegrationSuite) putRequestNodeWorkflow(client *http.Client, suffix int64, nodeType string, nodeData map[string]any) string {
+	// mongo_request / redis_request reject an empty connection_id
+	// (platform DB/Redis are not reachable from workflows). Auto-fill
+	// a dummy id unless the caller set the key explicitly (the guard
+	// test passes "" to assert the refusal).
+	if nodeType == "mongo_request" || nodeType == "redis_request" {
+		if _, ok := nodeData["connection_id"]; !ok {
+			nodeData["connection_id"] = "test-conn"
+		}
+	}
 	wfID := fmt.Sprintf("wf-%s-%d", strings.ReplaceAll(nodeType, "_", "-"), suffix)
 	payload := map[string]any{
 		"name":   "node test wf",
@@ -398,4 +410,55 @@ func (s *WorkflowMongoRedisNodeIntegrationSuite) TestRedisNode_UnknownOp_FailsRu
 	})
 	_, status := s.runWorkflow(client, wfID)
 	s.Equal("error", status)
+}
+
+// TestMongoNode_NoConnection_RefusedBeforePlatformDB is a SECURITY
+// regression guard: a mongo_request with an empty connection_id must
+// be refused outright (the platform Mongo — workflow records, audit
+// log, lease state — is NOT reachable from a user workflow). The run
+// lands `error` and the step error names the missing connection; the
+// op never executes.
+func (s *WorkflowMongoRedisNodeIntegrationSuite) TestMongoNode_NoConnection_RefusedBeforePlatformDB() {
+	suffix := time.Now().UnixNano()
+	client := s.authedClient(fmt.Sprintf("alice-mongo-noconn-%d@example.com", suffix))
+	wfID := s.putRequestNodeWorkflow(client, suffix, "mongo_request", map[string]any{
+		"connection_id": "", // explicit empty → helper does NOT auto-fill
+		"operation":     "delete_many",
+		"collection":    "workflows", // would nuke platform data if the guard were absent
+		"filter":        map[string]any{},
+	})
+	steps, status := s.runWorkflow(client, wfID)
+	s.Equal("error", status, "empty connection_id must refuse — platform DB is off-limits")
+	var reqStep map[string]any
+	for _, st := range steps {
+		if id, _ := st["node_id"].(string); id == "request-1" {
+			reqStep = st
+		}
+	}
+	s.Require().NotNil(reqStep)
+	s.Contains(fmt.Sprint(reqStep["error"]), "connection is required",
+		"error must explain the platform DB is not reachable")
+}
+
+// TestRedisNode_NoConnection_RefusedBeforePlatformRedis — same guard
+// for redis_request (platform Redis: lease, run-event bus, approval
+// registry, rate-limit keys).
+func (s *WorkflowMongoRedisNodeIntegrationSuite) TestRedisNode_NoConnection_RefusedBeforePlatformRedis() {
+	suffix := time.Now().UnixNano()
+	client := s.authedClient(fmt.Sprintf("alice-redis-noconn-%d@example.com", suffix))
+	wfID := s.putRequestNodeWorkflow(client, suffix, "redis_request", map[string]any{
+		"connection_id": "",
+		"operation":     "keys",
+		"pattern":       "*", // would enumerate every platform key if unguarded
+	})
+	steps, status := s.runWorkflow(client, wfID)
+	s.Equal("error", status, "empty connection_id must refuse — platform Redis is off-limits")
+	var reqStep map[string]any
+	for _, st := range steps {
+		if id, _ := st["node_id"].(string); id == "request-1" {
+			reqStep = st
+		}
+	}
+	s.Require().NotNil(reqStep)
+	s.Contains(fmt.Sprint(reqStep["error"]), "connection is required")
 }
