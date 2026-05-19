@@ -47,15 +47,48 @@ function WorkflowsPage() {
       } else if (n.status === 'done') {
         status = 'done'
       }
-      out[id] = [
-        {
+      const mapStatus = (
+        st: NonNullable<typeof n.loopSteps>[number]['status'],
+      ): 'running' | 'done' | 'error' | 'paused' | 'cancelled' | undefined =>
+        st === 'running'
+          ? 'running'
+          : st === 'error'
+          ? 'error'
+          : st === 'paused'
+          ? 'paused'
+          : st === 'cancelled'
+          ? 'cancelled'
+          : st === 'done'
+          ? 'done'
+          : undefined // 'pending' → no status; the `pending` flag drives the idle render
+
+      // for_each body node: one StepResult per loop iteration so
+      // NodeDebugPanel's existing "iter N/total" pager shows which
+      // iteration ran (and that it re-ran). `pending` entries render
+      // as "idle · iter K/M" (loop advanced, node hasn't run it yet);
+      // loopTotal keeps the denominator uniform across the subgraph.
+      // Non-looped nodes keep the single-entry shape.
+      if (n.loopSteps && n.loopSteps.length > 0) {
+        out[id] = n.loopSteps.map((ls) => ({
           node_id: n.nodeId,
           node_type: n.nodeType ?? '',
-          output: n.output,
-          error: n.error,
-          status,
-        },
-      ]
+          output: ls.output,
+          error: ls.error,
+          status: mapStatus(ls.status),
+          pending: ls.status === 'pending',
+          loopTotal: n.loopTotal,
+        }))
+      } else {
+        out[id] = [
+          {
+            node_id: n.nodeId,
+            node_type: n.nodeType ?? '',
+            output: n.output,
+            error: n.error,
+            status,
+          },
+        ]
+      }
     }
     return out
   }, [stream.nodes])

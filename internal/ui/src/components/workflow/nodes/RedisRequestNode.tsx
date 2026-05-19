@@ -12,6 +12,7 @@ import { DynamicHandles } from './DynamicHandles'
 import { AsToolPanel } from './AsToolPanel'
 import { ConnectionPicker } from './ConnectionPicker'
 import { NodeDebugPanel, BreakpointMarker, ApprovalMarker } from '../RunResultsContext'
+import { OnErrorPolicySelect } from './OnErrorPolicySelect'
 
 const OPERATIONS = [
   'publish',
@@ -473,6 +474,9 @@ export function RedisRequestNode({ id, data, selected }: NodeProps) {
           defaultName="redis_request"
           defaultSchema={REDIS_REQUEST_TOOL_SCHEMA}
         />
+        <div className="px-3 py-2 border-t border-border/50">
+          <OnErrorPolicySelect nodeId={id} value={(data?.on_error as string) ?? 'stop'} />
+        </div>
         <NodeDebugPanel id={id} />
       </div>
       <DynamicHandles nodeId={id} nodeType="redis_request" data={data as Record<string, unknown>} />

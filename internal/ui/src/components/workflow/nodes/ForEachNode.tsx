@@ -1,6 +1,7 @@
 import { NodeResizer, type NodeProps, useReactFlow } from '@xyflow/react'
 import { RefreshCw } from 'lucide-react'
 import { StepNameInput } from './StepNameInput'
+import { OnErrorPolicySelect } from './OnErrorPolicySelect'
 import { DynamicHandles } from './DynamicHandles'
 import { NodeDebugPanel, BreakpointMarker, ApprovalMarker } from '../RunResultsContext'
 
@@ -18,6 +19,13 @@ export function ForEachNode({ id, data, selected }: NodeProps) {
           <span className="text-sm font-medium">For Each</span>
         </div>
         <StepNameInput id={id} data={data} />
+        <input
+          className="nodrag w-full px-4 py-1 text-[10px] text-muted-foreground bg-transparent
+                     border-b border-border/20 focus:border-border/60 outline-none placeholder:italic font-mono"
+          placeholder="items (optional) — e.g. {{input.docs}}; blank = iterate raw input"
+          value={(data?.items as string) ?? ''}
+          onChange={(e) => updateNodeData(id, { items: e.target.value })}
+        />
         <div className="px-4 py-2 space-y-1.5 text-xs text-muted-foreground">
           <div className="flex items-center justify-between">
             <span>item →</span>
@@ -28,6 +36,9 @@ export function ForEachNode({ id, data, selected }: NodeProps) {
             <span className="text-[10px]">all outputs [ ]</span>
           </div>
           <p className="text-[9px] text-muted-foreground/60 pt-0.5">name → body access via <code className="text-[9px]">context.stepName.item</code></p>
+        </div>
+        <div className="px-3 py-2 border-t border-border/50">
+          <OnErrorPolicySelect nodeId={id} value={(data?.on_error as string) ?? 'stop'} nodeType="for_each" />
         </div>
         <NodeDebugPanel id={id} />
       </div>

@@ -12,6 +12,7 @@ import { SkillsPanel } from './SkillsPanel'
 import { AgentTimelinePanel } from './AgentTimelinePanel'
 import { NodeDebugPanel, BreakpointMarker, ApprovalMarker, AgentRunContext } from '../RunResultsContext'
 import { ConnectionPicker } from './ConnectionPicker'
+import { OnErrorPolicySelect } from './OnErrorPolicySelect'
 
 const LLM_TYPES = ['anthropic', 'openai', 'ollama'] as const
 
@@ -29,7 +30,7 @@ export function AIAgentNode({ id, data, selected }: NodeProps) {
   const temperature = (data?.temperature as number) ?? 1
   const timeoutSec = (data?.timeout_seconds as number) ?? 300
   const requireApproval = (data?.require_approval as boolean) ?? false
-  const stopOnToolError = (data?.stop_on_tool_error as boolean) ?? false
+  const onErrorPolicy = (data?.on_error as string) ?? 'stop'
   const requireNodeApproval = (data?.require_node_approval as boolean) ?? false
   const outputSchema = (data?.output_schema as string) ?? ''
 
@@ -265,45 +266,6 @@ export function AIAgentNode({ id, data, selected }: NodeProps) {
                   onCheckedChange={(v) => updateNodeData(id, { require_approval: v })}
                 />
               </div>
-
-              {/* stop_on_tool_error: when on, any tool error from the
-                  agent's catalog (skill/sandbox/as_tool) terminates
-                  the run with status=error and follows the agent's
-                  error edge in the BFS. Default off keeps the LLM's
-                  ability to self-correct on transient tool failures
-                  (flaky upstream API, etc.). Sandbox-engine errors
-                  (k3s pod failed, docker daemon down, …) terminate
-                  regardless because the model can't recover from
-                  infra failures. */}
-              <div className="flex items-center justify-between gap-2 pt-1">
-                <div className="flex items-center gap-1">
-                  <p className="text-[10px] text-muted-foreground">
-                    Stop run on tool error
-                  </p>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <button
-                        type="button"
-                        className="nodrag text-muted-foreground hover:text-foreground"
-                        aria-label="Stop on tool error help"
-                      >
-                        <HelpCircle className="h-3 w-3" />
-                      </button>
-                    </TooltipTrigger>
-                    <TooltipContent side="top" className="max-w-[320px] text-[11px] leading-snug">
-                      <p className="font-medium mb-1">Strict-error mode.</p>
-                      <p>When on: any tool error (skill, sandbox, as_tool target) ends the agent immediately. Run badge flips to <code>error</code>; BFS follows the agent's error edge.</p>
-                      <p className="mt-1">When off (default): tool errors are fed back to the LLM as observations so the model can pivot or retry within <code>max_iterations</code>. Useful for resilient agents that wrap flaky APIs.</p>
-                      <p className="mt-1 text-muted-foreground/80">Sandbox-engine errors (k3s pod failed, docker daemon down) terminate regardless of this flag — the LLM has no path to recover from infra failures.</p>
-                    </TooltipContent>
-                  </Tooltip>
-                </div>
-                <Switch
-                  className="nodrag"
-                  checked={stopOnToolError}
-                  onCheckedChange={(v) => updateNodeData(id, { stop_on_tool_error: v })}
-                />
-              </div>
             </div>
           )}
         </div>
@@ -317,6 +279,9 @@ export function AIAgentNode({ id, data, selected }: NodeProps) {
 
         <SkillsPanel nodeId={id} data={data as Record<string, unknown>} />
         <AgentTimelinePanel id={id} />
+        <div className="px-3 py-2 border-t border-border/50">
+          <OnErrorPolicySelect nodeId={id} value={onErrorPolicy} nodeType="ai_agent" />
+        </div>
         <NodeDebugPanel id={id} />
       </div>
       <DynamicHandles nodeId={id} nodeType="ai_agent" data={data as Record<string, unknown>} />

@@ -1,6 +1,10 @@
 package workflow
 
-import "go.mongodb.org/mongo-driver/v2/bson"
+import (
+	"reflect"
+
+	"go.mongodb.org/mongo-driver/v2/bson"
+)
 
 // mapAny normalises a value loaded from BSON or JSON into a map[string]any.
 //
@@ -47,6 +51,36 @@ func sliceAny(v any) ([]any, bool) {
 		return a, true
 	case bson.A:
 		return []any(a), true
+	}
+	return nil, false
+}
+
+// expandSlice flattens any slice/array-kinded value into []any.
+//
+// Unlike sliceAny (which only knows []any + bson.A) this uses reflection
+// so concrete element types survive a round-trip — e.g. mongo_request
+// `find` returns its docs as []bson.M, mongo `distinct` as []any of
+// scalars, a JSON import as []any. The for_each `items` selector resolves
+// to whatever the upstream node produced, so it needs the wide net.
+//
+// ok=false for nil or any non-slice/array value, letting the caller fall
+// back (for_each treats a non-slice as "iterate the single value once",
+// matching toSlice's contract).
+func expandSlice(v any) ([]any, bool) {
+	if v == nil {
+		return nil, false
+	}
+	if s, ok := sliceAny(v); ok {
+		return s, true
+	}
+	rv := reflect.ValueOf(v)
+	switch rv.Kind() {
+	case reflect.Slice, reflect.Array:
+		out := make([]any, rv.Len())
+		for i := 0; i < rv.Len(); i++ {
+			out[i] = rv.Index(i).Interface()
+		}
+		return out, true
 	}
 	return nil, false
 }

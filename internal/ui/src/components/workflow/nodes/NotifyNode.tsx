@@ -4,6 +4,7 @@ import { Textarea } from '~/components/ui/textarea'
 import { StepNameInput } from './StepNameInput'
 import { DynamicHandles } from './DynamicHandles'
 import { NodeDebugPanel, BreakpointMarker, ApprovalMarker } from '../RunResultsContext'
+import { OnErrorPolicySelect } from './OnErrorPolicySelect'
 
 export function NotifyNode({ id, data, selected }: NodeProps) {
   const { updateNodeData } = useReactFlow()
@@ -30,6 +31,9 @@ export function NotifyNode({ id, data, selected }: NodeProps) {
             value={message}
             onChange={(e) => updateNodeData(id, { message: e.target.value })}
           />
+        </div>
+        <div className="px-3 py-2 border-t border-border/50">
+          <OnErrorPolicySelect nodeId={id} value={(data?.on_error as string) ?? 'stop'} />
         </div>
         <NodeDebugPanel id={id} />
       </div>

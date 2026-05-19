@@ -80,6 +80,20 @@ function defaultHandlesForType(nodeType: string): DynamicHandle[] {
 }
 
 /**
+ * A node with `as_tool.enabled` is dispatched by an AI Agent (the
+ * "tool" edge) and FULLY bypasses the BFS — its own success/error/item
+ * edges are never traversed. So those edges are inert: we hide their
+ * source handles entirely and block wiring them (WorkflowCanvas guards
+ * + self-heal), leaving only `receive` handles so the agent's tool edge
+ * can still target the node. Single rule: only the agent talks to a
+ * tool node.
+ */
+export function isAsToolEnabled(data: Record<string, unknown> | undefined): boolean {
+  const at = data?.as_tool as { enabled?: boolean } | undefined
+  return !!at?.enabled
+}
+
+/**
  * Validate palette edge type against source node type.
  */
 function isPaletteValidForNode(nodeType: string, paletteType: string): boolean {
@@ -132,8 +146,16 @@ export function DynamicHandles({ nodeId, nodeType, data }: Props) {
     return defaults
   })()
 
+  // as_tool node: only `receive` handles render (the agent's tool edge
+  // still needs a target). All source handles (success/error/item) are
+  // inert here, so they're hidden and un-wirable.
+  const asTool = isAsToolEnabled(data)
+  const displayHandles = asTool
+    ? handles.filter((h) => h.paletteType === 'receive')
+    : handles
+
   // Update node internals when handles change so RF registers them
-  const handleIds = handles.map((h) => h.id).join(',')
+  const handleIds = displayHandles.map((h) => h.id).join(',')
   useEffect(() => {
     if (handleIds) {
       updateNodeInternals(nodeId)
@@ -147,7 +169,10 @@ export function DynamicHandles({ nodeId, nodeType, data }: Props) {
   const [movingHandle, setMovingHandle] = useState<DynamicHandle | null>(null)
   const zoneRefs = useRef<Record<string, HTMLDivElement | null>>({})
 
-  const showPaletteZones = (paletteType != null && isPaletteValidForNode(nodeType, paletteType)) || movingHandle != null
+  // as_tool nodes accept no new source handles — the only valid wiring
+  // is the agent's inbound tool edge onto the seeded receive handle.
+  const showPaletteZones =
+    !asTool && ((paletteType != null && isPaletteValidForNode(nodeType, paletteType)) || movingHandle != null)
 
   // Close menus on Escape
   useEffect(() => {
@@ -295,7 +320,9 @@ export function DynamicHandles({ nodeId, nodeType, data }: Props) {
   }
 
   // Valid palette types for this node (for border submenu)
-  const validPaletteTypes = allPaletteTypes.filter((p) => isPaletteValidForNode(nodeType, p.type))
+  const validPaletteTypes = asTool
+    ? []
+    : allPaletteTypes.filter((p) => isPaletteValidForNode(nodeType, p.type))
 
   // Zone styles — always pointer events, cursor crosshair when palette or always for right-click
   const zoneBase = 'absolute nodrag nopan'
@@ -339,7 +366,7 @@ export function DynamicHandles({ nodeId, nodeType, data }: Props) {
       )}
 
       {/* All handles */}
-      {handles.map((dh) => (
+      {displayHandles.map((dh) => (
         <DynamicHandleEl
           key={dh.id}
           dh={dh}
@@ -371,6 +398,13 @@ export function DynamicHandles({ nodeId, nodeType, data }: Props) {
                 <div
                   className="absolute left-full top-0 bg-popover border border-border rounded-md shadow-lg py-1 min-w-[130px] z-50"
                 >
+                  {validPaletteTypes.length === 0 && (
+                    <p className="px-3 py-1.5 text-xs text-muted-foreground italic max-w-[200px] whitespace-normal leading-snug">
+                      {asTool
+                        ? 'No handles — this node is exposed as an agent tool. The AI Agent wires it via the tool edge; it has no success/error/item edges of its own.'
+                        : 'No handles available for this node type.'}
+                    </p>
+                  )}
                   {validPaletteTypes.map((p) => (
                     <button
                       key={p.type}

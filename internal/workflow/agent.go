@@ -114,19 +114,14 @@ func (e *WorkflowExecutor) runAIAgent(ctx context.Context, node Node, data map[s
 	temperature := getFloat64Data(data, "temperature")
 	model, _ := data["model_override"].(string)
 	requireApproval := getBoolData(data, "require_approval")
-	// stopOnToolError: when set, any tool-handler error from
-	// catalog.Execute aborts the agent loop instead of feeding the
-	// error back to the LLM as a tool_result. The agent's StepResult
-	// then carries Error, which the run-status logic in
-	// RunFromCheckpoint promotes to the run-level `error` badge.
-	// Default false preserves the LLM's ability to self-correct on
-	// transient tool failures (e.g. a flaky upstream API). Strict
-	// agents that should NOT hallucinate around infra errors set
-	// `stop_on_tool_error: true` in node data. Sandbox-engine
-	// failures (k3s pod attach failed, docker daemon down, etc.)
-	// abort regardless because the LLM has no way to recover from
-	// them — we treat any err prefixed with `sandbox/` as terminal.
-	stopOnToolError := getBoolData(data, "stop_on_tool_error")
+	// PR 4.x: tool-error abort decision lives entirely on each
+	// tool target's `on_error` field (default `stop`). The legacy
+	// agent-wide `stop_on_tool_error` flag was removed — its
+	// effect (force-abort on any tool error) is now the natural
+	// default. Per-tool `on_error: continue` opts a specific tool
+	// into the legacy "feed error to LLM, let model pivot"
+	// behavior. Sandbox-engine failures still terminate regardless
+	// (`isInfraToolError`).
 
 	// 3. Resolve templates in prompt + user input
 	systemPrompt := applyTemplate(getStringData(data, "system_prompt"), input, wfCtx)
@@ -362,8 +357,10 @@ func (e *WorkflowExecutor) runAIAgent(ctx context.Context, node Node, data map[s
 		messages = append(messages, llm.UserText(userInputText))
 	}
 
+	loopIter := forEachIterFromCtx(ctx)
 	emitTrace := func(ev TraceEvent) {
 		ev.At = time.Now().UTC()
+		ev.LoopIter = loopIter
 		traceEvents = append(traceEvents, ev)
 		// Best-effort persistence; don't fail the run on trace errors.
 		if env.runID != "" && e.RunRepo != nil {
@@ -986,17 +983,25 @@ func (e *WorkflowExecutor) runAIAgent(ctx context.Context, node Node, data map[s
 					} else {
 						obs = obs + "\nerror: " + err.Error()
 					}
-					// Terminal-error classification: if the agent was
-					// configured to stop on any tool error, OR the
-					// underlying error is a sandbox-engine failure
-					// (k3s pod failed, docker daemon down, …) which
-					// the LLM has no path to recover from, surface
-					// the trace + return error from runAIAgent. The
-					// BFS picks up the err on the agent's runNode
-					// return → agent's StepResult.Error populated →
-					// RunFromCheckpoint's status-promotion scan
-					// flips the run badge to `error`.
-					if stopOnToolError || isInfraToolError(err) {
+					// Terminal-error classification — abort the agent
+					// loop (which then flips the run to error) when ANY of:
+					//   - sandbox-engine failure (k3s pod failed, docker
+					//     daemon down, …) — LLM has no recovery path.
+					//   - tool target's `on_error: stop` (the default
+					//     PR 4.x policy). Built-in tools (no node target)
+					//     default to stop too: missing entries in
+					//     toolNameToOnError are treated as stop.
+					// `on_error: continue` on the tool target falls
+					// through to the legacy "feed tool_result to LLM,
+					// let the model pivot" path below.
+					toolOnError := "stop"
+					if env, ok := envFromCtx(ctx); ok {
+						if p, found := env.toolNameToOnError[call.Name]; found && p != "" {
+							toolOnError = p
+						}
+					}
+					policyStops := toolOnError != "continue"
+					if isInfraToolError(err) || policyStops {
 						emitTrace(TraceEvent{
 							Type:     "tool_result",
 							Iter:     iter,
@@ -1200,6 +1205,17 @@ func (e *WorkflowExecutor) buildAgentToolCatalog(agent Node, env *runEnv,
 				sr := StepResult{NodeID: targetNode.ID, NodeType: targetNode.Type, Output: out, ViaAgentTool: true}
 				if err != nil {
 					sr.Error = err.Error()
+					// Mark Continued only when the target's policy is
+					// `continue`. The amber "continued" badge then
+					// renders on the run-detail step list. PR 4.x:
+					// when policy is `stop` (default), the agent loop
+					// aborts upstream and the agent node's own
+					// StepResult promotes the run — this tool step
+					// keeps the red error badge to signal the
+					// originating fault.
+					if onErrorPolicy(targetNode.Data) == "continue" {
+						sr.Continued = true
+					}
 				}
 				env.toolSteps.add(sr)
 			}
@@ -1245,6 +1261,14 @@ func (e *WorkflowExecutor) buildAgentToolCatalog(agent Node, env *runEnv,
 			env.toolNameToNodeID = make(map[string]string, optedIn)
 		}
 		env.toolNameToNodeID[def.Name] = targetNode.ID
+		// Index the target's on_error policy so the agent ReAct loop
+		// can decide between abort (stop) and feed-to-LLM (continue)
+		// when the tool errors. Default policy is stop; absent entries
+		// in this map are treated as stop by callers.
+		if env.toolNameToOnError == nil {
+			env.toolNameToOnError = make(map[string]string, optedIn)
+		}
+		env.toolNameToOnError[def.Name] = onErrorPolicy(targetNode.Data)
 	}
 
 	slog.Info("ai_agent: tool catalog built",
@@ -1265,6 +1289,7 @@ func traceToRunEvent(t TraceEvent, agentNode Node) RunEvent {
 		NodeID:   agentNode.ID,
 		NodeType: agentNode.Type,
 		Iter:     t.Iter,
+		LoopIter: t.LoopIter,
 		Text:     t.Text,
 		ToolName: t.ToolName,
 		ToolID:   t.ToolID,

@@ -5,11 +5,29 @@
   </picture>
 </p>
 
-**Visual workflow automation with sandboxed multi-language code execution and interactive debugging.**
+<p align="center">
+  <img src="https://img.shields.io/badge/100%25-vibe--coded-ff69b4?style=for-the-badge" alt="100% vibe-coded">
+</p>
 
-Think **n8n** meets **Replit** — a canvas-based workflow builder where every node can run real code (JavaScript, Python, Go, Rust, PHP) inside isolated Docker containers with gVisor-grade security. Step through your code with breakpoints. Chain data transformations across languages. Connect to any WebSocket, REST API, or message queue. All self-hosted, all open source.
+> **🎤 Built entirely by vibe coding.** Every line here was produced by a software engineer with 10+ years of experience as software engineer from associate to senior to lead and beyond — driving an AI agent in natural language, not hand-writing the code. The project is a deliberate experiment: prove out whether vibe coding holds up for a *large-scale, real* software system (multi-tenant auth, sandboxed runtimes, durable execution, k8s backend) — not a toy. Treat it as a working data point on that question.
+
+---
+
+## Overview
+
+**Visual workflow automation with sandboxed multi-language code execution and interactive debugging.**
+d workflow builder where every node can run real code (JavaScript, Python, Go, Rust, PHP) inside isolated Docker containers with gVisor-grade security. Step through your code with breakpoints. Chain data transformations across languages. Connect to any WebSocket, REST API, or message queue. All self-hosted, all open source.
+
+Think **n8n** meets **Replit** — a canvas-base
 
 The long game: add AI agents that can write and execute code as part of their reasoning — like [OpenClaw](https://github.com/openclaw) but inherently safe, because every script runs in a sandboxed container with syscall interception, no network by default, and hard resource limits. The agent can't escape the sandbox.
+
+<p align="center">
+  <img src="docs/assets/workflow-editor.png" alt="burrow workflow editor — React Flow canvas with trigger, AI agent, HTTP request, and Mongo request nodes" width="100%">
+  <img src="docs/assets/workflow-editor-loop.png" alt="burrow workflow editor — React Flow canvas with trigger, AI agent, HTTP request, and Mongo request nodes" width="100%">
+  <br>
+  <em>The workflow canvas — drag nodes, wire edges, run the whole graph from one button.</em>
+</p>
 
 ---
 
@@ -23,6 +41,8 @@ The long game: add AI agents that can write and execute code as part of their re
   - [Interactive debugging (DAP/CDP)](#interactive-debugging-dapcdp)
   - [Security model](#security-model)
   - [Workflow triggers](#workflow-triggers)
+  - [Run history + approvals](#run-history--approvals)
+  - [Skill library](#skill-library)
   - [Multi-tenancy + auth](#multi-tenancy--auth)
   - [Admin dashboard](#admin-dashboard)
 - [Tech stack](#tech-stack)
@@ -141,12 +161,17 @@ Canvas-based editor powered by React Flow. Drag nodes, connect edges, run entire
 | `http_request` | Make HTTP requests with full Go http.Client parity (method, headers, query, body, auth, redirects, TLS, JSON parse) |
 | `sandbox_script` | Run code in isolated container (5 languages, Docker or k3s+gVisor backend) |
 | `ai_agent` | Reason-act-observe LLM loop (Anthropic / OpenAI / Ollama) with edge-bound tool nodes + built-in `code_execute` |
-| `for_each` | Loop over arrays with isolated context per iteration |
+| `for_each` | Loop over arrays with isolated context per iteration; optional `items` selector (`{{input.docs}}`) un-nests a field (e.g. a `mongo_request` find envelope) so the body runs per element; `on_error: stop\|continue` is a loop-abort policy (stop = abort on first unsuppressed body fault, continue = best-effort fan-out) |
 | `mongo_request` | Generic MongoDB ops: `find`, `find_one_and_update`, `find_one_and_replace`, `insert_one`, `insert_many`, `update_many`, `delete_one`, `delete_many`, `aggregate`, `count_documents`, `distinct`, `cursor_fetch` (server-side cursor pagination) |
 | `redis_request` | Generic Redis ops: `publish`, strings (`get`/`set`/`del`/`incr`/`decr`/`expire`/`ttl`/`exists`/`keys`/`mget`/`mset`), hashes (`hget`/`hset`/`hgetall`/`hdel`), lists (`lpush`/`rpush`/`lpop`/`rpop`/`lrange`/`llen`), sets (`sadd`/`srem`/`smembers`/`sismember`), sorted sets (`zadd`/`zrem`/`zrange`/`zscore`/`zincrby`), streams producer (`xadd`/`xrange`/`xlen`). Subscribe-side will become a trigger node. |
 | `notify` | Send notifications |
 
 Every node supports named steps — downstream nodes access upstream results via `context.stepName.output`.
+
+Run the graph straight from the canvas and debug it in place — no jumping to a separate runs view. Each node carries its own run state (running / success / error badge), expands inline to show its actual output payload, and a failed run surfaces a banner pinned to the top of the canvas naming the node + error. Wire `sandbox_script`, `ai_agent`, `http_request`, and data nodes together, hit Run, and watch results land node-by-node.
+
+![Workflow canvas mid-debug — wired graph with per-node output panels expanded and a run-error banner pinned at the top](docs/assets/workflow-editor-debug.png)
+*Debugging a run on the canvas — per-node output panels expanded (blue/orange node bodies), node palette + connections rail on the left, run-error banner at top center.*
 
 ### Multi-Language Sandbox Execution
 
@@ -203,6 +228,9 @@ Under the hood:
 - Python: `debugpy.listen()` → DAP TCP → Content-Length framed messages
 - Go proxy translates between browser WebSocket and container debug protocol
 
+![Sandbox script debugger — paused at a breakpoint with Variables, Call Stack, and Console panels](docs/assets/sanbox-script-debug.png)
+*Paused at line 6 inside the container — locals `one`/`two` inspected live, step controls in the toolbar.*
+
 ### Security Model
 
 Every sandbox container runs with defense-in-depth:
@@ -229,6 +257,34 @@ Five ways to kick off workflows:
 - **RabbitMQ** — trigger from message queue events (`workflow-rabbitmq` worker)
 - **Redis Subscribe** — trigger from Redis pub/sub channels and patterns (`workflow-redis-subscribe` worker)
 
+### Run History + Approvals
+
+Every execution persists to `workflow_runs` — tenant-scoped list with status, duration, token count, and cost per run.
+
+![Runs list — tenant-scoped table of every execution with status, duration, tokens, cost](docs/assets/runs-page.png)
+*Runs page — filter by workflow + status, windowed cost total, replay any run.*
+
+Drill into a run for the full trace: per-step results, agent reason-act-observe iterations, and raw tool I/O.
+
+![Run detail — per-step results plus expandable agent traces with tool calls and results](docs/assets/run-detail.png)
+*Run detail — `manual_start → weather_agent → get_weather → publish_weather`, agent traces expanded with `get_weather` tool call + result.*
+
+Gate any node behind a human decision. The run pauses on `pending_approval`; Approve/Reject from the run page, or out-of-band via Slack.
+
+<p align="center">
+  <img src="docs/assets/run-approval.png" alt="Run paused on pending_approval with Approve and Reject buttons" width="49%">
+  <img src="docs/assets/run-approval-slack.png" alt="Slack approval messages with per-run approve links" width="49%">
+</p>
+
+*Pre-exec gate on the `get_weather` node (left); same gate dispatched to Slack with per-run approve links (right).*
+
+### Skill Library
+
+Versioned tool catalogs AI agents opt into. Each skill bundles a tool catalog + a system-prompt fragment; the API auto-imports every bundle in `SKILLS_DIR` on boot, and `Refresh from sources` rescans without an API restart.
+
+![Skill Library — installed skill versions, each exposing a tool catalog and prompt fragment](docs/assets/skills-library.png)
+*Installed skills (`hello-world`, `weather-formatter`) from the `local-fs` source, each version-tagged.*
+
 ### Multi-Tenancy + Auth
 
 Every per-user resource (workflows, runs, connections, evals, chat memory, audit) carries a `tenant_id`. Stores filter by ctx tenant.
@@ -242,12 +298,21 @@ Every per-user resource (workflows, runs, connections, evals, chat memory, audit
 - **Ownership transfer** — owner can hand off to any admin; demoted to admin atomically
 - **Audit log** — append-only ledger of privileged actions (login, logout, password change/reset, OAuth link, API key create/revoke, invite/membership ops, ownership transfer)
 
+![Account settings — password change, API keys, team members, and the privileged-action activity log](docs/assets/settings-1.png)
+*Settings page — password change, API keys, team members with roles, and the filterable audit log.*
+
+![Settings continued — full audit log entries plus linked OAuth accounts](docs/assets/settings-2.png)
+*Same page scrolled — audit-log rows (login events with IP/version) and linked OAuth accounts (Google, GitHub).*
+
 ### Admin Dashboard
 
 `/admin` (owner/admin only) shows:
 
 - **Run metrics** — total runs + cost, by-status breakdown, top workflows by run count over selectable window (24h / 7d / 30d)
 - **Worker health** — live heartbeats, tick counts, last error per registered worker (heartbeat ticker writes every 30s; reaper sweeps stuck runs)
+
+![Admin dashboard — run + cost rollups, by-status breakdown, top workflows, live worker heartbeats](docs/assets/admin-page.png)
+*Tenant ops — total runs/cost over a selectable window, status breakdown, top workflows, and live worker heartbeats with tick counts.*
 
 ---
 
@@ -622,19 +687,24 @@ Default agent behaviour is **resilient**: a tool error (skill / `as_tool` / sand
 
 This is the right default for agents that wrap flaky upstream APIs. It's the wrong default for agents where any tool failure should halt the workflow + flip the badge.
 
-**To make tool errors terminal, flip `stop_on_tool_error: true` on the AI Agent node** (UI: AIAgentNode → "Stop run on tool error" toggle). With the flag on, the first tool error returns from the agent loop, BFS follows the agent's `error` edge, and the run lands `error`.
+**Universal `on_error` policy.** Every fallible node (`http_request`, `mongo_request`, `redis_request`, `notify`, `sandbox_script`, `ai_agent`, `for_each`) carries one `on_error: stop | continue` flag (default `stop`). The legacy agent-wide `stop_on_tool_error` flag was **removed** — default-stop covers the same case (every tool error aborts unless the tool target opts into `on_error: continue`). Old run records carrying the dead field are silently ignored.
 
-**Sandbox-engine errors are always terminal** regardless of the flag. Anything prefixed with `sandbox/k3s:` / `sandbox/docker:` / `sandbox/dap:` / `sandbox/cdp:` aborts the agent — the LLM has no plausible recovery path when the runtime itself is broken.
+- **`stop` (default)**: a node failure flips the run to `error`. Error edges still route.
+- **`continue`**: failure recorded on the step (amber `continued` badge) but run-status promotion skips it — run lands `success` if nothing else failed. **Dual-edge**: BOTH the error edge AND the success edge fire (happy path keeps rolling, error edge = optional sidecar). Same rule inside a `for_each` body chain.
+- **Agent tool dispatch**: the same `on_error` on the tool target decides the agent's abort — `stop` aborts the loop on tool error, `continue` feeds the error back to the LLM so it can pivot.
+- **`for_each` node `on_error`** is a *loop-abort* policy (stop = abort on first unsuppressed body fault, skip remaining items; continue = run every item). Either way an unsuppressed body fault still flips the run via the body step, and the for_each node's own `error` edge fires (plus, under `continue`, the `success` edge too — dual-edge).
+- **Approval-gate rejection IGNORES `on_error`** (security invariant): a human veto always flips the run to `error`, never sets `continued`, routes only error edges — `on_error: continue` on a gate cannot downgrade a rejected run.
 
-| Scenario | `stop_on_tool_error` | Result |
+**Sandbox-engine errors are always terminal** regardless of policy. Anything prefixed with `sandbox/k3s:` / `sandbox/docker:` / `sandbox/dap:` / `sandbox/cdp:` aborts the agent — the LLM has no plausible recovery path when the runtime itself is broken.
+
+| Scenario | tool target `on_error` | Result |
 |---|---|---|
-| `as_tool` returns 500 | `false` (default) | LLM observes error, can pivot → run `success` |
-| `as_tool` returns 500 | `true` | Agent aborts → run `error` |
-| Skill tool throws | `false` | LLM observes error, can pivot → run `success` |
-| Skill tool throws | `true` | Agent aborts → run `error` |
-| `sandbox/k3s: pod ... Failed before attach` | either | Agent aborts → run `error` |
+| `as_tool` returns 500 | `continue` | LLM observes error, can pivot → run `success` |
+| `as_tool` returns 500 | `stop` (default) | Agent aborts → run `error` |
+| Skill tool throws | n/a (no per-skill knob) | Agent aborts; run outcome = the **agent node's** own `on_error` |
+| `sandbox/k3s: pod ... Failed before attach` | any | Agent aborts → run `error` (infra force-stop) |
 
-`as_tool` target nodes carry their own red badge on the canvas regardless of the flag (via the `step_done(IsError)` event), but their `StepResult` is marked `via_agent_tool=true` so the run-status promotion logic only counts the AGENT's own error, not the per-tool dispatch error. Without that distinction, a tool error the agent successfully recovered from would retroactively flip the run to `error`.
+`as_tool` target nodes carry their own red badge on the canvas (via `step_done(IsError)`), but the run-status promotion logic only counts the AGENT's own error, not the per-tool dispatch error — a tool error the agent recovered from doesn't retroactively flip the run. Because an `as_tool` node is dispatched by the agent (it bypasses the BFS entirely), its own `success`/`error` edges are inert; the canvas hides those handles and prunes such edges (only the agent's `tool` edge wires into it).
 
 ### Why does an approval-gated agent run pay an extra LLM call when I approve?
 
