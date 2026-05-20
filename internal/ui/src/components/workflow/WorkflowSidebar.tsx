@@ -154,7 +154,7 @@ export function WorkflowSidebar({ onSelect, onReload }: Props) {
         {workflows.map((wf: Workflow) => {
           const enabled = wf.enabled !== false // undefined = enabled (legacy / new doc default)
           return (
-          <div key={wf.id} className={`group flex items-center ${enabled ? '' : 'opacity-60'}`}>
+          <div key={wf.id} className={`group flex items-center ${enabled ? '' : 'opacity-60'} ${!enabled ? 'border-l-2 border-amber-500/60 pl-0.5' : ''}`}>
             {renameId === wf.id ? (
               <form
                 className="flex-1 flex items-center"
@@ -174,19 +174,14 @@ export function WorkflowSidebar({ onSelect, onReload }: Props) {
               <Button
                 variant={activeId === wf.id ? 'secondary' : 'ghost'}
                 size="sm"
-                className="flex-1 justify-start text-sm truncate gap-1"
+                className="flex-1 min-w-0 justify-start text-sm truncate gap-1"
                 onClick={() => onSelect(wf.id)}
                 onDoubleClick={(e) => beginRename(e, wf)}
-                title="Double-click to rename"
+                title={!enabled ? `${wf.name}\n(disabled — triggers paused; manual Run still works. Double-click to rename.)` : `${wf.name}\n(Double-click to rename)`}
               >
                 <span className="truncate">{wf.name}</span>
-                {!enabled && (
-                  <span className="text-[10px] text-amber-400 font-medium shrink-0" title="Trigger-driven runs are paused. Manual Run still works.">
-                    disabled
-                  </span>
-                )}
                 {typeof wf.version === 'number' && wf.version > 0 && (
-                  <span className="text-[10px] text-muted-foreground font-mono shrink-0" title={`Saved revision ${wf.version}`}>
+                  <span className="text-[10px] text-muted-foreground font-mono shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" title={`Saved revision ${wf.version}`}>
                     v{wf.version}
                   </span>
                 )}
@@ -202,7 +197,7 @@ export function WorkflowSidebar({ onSelect, onReload }: Props) {
               </button>
             )}
             <button
-              className={`p-1 transition-opacity shrink-0 ${enabled ? 'opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-foreground' : 'opacity-100 text-amber-400 hover:text-amber-300'}`}
+              className={`opacity-0 group-hover:opacity-100 p-1 transition-opacity shrink-0 ${enabled ? 'text-muted-foreground hover:text-foreground' : 'text-amber-400 hover:text-amber-300'}`}
               onClick={(e) => handleToggleEnabled(e, wf)}
               title={enabled ? 'Disable workflow (pause triggers)' : 'Enable workflow (resume triggers)'}
             >
