@@ -87,16 +87,11 @@ export function AddWorkflowDialog({ onCreated }: Props) {
   async function forkTemplate(tmpl: TemplateMeta) {
     setTmplForking(true)
     try {
-      const id = crypto.randomUUID()
-      const wf = tmpl.workflow
-      await api.put(`/api/v1/workflows/${id}`, {
-        name: `${wf.name} (copy)`,
-        params: wf.params ?? {},
-        nodes: wf.nodes ?? [],
-        edges: wf.edges ?? [],
-        ...(wf.cost_limits ? { cost_limits: wf.cost_limits } : {}),
-        ...(wf.params_schema ? { params_schema: wf.params_schema } : {}),
-      })
+      // Server-side fork — bypasses the UpsertWorkflow connection
+      // validator because templates ship with empty connection_id
+      // placeholders by design. The user wires the real connection
+      // on the canvas; the NEXT save runs through the normal guard.
+      await api.post(`/api/v1/workflow_templates/${tmpl.slug}/fork`, {})
       toast.success(`Forked "${tmpl.name}"`)
       handleClose()
       onCreated()

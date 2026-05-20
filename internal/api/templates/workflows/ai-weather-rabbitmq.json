@@ -17,6 +17,7 @@
         "data": {
           "name": "rabbitmq_in",
           "trigger_type": "rabbitmq",
+          "connection_id": "",
           "queue": "burrow.weather.requests",
           "prefetch": 1,
           "auto_ack": false,
@@ -31,7 +32,7 @@
         "position": { "x": 200, "y": 0 },
         "data": {
           "name": "weather_agent",
-          "llm_connection_id": "REPLACE_WITH_LLM_CONNECTION_ID",
+          "llm_connection_id": "",
           "max_iterations": 6,
           "max_tokens": 1024,
           "max_tool_calls_per_iter": 2,

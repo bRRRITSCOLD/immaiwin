@@ -29,7 +29,7 @@
         "position": { "x": -80, "y": 0 },
         "data": {
           "name": "load_cities",
-          "connection_id": "REPLACE_WITH_MONGO_CONNECTION_ID",
+          "connection_id": "",
           "operation": "find",
           "collection": "{{params.cities_collection}}",
           "filter": {},
@@ -62,7 +62,7 @@
         "position": { "x": 560, "y": 0 },
         "data": {
           "name": "weather_agent",
-          "llm_connection_id": "REPLACE_WITH_LLM_CONNECTION_ID",
+          "llm_connection_id": "",
           "max_iterations": 6,
           "max_tokens": 1024,
           "max_tool_calls_per_iter": 2,
@@ -116,7 +116,7 @@
         "position": { "x": 920, "y": 200 },
         "data": {
           "name": "publish_weather",
-          "connection_id": "REPLACE_WITH_REDIS_CONNECTION_ID",
+          "connection_id": "",
           "operation": "publish",
           "channel": "{{params.redis_channel}}",
           "as_tool": {

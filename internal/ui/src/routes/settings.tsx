@@ -94,6 +94,7 @@ const ACTION_FILTERS = [
   { value: 'workflow_enabled', label: 'Workflow enabled' },
   { value: 'workflow_disabled', label: 'Workflow disabled' },
   { value: 'workflow_renamed', label: 'Workflow renamed' },
+  { value: 'workflow_template_forked', label: 'Workflow template forked' },
 ]
 
 function AuditLogSection() {
