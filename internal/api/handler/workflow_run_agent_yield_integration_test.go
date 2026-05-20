@@ -283,8 +283,10 @@ func (s *AgentYieldIntegrationSuite) authedClient(emailAddr string) (*http.Clien
 // `as_tool` http_request whose `require_node_approval=true` is set;
 // the gate fires; the agent must NOT loop on tool_result errors;
 // the run lands `pending_approval`; an approve POST flips the run
-// back; the worker re-claims; the agent resumes (one extra Chat
-// call); the http_request runs (echoes the input back); the agent
+// back; the worker re-claims; the agent resumes (replay-only —
+// no resume-iter Chat; trailing assistant turn replayed from
+// PausedAgent.Messages); the http_request runs (echoes the input
+// back); the agent
 // observes the result; the run completes with status=success.
 func (s *AgentYieldIntegrationSuite) TestAgent_AsToolGate_YieldsCleanlyAndResumesAfterApprove() {
 	suffix := time.Now().UnixNano()
@@ -442,11 +444,16 @@ func (s *AgentYieldIntegrationSuite) TestAgent_AsToolGate_YieldsCleanlyAndResume
 	}
 	s.Equal("success", finalStatus, "approved run should land success")
 
-	// Resume cost: one extra Chat call (re-prompt with popped trailing
-	// assistant turn) + one final-answer Chat call. So total ≥ 2 more
-	// since pre-approve. Not asserted strictly because the agent loop
-	// may collapse on the same iter when the popped-message resume
-	// causes a fresh tool_use immediately followed by the result feed.
+	// Resume cost: ZERO extra Chat on the resume iter — the agent
+	// replays the original tool_use from PausedAgent.Messages
+	// (trailing assistant turn) and synthesises a ChatResponse with
+	// stop_reason=tool_use, then dispatches the now-approved tool.
+	// One follow-up Chat fires after the tool_result is observed to
+	// emit end_turn (the final-answer). Total Chat = exactly 2 —
+	// initial (pre-gate, emitted the tool_use) + final-answer
+	// (post-resume, observes the tool_result and ends the turn).
+	// Anything higher = regression to the pre-optimisation re-prompt
+	// path that popped the trailing assistant turn before persist.
 	postApproveCalls := s.stubProvider.chatCalls.Load()
-	s.GreaterOrEqual(postApproveCalls, int32(2), "agent should re-prompt at least once on resume")
+	s.Equal(int32(2), postApproveCalls, "exactly two Chat calls total — resume-iter is replay-only, not a fresh Chat")
 }
