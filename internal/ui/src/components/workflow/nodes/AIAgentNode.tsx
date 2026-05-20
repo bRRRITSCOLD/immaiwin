@@ -33,6 +33,12 @@ export function AIAgentNode({ id, data, selected }: NodeProps) {
   const onErrorPolicy = (data?.on_error as string) ?? 'stop'
   const requireNodeApproval = (data?.require_node_approval as boolean) ?? false
   const outputSchema = (data?.output_schema as string) ?? ''
+  // Per-agent tool authorization policy. Stored on the node as
+  // `allowed_tools: string[]` — empty/missing = open. The textarea
+  // edits a newline-joined view of the list so authors can paste
+  // one name per line.
+  const allowedToolsRaw = (data?.allowed_tools as string[] | undefined) ?? []
+  const allowedToolsText = allowedToolsRaw.join('\n')
 
   // Trigger awareness — surfaced in tooltip copy. Both manual and
   // non-manual triggers now route through the approval gate: manual
@@ -222,6 +228,50 @@ export function AIAgentNode({ id, data, selected }: NodeProps) {
                   placeholder='{"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"]}'
                   value={outputSchema}
                   onChange={(e) => updateNodeData(id, { output_schema: e.target.value })}
+                />
+              </div>
+
+              {/* Allowed tools — per-agent authorization policy. Empty
+                  = open (every tool from built-ins / skills / as_tool
+                  edges is exposed to the LLM). Non-empty = allow-list
+                  filter applied to the catalog right before dispatch.
+                  Defence-in-depth: a hallucinated call to a denied
+                  name falls through to unknown-tool, NEVER fires the
+                  handler. */}
+              <div className="space-y-1 pt-1">
+                <div className="flex items-center gap-1">
+                  <p className="text-[10px] text-muted-foreground">
+                    Allowed tools (one per line; empty = all allowed)
+                  </p>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        type="button"
+                        className="nodrag text-muted-foreground hover:text-foreground"
+                        aria-label="Allowed tools help"
+                      >
+                        <HelpCircle className="h-3 w-3" />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent side="top" className="max-w-[320px] text-[11px] leading-snug">
+                      <p className="font-medium mb-1">Per-agent tool ACL.</p>
+                      <p>Names use the same form the LLM sees: built-ins like <code>code_execute</code>, as_tool node names (the <code>name</code> field on each tool node), and skill tools as <code>&lt;slug&gt;__&lt;tool&gt;</code>.</p>
+                      <p className="mt-1">Empty = every tool exposed (back-compat with workflows authored before this field). Non-empty = STRICT allow-list — anything not listed is removed from the catalog and a hallucinated call to it surfaces as <code>unknown tool</code>.</p>
+                    </TooltipContent>
+                  </Tooltip>
+                </div>
+                <Textarea
+                  className="nodrag text-xs min-h-[48px] resize-y font-mono"
+                  rows={3}
+                  placeholder={'code_execute\nget_weather\nweather-formatter__format_weather'}
+                  value={allowedToolsText}
+                  onChange={(e) => {
+                    const list = e.target.value
+                      .split('\n')
+                      .map((s) => s.trim())
+                      .filter((s) => s.length > 0)
+                    updateNodeData(id, { allowed_tools: list })
+                  }}
                 />
               </div>
 

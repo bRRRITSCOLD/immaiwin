@@ -1271,6 +1271,28 @@ func (e *WorkflowExecutor) buildAgentToolCatalog(agent Node, env *runEnv,
 		env.toolNameToOnError[def.Name] = onErrorPolicy(targetNode.Data)
 	}
 
+	// Per-agent tool authorization policy. `data.allowed_tools` is an
+	// allow-list of tool names; empty/missing = open (back-compat with
+	// every workflow authored before this field existed). Filter runs
+	// AFTER the full catalog is assembled so it applies uniformly to
+	// built-ins, skill tools, and edge-bound `as_tool` targets.
+	//
+	// The LLM only sees the filtered tool list, AND a hallucinated
+	// call to a denied name falls through to Execute's unknown-tool
+	// error path (defense-in-depth — never depend on the model
+	// honouring its own tool list).
+	allowed := stringSliceData(agent.Data, "allowed_tools")
+	before := len(cat.Defs())
+	cat.FilterAllowed(allowed)
+	if len(allowed) > 0 {
+		slog.Info("ai_agent: applied allowed_tools policy",
+			"agent", agent.ID,
+			"allowed", allowed,
+			"before", before,
+			"after", len(cat.Defs()),
+		)
+	}
+
 	slog.Info("ai_agent: tool catalog built",
 		"agent", agent.ID, "tool_edges", toolEdges, "opted_in", optedIn, "total_tools", len(cat.Defs()))
 	return cat, nil
@@ -1386,6 +1408,7 @@ func getStringData(data map[string]any, key string) string {
 	s, _ := data[key].(string)
 	return s
 }
+
 
 func getBoolData(data map[string]any, key string) bool {
 	if v, ok := data[key]; ok {
