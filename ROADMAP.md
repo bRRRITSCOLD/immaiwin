@@ -32,6 +32,7 @@ baked into the engine instead of bolted on after.
 - Cancel propagates into long internal loops (heartbeat → run-ctx cancel)
 - Approval gates — per-node + per-tool, durable across worker restarts, OOB via Slack / email magic link
 - Durable execution: lease workers, checkpoint-per-step resume, boot-time stuck-run sweep, no-orphans on api restart
+- **Workflow enable/disable toggle** — `PATCH /api/v1/workflows/:id/enabled` flips a first-class state; disabled workflows drop from every trigger worker's sync-tick active set (cron / RabbitMQ / Redis-subscribe) while staying fully editable + manually runnable. Backfilled on boot so existing rows default to enabled.
 
 ### AI agent
 - ReAct loop with Anthropic, OpenAI, Ollama providers behind a single `Provider` interface
@@ -71,7 +72,6 @@ baked into the engine instead of bolted on after.
 - **Transform node** — drop-in node in front of any tool to reshape its output before it hits the agent context (token-saving)
 
 ### Engine
-- **Workflow enable/disable toggle** — first-class `enabled` state on every workflow (today the only way to stop one firing is to delete it, which is destructive). Disabled workflows drop from cron / RabbitMQ / Redis-subscribe / WebSocket worker sync-tick active sets; trigger events get dropped (cron) or stay queued (RMQ) per source semantics; the manual `Run` button stays usable so authors can still test in isolation. Backfill all existing workflows to `enabled: true`. ~1 day.
 - **Per-iter agent checkpoint** — worker death mid-ReAct resumes at the same iteration instead of restarting the loop
 - **Per-tool gate Skip button** (vs Reject) — Skip = soft, agent observes the rejection and pivots; Reject = hard veto
 - **Canvas Continue + breakpoints control channel** — restore the lease-era debug UX (set / clear breakpoints mid-run, Continue button releases a pause)

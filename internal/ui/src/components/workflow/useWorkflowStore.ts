@@ -47,6 +47,13 @@ export interface Workflow {
   version?: number
   created_at: string
   updated_at: string
+  // Trigger-routing gate. Disabled workflows drop from every trigger
+  // worker's sync-tick active set (cron / RMQ / Redis-subscribe);
+  // manual `Run` from the canvas still works. Backend defaults
+  // missing field to true (UnmarshalJSON + boot backfill).
+  enabled?: boolean
+  disabled_at?: string
+  disabled_reason?: string
 }
 
 export type ConnectionType = 'mongodb' | 'redis' | 'rabbitmq' | 'anthropic' | 'openai' | 'ollama' | 'slack'

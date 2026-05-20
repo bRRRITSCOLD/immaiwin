@@ -593,7 +593,6 @@ Supported types: `mongodb`, `redis`, `rabbitmq`, `anthropic`, `openai`, `ollama`
 ### Up next (short-term picks)
 - Sub-workflow as a tool + recursion guard (biggest composability lever)
 - Tool authorization policy (per-workflow ACL)
-- Workflow enable/disable toggle
 - Per-iter agent checkpoint (worker-death mid-ReAct = resume mid-iter)
 - Canvas Continue + breakpoints control channel (debug UX restoration)
 - Generic WebSocket trigger; first wave of standard connector nodes (Slack, S3, Postgres, etc.)

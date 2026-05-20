@@ -577,3 +577,88 @@ func (s *WorkflowCRUDIntegrationSuite) TestWorkflowUpsert_NodeWithConnection_Acc
 	})
 	s.Equal(http.StatusOK, status, "all required connections present — save must succeed")
 }
+
+// patchEnabled is a thin helper around PATCH /api/v1/workflows/:id/enabled.
+func (s *WorkflowCRUDIntegrationSuite) patchEnabled(client *http.Client, id string, enabled bool, reason string) (int, map[string]any) {
+	body, _ := json.Marshal(map[string]any{"enabled": enabled, "reason": reason})
+	req, _ := http.NewRequest(http.MethodPatch, s.httpSrv.URL+"/api/v1/workflows/"+id+"/enabled", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	s.Require().NoError(err)
+	defer resp.Body.Close() //nolint:errcheck
+	raw, _ := io.ReadAll(resp.Body)
+	var out map[string]any
+	_ = json.Unmarshal(raw, &out)
+	return resp.StatusCode, out
+}
+
+// TestWorkflow_EnabledToggle_PatchRoundTripsAndStampsMetadata
+// verifies the enable/disable lifecycle:
+//  1. New workflow defaults to enabled=true (UnmarshalJSON normalises
+//     absent field → true on insert).
+//  2. PATCH /enabled with enabled=false flips it + stamps
+//     disabled_at + disabled_reason; GET returns the new state.
+//  3. PATCH /enabled with enabled=true clears both fields.
+//  4. No-op PATCH (same value) returns 200 with the current doc.
+//  5. PATCH on a missing id returns 404.
+func (s *WorkflowCRUDIntegrationSuite) TestWorkflow_EnabledToggle_PatchRoundTripsAndStampsMetadata() {
+	client, _ := s.authedClient(fmt.Sprintf("alice-toggle-%d@example.com", time.Now().UnixNano()))
+	wfID := fmt.Sprintf("wf-toggle-%d", time.Now().UnixNano())
+	status, _ := s.putWorkflow(client, wfID, map[string]any{
+		"name":   "toggle-test",
+		"params": map[string]any{},
+		"nodes":  []map[string]any{},
+		"edges":  []map[string]any{},
+	})
+	s.Require().Equal(http.StatusOK, status)
+
+	// Default: enabled=true on a fresh save.
+	gResp, gerr := client.Get(s.httpSrv.URL + "/api/v1/workflows/" + wfID)
+	s.Require().NoError(gerr)
+	var initial map[string]any
+	_ = json.NewDecoder(gResp.Body).Decode(&initial)
+	_ = gResp.Body.Close()
+	s.Equal(true, initial["enabled"], "new workflow must default to enabled=true")
+
+	// Disable.
+	code, body := s.patchEnabled(client, wfID, false, "downstream API outage")
+	s.Require().Equal(http.StatusOK, code)
+	s.Equal(false, body["enabled"])
+	s.NotEmpty(body["disabled_at"], "disabled_at stamped on disable")
+	s.Equal("downstream API outage", body["disabled_reason"])
+
+	// Re-enable clears the metadata.
+	code, body = s.patchEnabled(client, wfID, true, "")
+	s.Require().Equal(http.StatusOK, code)
+	s.Equal(true, body["enabled"])
+	s.Empty(body["disabled_at"], "disabled_at cleared on enable")
+	s.Empty(body["disabled_reason"], "disabled_reason cleared on enable")
+
+	// No-op PATCH (already enabled).
+	code, body = s.patchEnabled(client, wfID, true, "")
+	s.Require().Equal(http.StatusOK, code, "no-op PATCH returns 200")
+	s.Equal(true, body["enabled"])
+
+	// Missing id → 404.
+	code, _ = s.patchEnabled(client, "wf-does-not-exist-"+fmt.Sprint(time.Now().UnixNano()), false, "")
+	s.Equal(http.StatusNotFound, code)
+}
+
+// TestWorkflow_EnabledToggle_CrossTenant_Returns404 — same isolation
+// rule the read endpoints use: a foreign-tenant client gets 404
+// instead of being told the workflow exists.
+func (s *WorkflowCRUDIntegrationSuite) TestWorkflow_EnabledToggle_CrossTenant_Returns404() {
+	suffix := time.Now().UnixNano()
+	alice, _ := s.authedClient(fmt.Sprintf("alice-toggle-iso-%d@example.com", suffix))
+	bob, _ := s.authedClient(fmt.Sprintf("bob-toggle-iso-%d@example.com", suffix+1))
+
+	wfID := fmt.Sprintf("wf-toggle-iso-%d", suffix)
+	status, _ := s.putWorkflow(alice, wfID, map[string]any{
+		"name": "alice's wf", "params": map[string]any{},
+		"nodes": []map[string]any{}, "edges": []map[string]any{},
+	})
+	s.Require().Equal(http.StatusOK, status)
+
+	code, _ := s.patchEnabled(bob, wfID, false, "")
+	s.Equal(http.StatusNotFound, code, "foreign-tenant PATCH must read as 404")
+}

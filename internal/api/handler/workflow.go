@@ -30,6 +30,7 @@ type WorkflowStore interface {
 	GetByIDForTenant(ctx context.Context, id, tenantID string) (workflow.Workflow, error)
 	Upsert(ctx context.Context, wf workflow.Workflow) (workflow.Workflow, error)
 	Delete(ctx context.Context, id string) error
+	SetEnabled(ctx context.Context, id string, enabled bool, reason string) (workflow.Workflow, error)
 }
 
 // ListWorkflows returns workflows scoped to the caller's tenant.
@@ -503,5 +504,85 @@ func RunWorkflow(store WorkflowStore, runStore workflow.WorkflowRunStore, wakeup
 			"run_id": runID,
 			"status": workflow.RunStatusQueued,
 		})
+	}
+}
+
+// WorkflowEnableDeps wraps the dependencies needed by the
+// patch-enabled handler so the privileged action can be audit-logged.
+type WorkflowEnableDeps struct {
+	Store WorkflowStore
+	Audit *mongodb.AuditRepository
+}
+
+// PatchWorkflowEnabled toggles a workflow's `enabled` flag. Disabled
+// workflows drop from every trigger worker's active set (cron, RMQ,
+// Redis-subscribe, future websocket) on their next sync tick, but
+// stay fully editable + manually runnable from the canvas Run button.
+//
+// Tenant-scoped: refuses cross-tenant patches with 404 (same shape as
+// the workflow read endpoints — avoids leaking id existence).
+//
+// Body: { "enabled": bool, "reason"?: string }. `reason` is optional
+// free-text persisted alongside `disabled_at` for the UI / audit
+// trail when disabling. Cleared on enable.
+//
+// Manual runs (POST /run) deliberately bypass this gate — the
+// user explicitly clicked Run, the disable is a TRIGGER-routing
+// rule, not a workflow-wide ban.
+func PatchWorkflowEnabled(deps WorkflowEnableDeps) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		id := c.Param("id")
+		if id == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "id required"})
+			return
+		}
+		var req struct {
+			Enabled bool   `json:"enabled"`
+			Reason  string `json:"reason"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+
+		// Tenant ownership check — same 404-on-cross-tenant rule as
+		// the read endpoints. Avoids leaking id existence to a
+		// non-owning tenant.
+		if tenantID, ok := auth.TenantFromCtx(c.Request.Context()); ok {
+			existing, gerr := deps.Store.GetByIDForTenant(c.Request.Context(), id, tenantID)
+			if gerr != nil {
+				if errors.Is(gerr, mongo.ErrNoDocuments) {
+					c.JSON(http.StatusNotFound, gin.H{"error": "workflow not found"})
+					return
+				}
+				c.JSON(http.StatusInternalServerError, gin.H{"error": gerr.Error()})
+				return
+			}
+			// no-op short-circuit — avoids a write + audit row when
+			// the toggle would be a no-change request.
+			if existing.Enabled == req.Enabled {
+				c.JSON(http.StatusOK, existing)
+				return
+			}
+		}
+
+		updated, err := deps.Store.SetEnabled(c.Request.Context(), id, req.Enabled, req.Reason)
+		if err != nil {
+			if errors.Is(err, mongo.ErrNoDocuments) {
+				c.JSON(http.StatusNotFound, gin.H{"error": "workflow not found"})
+				return
+			}
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
+		action := mongodb.AuditWorkflowEnabled
+		if !req.Enabled {
+			action = mongodb.AuditWorkflowDisabled
+		}
+		recordAudit(c, deps.Audit, action,
+			map[string]any{"type": "workflow", "id": id, "name": updated.Name},
+			map[string]any{"reason": req.Reason})
+		c.JSON(http.StatusOK, updated)
 	}
 }

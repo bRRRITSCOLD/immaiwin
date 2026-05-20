@@ -1,6 +1,9 @@
 package workflow
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // NodeType identifies the role of a node in a workflow.
 type NodeType string
@@ -101,6 +104,42 @@ type Workflow struct {
 	Version   int       `bson:"version,omitempty" json:"version,omitempty"`
 	CreatedAt time.Time `bson:"created_at"    json:"created_at"`
 	UpdatedAt time.Time `bson:"updated_at"    json:"updated_at"`
+
+	// Enabled gates trigger-driven runs. Disabled workflows stay
+	// fully editable + manually runnable (canvas Run button), but
+	// every trigger worker (cron / RabbitMQ / Redis-subscribe /
+	// future websocket) skips them at sync-tick time. Default = true
+	// (UnmarshalJSON below normalises an absent field to true so an
+	// older API client + freshly-decoded Mongo docs missing the
+	// field don't pause every workflow on upgrade). A boot-time
+	// migration backfills existing rows so List/Get also defaults
+	// cleanly without per-call gymnastics.
+	Enabled        bool       `bson:"enabled"                  json:"enabled"`
+	DisabledAt     *time.Time `bson:"disabled_at,omitempty"    json:"disabled_at,omitempty"`
+	DisabledReason string     `bson:"disabled_reason,omitempty" json:"disabled_reason,omitempty"`
+}
+
+// UnmarshalJSON normalises an absent `enabled` field to true. The
+// alternative — setting Enabled=false on missing — would pause every
+// workflow saved by an older client that doesn't include the field.
+// Mongo-loaded docs without the field are handled by the one-time
+// boot-time BackfillEnabled migration; this handler covers the API
+// surface (UpsertWorkflow body parsing).
+func (w *Workflow) UnmarshalJSON(data []byte) error {
+	type alias Workflow
+	aux := &struct {
+		Enabled *bool `json:"enabled"`
+		*alias
+	}{alias: (*alias)(w)}
+	if err := json.Unmarshal(data, aux); err != nil {
+		return err
+	}
+	if aux.Enabled == nil {
+		w.Enabled = true
+	} else {
+		w.Enabled = *aux.Enabled
+	}
+	return nil
 }
 
 // ParamEntry is the typed declaration for one workflow Params key.

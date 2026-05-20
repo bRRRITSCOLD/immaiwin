@@ -52,6 +52,8 @@ const (
 	AuditMemberRemoved        AuditAction = "member_removed"
 	AuditOwnershipTransferred AuditAction = "tenant_ownership_transferred"
 	AuditWorkflowDuplicated   AuditAction = "workflow_duplicated"
+	AuditWorkflowEnabled      AuditAction = "workflow_enabled"
+	AuditWorkflowDisabled     AuditAction = "workflow_disabled"
 	AuditApprovalRedeemed     AuditAction = "approval_redeemed"
 )
 

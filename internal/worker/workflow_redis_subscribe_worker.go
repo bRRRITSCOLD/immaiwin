@@ -182,6 +182,14 @@ func syncRedisSubscribers(
 	}
 	active := make(map[string]activeEntry)
 	for _, wf := range wfs {
+		// Skip disabled workflows — the existing diff-and-cancel
+		// logic drops the subscription on the next pass. Note:
+		// messages published while a Redis-subscribe workflow is
+		// disabled are LOST (Redis pub/sub has no replay). The UI
+		// flags this when the user disables a redis-sub trigger.
+		if !wf.Enabled {
+			continue
+		}
 		info, ok := redisSubInfoFromWorkflow(wf)
 		if !ok {
 			continue
