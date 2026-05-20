@@ -307,6 +307,12 @@ interface Props {
   // the message to, so we render a canvas-level banner instead. Cleared
   // by onClearRun.
   runError?: string | null
+  // streamStale = the run is non-terminal but no events have arrived
+  // in ~45s. Usually means the worker died mid-flight; the orphan
+  // reclaim path is in flight and will re-emit events when a new
+  // worker picks up the run. We surface this as a banner so the user
+  // isn't staring at a frozen-looking canvas wondering what happened.
+  streamStale?: boolean
 }
 
 const routingCycle = ['default', 'smoothstep', 'step', 'straight'] as const
@@ -375,7 +381,7 @@ interface EdgeMenuState {
   flowY: number
 }
 
-function WorkflowCanvasInner({ workflow, onSave, onRun, onCancel, onContinue, onClearRun, lastRun, runRunning, agentRuns, pausedRunID, pendingApprovalRunID, hasLivePause, runError, onApproveTool, onSetBreakpoints }: Props) {
+function WorkflowCanvasInner({ workflow, onSave, onRun, onCancel, onContinue, onClearRun, lastRun, runRunning, agentRuns, pausedRunID, pendingApprovalRunID, hasLivePause, runError, streamStale, onApproveTool, onSetBreakpoints }: Props) {
   const { updateActiveGraph, updateActiveCostLimits, updateActiveParamsSchema, updateActiveApprovalChannel, selectedEdgeType, setSelectedEdgeType, attachingFrom, setAttachingFrom } = useWorkflowStore()
   const { screenToFlowPosition } = useReactFlow()
   const [nodes, setNodes, onNodesChange] = useNodesState(workflow.nodes)
@@ -688,6 +694,17 @@ function WorkflowCanvasInner({ workflow, onSave, onRun, onCancel, onContinue, on
           <div className="absolute top-3 left-1/2 -translate-x-1/2 z-10 text-xs bg-amber-600/90 text-white px-3 py-1.5 rounded-md border border-amber-300 shadow-lg pointer-events-none">
             <span className="font-semibold">Workflow disabled</span>
             <span className="opacity-90"> — triggers paused. Manual Run still works. Re-enable from the sidebar to resume trigger-driven runs.</span>
+          </div>
+        )}
+        {streamStale && runRunning && (
+          <div className="absolute top-16 right-3 z-20 max-w-[480px] text-xs bg-amber-700 text-white px-3 py-2 rounded-md border border-amber-300 shadow-lg flex items-start gap-2">
+            <span className="font-semibold shrink-0">Worker quiet:</span>
+            <span className="flex-1 break-words">
+              No events in 45s+. Worker may have died — orphan recovery is
+              automatic via lease lapse (~30s after death) + reclaim.
+              Canvas will re-populate when events resume. Force-cancel
+              from the Runs page if you don't want to wait.
+            </span>
           </div>
         )}
         {pendingApprovalRunID && runRunning && (

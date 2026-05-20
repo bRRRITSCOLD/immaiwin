@@ -136,7 +136,22 @@ export interface WorkflowRunStream {
   setBreakpoints(nodeIds: string[]): boolean
   cancel(): void
   reset(): void
+  // streamStale = true when status is 'running' but no event has
+  // arrived for STREAM_STALE_AFTER_MS. Heuristic for "worker may
+  // have died, awaiting recovery" — the api's keepalive ping keeps
+  // the WS open during legitimate pauses (breakpoint, slow LLM),
+  // but if the worker actually dies the orphan-sweep/reclaim path
+  // takes ~30–60s during which the user sees no node activity.
+  // The canvas surfaces this as a banner so the user isn't staring
+  // at a frozen-looking screen wondering what happened.
+  streamStale: boolean
 }
+
+// STREAM_STALE_AFTER_MS — quiet period before the canvas shows
+// "worker may have died" banner. Tuned > the worker's lease TTL
+// (30s) + heartbeat (10s) so legitimate-but-quiet runs don't
+// flicker the warning.
+const STREAM_STALE_AFTER_MS = 45_000
 
 /**
  * useWorkflowRunStream wraps the `/api/v1/workflows/:id/run/stream` WS
@@ -176,7 +191,18 @@ export function useWorkflowRunStream(): WorkflowRunStream {
   const [pausedRunID, setPausedRunID] = useState<string | null>(null)
   const [pendingApprovalRunID, setPendingApprovalRunID] = useState<string | null>(null)
   const [lastRunID, setLastRunID] = useState<string | null>(null)
+  const [lastEventAt, setLastEventAt] = useState<number | null>(null)
+  const [now, setNow] = useState<number>(Date.now())
   const wsRef = useRef<WebSocket | null>(null)
+
+  // Periodic now-tick drives the streamStale flag without each
+  // component computing its own setInterval. 5s cadence is fine —
+  // the threshold is 45s so 5s precision doesn't matter UX-wise.
+  useEffect(() => {
+    if (status !== 'running') return
+    const t = window.setInterval(() => setNow(Date.now()), 5000)
+    return () => window.clearInterval(t)
+  }, [status])
 
   const handleMessage = useCallback((raw: MessageEvent) => {
     let ev: RunEvent
@@ -186,6 +212,7 @@ export function useWorkflowRunStream(): WorkflowRunStream {
       return
     }
     setEvents((prev) => [...prev, ev])
+    setLastEventAt(Date.now())
 
     setNodes((prev) => {
       const next = { ...prev }
@@ -481,6 +508,7 @@ export function useWorkflowRunStream(): WorkflowRunStream {
         // the canvas would lose all context. Reset agent's paused node
         // back to "running" so the live indicator updates correctly.
         setEvents([])
+        setLastEventAt(Date.now())
         setNodes((prev) => {
           const next = { ...prev }
           for (const id of Object.keys(next)) {
@@ -493,6 +521,7 @@ export function useWorkflowRunStream(): WorkflowRunStream {
         })
       } else {
         setEvents([])
+        setLastEventAt(Date.now())
         setNodes({})
       }
 
@@ -655,6 +684,7 @@ export function useWorkflowRunStream(): WorkflowRunStream {
     setPausedRunID(null)
     setPendingApprovalRunID(null)
     setLastRunID(null)
+    setLastEventAt(null)
   }, [cancel])
 
   // Cleanup on unmount.
@@ -664,5 +694,10 @@ export function useWorkflowRunStream(): WorkflowRunStream {
     }
   }, [])
 
-  return { status, events, nodes, error, run, continue_, approveTool, setBreakpoints, cancel, reset, pausedRunID, pendingApprovalRunID, lastRunID }
+  const streamStale =
+    status === 'running' &&
+    lastEventAt !== null &&
+    now - lastEventAt > STREAM_STALE_AFTER_MS
+
+  return { status, events, nodes, error, run, continue_, approveTool, setBreakpoints, cancel, reset, pausedRunID, pendingApprovalRunID, lastRunID, streamStale }
 }
