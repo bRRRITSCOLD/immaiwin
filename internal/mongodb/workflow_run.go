@@ -167,6 +167,93 @@ func (r *WorkflowRunRepository) SweepAbandonedNonTerminal(ctx context.Context, r
 	return res.ModifiedCount, nil
 }
 
+// SweepWorkerOrphansCollect catches runs the executor worker was
+// driving but lost — a process crash mid-run, a debug-paused run
+// whose worker died at the pre-exec breakpoint wait. Returns the
+// run IDs of every flipped run so the caller can publish synthetic
+// run_done events on burrow:run_events:<runID> for live canvas WS
+// subscribers to flip terminal immediately.
+//
+// Filter is narrower than the boot-time SweepAbandonedNonTerminal
+// because this runs PERIODICALLY in the executor worker:
+//
+//   - status IN {running, paused, pending_approval}.
+//     `queued` is excluded — a queued run is awaiting first claim;
+//     with concurrency limits a queued run can sit past the sweep
+//     window while the worker is mid-flight on another run. That's
+//     normal, not an orphan.
+//   - lease_owner != "" AND lease_expires_at <= now. The run HAD a
+//     worker (so we're not stomping unclaimed work), and that
+//     worker is provably gone (lease lapsed).
+//   - execution_state IS NULL. A durable run with a checkpoint
+//     resumes cleanly on the next claim; flipping it would discard
+//     committed BFS progress.
+//   - queued_at < now - olderThan. Safety window.
+//
+// Two-step (Find → per-row Update with the same predicate) so the
+// returned IDs reflect actual writes + a race with another
+// worker's ClaimLease cannot corrupt state.
+func (r *WorkflowRunRepository) SweepWorkerOrphansCollect(ctx context.Context, reason string, olderThan time.Duration) ([]string, error) {
+	now := time.Now().UTC()
+	cutoff := now.Add(-olderThan)
+	filter := bson.M{
+		"status": bson.M{"$in": []string{
+			string(workflow.RunStatusRunning),
+			string(workflow.RunStatusPaused),
+			string(workflow.RunStatusPendingApproval),
+		}},
+		"queued_at":        bson.M{"$lt": cutoff},
+		"lease_owner":      bson.M{"$nin": []any{nil, ""}}, // run was actually claimed
+		"lease_expires_at": bson.M{"$lte": now},            // and that lease has lapsed
+		"execution_state":  nil,
+	}
+	cur, err := r.col.Find(ctx, filter, options.Find().SetProjection(bson.M{"_id": 1}))
+	if err != nil {
+		return nil, err
+	}
+	var docs []struct {
+		ID string `bson:"_id"`
+	}
+	if err := cur.All(ctx, &docs); err != nil {
+		return nil, err
+	}
+	if len(docs) == 0 {
+		return nil, nil
+	}
+	ids := make([]string, 0, len(docs))
+	for _, d := range docs {
+		update := bson.M{
+			"$set": bson.M{
+				"status":      string(workflow.RunStatusError),
+				"error":       reason,
+				"finished_at": now,
+			},
+			"$unset": bson.M{
+				"pending_approval": "",
+				"paused_agent":     "",
+			},
+		}
+		// Defensive: re-apply the same predicate so a run that
+		// the caller's own claim loop reclaimed between Find and
+		// Update doesn't get stomped.
+		oneFilter := bson.M{"_id": d.ID}
+		for k, v := range filter {
+			if k == "_id" {
+				continue
+			}
+			oneFilter[k] = v
+		}
+		res, err := r.col.UpdateOne(ctx, oneFilter, update)
+		if err != nil {
+			continue
+		}
+		if res.ModifiedCount > 0 {
+			ids = append(ids, d.ID)
+		}
+	}
+	return ids, nil
+}
+
 // List returns the most recent runs for a workflow, newest first.
 func (r *WorkflowRunRepository) List(ctx context.Context, workflowID string, limit int) ([]workflow.WorkflowRun, error) {
 	if limit <= 0 || limit > 200 {

@@ -116,6 +116,28 @@ func (w *workflowExecutorWorker) Run(ctx context.Context) error {
 		hostname = "worker"
 	}
 
+	// Periodic orphan sweep — every non-terminal run with an
+	// expired lease and no checkpoint state gets flipped to error.
+	// Catches debug-paused runs whose worker died mid-pause (the
+	// pre-exec breakpoint wait doesn't checkpoint execution_state,
+	// so a killed worker leaves the run record stuck at status=
+	// running indefinitely until the reaper TTL — by default 1h —
+	// catches up).
+	//
+	// Runs on a ticker rather than once at boot because the lease
+	// only lapses ~30s AFTER the worker dies; if the new worker
+	// boots immediately the lease is still live + the sweep
+	// would miss the orphan. Periodic check catches it on the
+	// next tick after lease expiry.
+	//
+	// Publishes synthetic run_done events per swept run so live
+	// canvas WS subscribers flip terminal immediately.
+	//
+	// Safety: the filter skips live-lease runs + runs with
+	// execution_state set, so a parallel worker's in-flight run
+	// can never be stomped.
+	go runOrphanSweepLoop(ctx, runRepo, rc)
+
 	// Wakeup fan-out: one Redis subscription on `burrow:wakeup`,
 	// fans into a buffered channel each loop reads. Buffer >= concurrency
 	// so a burst wakeup unblocks every loop without dropping signals.
@@ -340,6 +362,61 @@ func heartbeatLease(ctx context.Context, runRepo *mongodb.WorkflowRunRepository,
 					return
 				}
 				slog.Warn("workflow-executor: heartbeat extend failed", "run_id", runID, "err", err)
+			}
+		}
+	}
+}
+
+// orphanSweepTick is how often the executor worker scans for
+// abandoned non-terminal runs. Quick tick + a longer safety window
+// inside the predicate (see orphanSweepStaleAfter) so the canvas
+// flip is snappy without false-positiving on fresh runs whose
+// worker is just busy on another claim.
+var orphanSweepTick = 10 * time.Second
+
+// orphanSweepStaleAfter is the safety window applied to queued_at
+// in the sweep filter. Must comfortably exceed executorLeaseDur
+// (30s) — only AFTER a lease has had time to lapse does an
+// unrecovered run count as orphaned. 60s = 30s lease + 30s grace.
+var orphanSweepStaleAfter = 60 * time.Second
+
+// runOrphanSweepLoop scans for runs the worker was driving but
+// lost — process crash mid-run, debug-paused run whose worker
+// died at the breakpoint wait. Flips them to error + publishes a
+// synthetic run_done so any live canvas WS subscriber clears
+// stale Continue/Cancel affordances. Best-effort: failures log
+// at warn but don't take down the worker.
+func runOrphanSweepLoop(ctx context.Context, runRepo *mongodb.WorkflowRunRepository, rc *rediss.Client) {
+	t := time.NewTicker(orphanSweepTick)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			sweepCtx, sweepCancel := context.WithTimeout(ctx, 10*time.Second)
+			swept, err := runRepo.SweepWorkerOrphansCollect(sweepCtx,
+				"abandoned: worker died mid-run with no checkpoint state (debug-paused breakpoint or in-process tier)",
+				orphanSweepStaleAfter)
+			sweepCancel()
+			if err != nil {
+				slog.Warn("workflow-executor: orphan sweep failed", "err", err)
+				continue
+			}
+			if len(swept) == 0 {
+				continue
+			}
+			slog.Warn("workflow-executor: orphan sweep flipped abandoned runs to error", "count", len(swept))
+			for _, runID := range swept {
+				payload, _ := json.Marshal(workflow.RunEvent{
+					Type:   workflow.EventRunDone,
+					RunID:  runID,
+					Status: string(workflow.RunStatusError),
+					Error:  "abandoned: worker died mid-run with no checkpoint state",
+				})
+				if _, perr := rc.PublishWithCount(ctx, workflow.RunEventChannel(runID), payload); perr != nil {
+					slog.Warn("workflow-executor: run_done publish failed", "run_id", runID, "err", perr)
+				}
 			}
 		}
 	}
