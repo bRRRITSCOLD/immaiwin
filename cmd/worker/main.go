@@ -28,6 +28,7 @@ func main() {
 	wr.RegisterWorker(worker.WorkflowCronWorker)
 	wr.RegisterWorker(worker.WorkflowRabbitMQWorker)
 	wr.RegisterWorker(worker.WorkflowRedisSubscribeWorker)
+	wr.RegisterWorker(worker.WorkflowWebSocketSubscribeWorker)
 	wr.RegisterWorker(worker.ReaperWorker)
 	wr.RegisterWorker(worker.WorkflowExecutorWorker)
 

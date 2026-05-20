@@ -21,6 +21,15 @@ const (
 	// Token gets encrypted at rest by the existing connection-encryption
 	// layer (AES-256-GCM via ENCRYPTION_KEY).
 	ConnectionTypeSlack ConnectionType = "slack"
+	// ConnectionTypeWebSocket carries a `wss://` (or `ws://`) endpoint
+	// plus optional bearer/header/query auth for the generic WebSocket
+	// trigger. Provider-agnostic — Polygon, Binance, Coinbase Pro,
+	// Alpaca, Twilio, OpenAI Realtime etc. all accept a static
+	// user-supplied token in a header or query string. Per-provider
+	// OAuth is intentionally out of scope; users supply an already-
+	// issued access token (which encrypts at rest via the existing
+	// AES-256-GCM ENCRYPTION_KEY layer).
+	ConnectionTypeWebSocket ConnectionType = "websocket"
 )
 
 // Connection is a named, reusable configuration for an external service.

@@ -24,7 +24,7 @@ baked into the engine instead of bolted on after.
 - Visual canvas (React Flow) with 8 node types — `trigger`, `http_request`, `sandbox_script`, `ai_agent`, `for_each`, `mongo_request`, `redis_request`, `notify`
 - Live run streaming over WebSocket — trace timeline, per-node status, cost badges
 - Webhook trigger (HMAC-SHA-256 signed)
-- Cron, Manual, RabbitMQ, Redis-subscribe triggers (all migrated to durable lease workers)
+- Cron, Manual, RabbitMQ, Redis-subscribe, **WebSocket** triggers (all migrated to durable lease workers). The WebSocket trigger is provider-agnostic — operator-supplied bearer/header/query auth, exponential reconnect with ping/pong heartbeat, `event_path` dot-extract on each frame
 - Universal `on_error: stop | continue` on every fallible node + the agent + the for_each
   - `continue` is **dual-edge** (fires error AND success edges)
   - Approval-gate rejection is a hard veto — policy can't downgrade it
@@ -92,7 +92,6 @@ baked into the engine instead of bolted on after.
 - **Multi-node Kubernetes validation** — exercise the k3s backend on real multi-node clusters; verify HPA, pod priority, ResourceQuotas, anti-affinity behave as expected
 
 ### Standard integrations + connectors
-- **Generic WebSocket trigger** — provider-agnostic, user-supplied bearer token (no per-provider OAuth maze)
 - **Slack OOB approvals — full ladder** (bot token → Block Kit interactive buttons → per-tenant OAuth install → Slack Connect)
 - **Connector nodes** — Gmail, Google Docs, Google Sheets, S3, SQS, SNS, Postgres, MySQL, CockroachDB, CouchDB, DynamoDB, Slack send
 
