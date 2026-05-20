@@ -61,15 +61,6 @@ baked into the engine instead of bolted on after.
 
 ---
 
-## In progress
-
-- Container pool warm starts (sub-100ms cold)
-- Image-layer caching for `packages` to skip per-run installs
-- Multi-node Kubernetes validation (HPA, pod priority, ResourceQuotas)
-- Per-tenant isolation in the sandbox (namespaces, RBAC, secret scoping)
-
----
-
 ## Up next (short-term)
 
 ### Composability
@@ -89,9 +80,15 @@ baked into the engine instead of bolted on after.
 
 ### Security + governance
 - **Tool authorization policy** — per-workflow ACL ("this agent may call HTTP but not Mongo/Redis")
+- **Per-tenant sandbox isolation** — namespaces, RBAC, secret scoping; tenant workflows can't see each other's sandbox pods
 - **Per-tool cost weights / budget alerts**
 - **Provider fallback** — Anthropic 5xx → OpenAI
 - **Per-tenant cost cap** (per-run + per-day already exist)
+
+### Sandbox + infra
+- **Container pool warm starts** — keep a warm pool of language-runtime pods so cold start is sub-100ms (versus the current per-run create + image-pull + entrypoint)
+- **Image-layer caching for `packages`** — skip the per-run pip / npm / cargo install when the `packages` list is the same as a previously-cached layer
+- **Multi-node Kubernetes validation** — exercise the k3s backend on real multi-node clusters; verify HPA, pod priority, ResourceQuotas, anti-affinity behave as expected
 
 ### Standard integrations + connectors
 - **Generic WebSocket trigger** — provider-agnostic, user-supplied bearer token (no per-provider OAuth maze)
