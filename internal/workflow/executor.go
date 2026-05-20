@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -3920,38 +3921,37 @@ func runNotify(data map[string]any, input any) (any, error) {
 	return map[string]any{"message": msg}, nil
 }
 
-// applyTemplate replaces template placeholders in s.
+// templateTokenRe matches a `{{…}}` placeholder. Path inside is
+// validated by templateResolvePath against the input + wfCtx —
+// unresolved tokens are left as-is (caller-visible), matching the
+// pre-nested-path semantics for unknown keys.
+var templateTokenRe = regexp.MustCompile(`\{\{\s*([^{}]+?)\s*\}\}`)
+
+// applyTemplate replaces every `{{path}}` placeholder in s with the
+// stringified value at that path. Nested paths are walked, so
+// `{{input.json.city}}` resolves the same way as `{{input.json}}`
+// followed by a `.city` lookup.
 //
-// Supported patterns:
+// Supported path roots:
 //
-//	{{input.FIELD}}                   — field from immediate input
-//	{{context.stepName.input.FIELD}}  — field from named step's input
-//	{{context.stepName.output.FIELD}} — field from named step's output
-//	{{context.stepName.item.FIELD}}   — current iteration element (for_each body only)
+//	{{input.…}}                   — immediate input (any depth)
+//	{{context.stepName.input.…}}  — named step's recorded input
+//	{{context.stepName.output.…}} — named step's recorded output
+//	{{context.stepName.item.…}}   — current for_each iteration element
+//
+// An unresolved token (unknown path / non-map intermediate) is kept
+// in place so downstream guards (e.g. SSRF dial-check on a literal
+// `{{…}}` host) can still refuse it; this matches pre-fix behaviour
+// for unknown top-level keys.
 func applyTemplate(s string, input any, wfCtx runCtx) string {
-	if m, ok := mapAny(input); ok {
-		for k, v := range m {
-			s = strings.ReplaceAll(s, "{{input."+k+"}}", fmt.Sprint(v))
+	return templateTokenRe.ReplaceAllStringFunc(s, func(match string) string {
+		expr := strings.TrimSpace(match[2 : len(match)-2])
+		v, ok := templateResolvePath(expr, input, wfCtx)
+		if !ok {
+			return match
 		}
-	}
-	for name, sc := range wfCtx {
-		if m, ok := mapAny(sc.Input); ok {
-			for k, v := range m {
-				s = strings.ReplaceAll(s, "{{context."+name+".input."+k+"}}", fmt.Sprint(v))
-			}
-		}
-		if m, ok := mapAny(sc.Output); ok {
-			for k, v := range m {
-				s = strings.ReplaceAll(s, "{{context."+name+".output."+k+"}}", fmt.Sprint(v))
-			}
-		}
-		if m, ok := mapAny(sc.Item); ok {
-			for k, v := range m {
-				s = strings.ReplaceAll(s, "{{context."+name+".item."+k+"}}", fmt.Sprint(v))
-			}
-		}
-	}
-	return s
+		return fmt.Sprint(v)
+	})
 }
 
 // resolveTemplateValue resolves a string that is EXACTLY a single
@@ -3978,32 +3978,59 @@ func resolveTemplateValue(s string, input any, wfCtx runCtx) (any, bool) {
 	if strings.Contains(expr, "{{") {
 		return nil, false // not a lone token
 	}
-	parts := strings.Split(expr, ".")
+	return templateResolvePath(expr, input, wfCtx)
+}
 
-	get := func(container any, key string) (any, bool) {
-		m, ok := mapAny(container)
-		if !ok {
-			return nil, false
-		}
-		v, ok := m[key]
-		return v, ok
+// templateResolvePath walks a dotted path against the immediate
+// input + wfCtx, returning the value at the path or ok=false. Used
+// by both applyTemplate (string embedding) and resolveTemplateValue
+// (lone-token preserve-type lookup) so behaviour stays consistent
+// across selector kinds.
+func templateResolvePath(expr string, input any, wfCtx runCtx) (any, bool) {
+	parts := strings.Split(expr, ".")
+	if len(parts) < 2 {
+		return nil, false
 	}
 
-	switch {
-	case len(parts) == 2 && parts[0] == "input":
-		return get(input, parts[1])
-	case len(parts) == 4 && parts[0] == "context":
+	walk := func(root any, rest []string) (any, bool) {
+		cur := root
+		for _, seg := range rest {
+			seg = strings.TrimSpace(seg)
+			if seg == "" {
+				return nil, false
+			}
+			m, ok := mapAny(cur)
+			if !ok {
+				return nil, false
+			}
+			next, exists := m[seg]
+			if !exists {
+				return nil, false
+			}
+			cur = next
+		}
+		return cur, true
+	}
+
+	switch parts[0] {
+	case "input":
+		return walk(input, parts[1:])
+	case "context":
+		// {{context.<name>.<kind>.<…>}} — kind ∈ {input, output, item}
+		if len(parts) < 4 {
+			return nil, false
+		}
 		sc, ok := wfCtx[parts[1]]
 		if !ok {
 			return nil, false
 		}
 		switch parts[2] {
 		case "input":
-			return get(sc.Input, parts[3])
+			return walk(sc.Input, parts[3:])
 		case "output":
-			return get(sc.Output, parts[3])
+			return walk(sc.Output, parts[3:])
 		case "item":
-			return get(sc.Item, parts[3])
+			return walk(sc.Item, parts[3:])
 		}
 	}
 	return nil, false
