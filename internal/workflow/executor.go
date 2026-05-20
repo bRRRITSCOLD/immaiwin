@@ -1704,7 +1704,30 @@ func (e *WorkflowExecutor) RunWithEvents(ctx context.Context, wf Workflow, stopA
 		// the breakpoint set, hold here until the live UI sends a
 		// continue frame. Skipped when no continueCh is wired (then the
 		// post-exec stopAt path takes over).
+		//
+		// Checkpoint BEFORE the wait so a worker death mid-pause is
+		// resumable: persist the BFS snapshot with this node back in
+		// the queue + un-visited so a new worker reclaims via
+		// ClaimLease (which requires execution_state != nil for the
+		// lapsed-lease branch), pops the same node, and re-pauses at
+		// the same breakpoint. The persisted snapshot is a rollback
+		// view; the in-memory state stays correct so the LIVE worker
+		// can continue once the user clicks Continue.
 		if env.isBreakpoint(node.ID) && env.continueCh != nil {
+			if env.checkpoint && e.RunRepo != nil && env.workerID != "" && env.runID != "" {
+				// Roll back: re-queue + un-visit.
+				delete(visited, item.nodeID)
+				queue = append([]queueItem{item}, queue...)
+				state := snapshotExecState()
+				cperr := e.RunRepo.CheckpointExecutionState(ctx, env.runID, env.workerID, state, results, "")
+				// Roll forward so the live BFS proceeds correctly
+				// after Continue: re-pop + re-visit.
+				queue = queue[1:]
+				visited[item.nodeID] = true
+				if cperr != nil {
+					return results, cperr
+				}
+			}
 			env.waitAtBreakpoint(ctx, node)
 		}
 
