@@ -80,24 +80,54 @@ export const DebugContext = createContext<DebugState>({
 
 export function BreakpointMarker({ id }: { id: string }) {
   const { debugMode, breakpointIds, toggleBreakpoint } = useContext(DebugContext)
+  const results = useContext(RunResultsContext)
   if (!debugMode) return null
 
   const isSet = breakpointIds.has(id)
 
+  // Active breakpoint = THIS node is currently paused at a pre-exec
+  // breakpoint pause. Distinct visual so the user can tell at a
+  // glance which of N set breakpoints the run is actually halted on.
+  // Reads the latest StepResult.status for the node; 'paused' = the
+  // step_pending event landed and the worker is waiting on Continue.
+  const steps = results?.[id]
+  const lastStatus = steps && steps.length > 0 ? steps[steps.length - 1]!.status : undefined
+  const isActive = isSet && lastStatus === 'paused'
+
+  const borderColor = isActive ? '#facc15' : isSet ? '#ef4444' : '#666'
+  const backgroundColor = isActive ? '#facc15' : isSet ? '#ef4444' : 'transparent'
+
   return (
     <button
-      className="nodrag absolute -left-3.5 -top-3.5 z-10 h-5 w-5 rounded-full border-2 flex items-center justify-center transition-colors hover:scale-110"
+      className={`nodrag absolute -left-3.5 -top-3.5 z-10 h-5 w-5 rounded-full border-2 flex items-center justify-center transition-colors hover:scale-110 ${
+        isActive ? 'animate-pulse ring-2 ring-yellow-400/60 ring-offset-1 ring-offset-background' : ''
+      }`}
       style={{
-        borderColor: isSet ? '#ef4444' : '#666',
-        backgroundColor: isSet ? '#ef4444' : 'transparent',
+        borderColor,
+        backgroundColor,
       }}
       onClick={(e) => {
         e.stopPropagation()
         toggleBreakpoint(id)
       }}
-      title={isSet ? 'Remove breakpoint' : 'Set breakpoint'}
+      title={
+        isActive
+          ? 'Paused here — click Continue to advance'
+          : isSet
+          ? 'Remove breakpoint'
+          : 'Set breakpoint'
+      }
     >
-      {isSet && <span className="block h-1.5 w-1.5 rounded-full bg-white" />}
+      {isActive ? (
+        // Pause glyph: two thin vertical bars. Clear "halted here"
+        // signal in addition to the colour change.
+        <span className="flex gap-[1px]">
+          <span className="block h-1.5 w-[2px] bg-zinc-900" />
+          <span className="block h-1.5 w-[2px] bg-zinc-900" />
+        </span>
+      ) : isSet ? (
+        <span className="block h-1.5 w-1.5 rounded-full bg-white" />
+      ) : null}
     </button>
   )
 }
