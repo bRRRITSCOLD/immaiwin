@@ -586,6 +586,11 @@ function RunDetailPage() {
                         key={nodeId}
                         title={nodeLabel(data.workflow, nodeId, 'ai_agent')}
                         events={events}
+                        runTerminal={
+                          data.run.status === 'success' ||
+                          data.run.status === 'error' ||
+                          data.run.status === 'cancelled'
+                        }
                       />
                     ))}
                   </div>
@@ -647,7 +652,15 @@ function tagAttempts(events: TraceEvent[]): EventWithAttempt[] {
   return out
 }
 
-function AgentTraceBlock({ title, events }: { title: string; events: TraceEvent[] }) {
+function AgentTraceBlock({
+  title,
+  events,
+  runTerminal,
+}: {
+  title: string
+  events: TraceEvent[]
+  runTerminal: boolean
+}) {
   const tagged = tagAttempts(events)
   const attemptCount = tagged.length === 0 ? 0 : tagged[tagged.length - 1]!.attempt + 1
   // Group by attempt → iter. Render each attempt as its own subsection
@@ -752,6 +765,13 @@ function AgentTraceBlock({ title, events }: { title: string; events: TraceEvent[
                         iter={i}
                         events={iters[i]!}
                         defaultOpen={isLast && i === iterKeys[0]}
+                        // for_each iter is always live-correct (no
+                        // worker-death attempt split). Only label a
+                        // dangling tool_call as interrupted once the
+                        // whole run is terminal — otherwise it's just
+                        // pending and the tool_result is still on its
+                        // way over the stream.
+                        canInterrupt={runTerminal}
                       />
                     ))}
                   </div>
@@ -780,6 +800,17 @@ function AgentTraceBlock({ title, events }: { title: string; events: TraceEvent[
                         iter={i}
                         events={iters[i]!}
                         defaultOpen={a === attemptCount - 1 && i === iterKeys[0]}
+                        // Two paths can produce a tool_call w/o a
+                        // tool_result:
+                        //   (a) prior attempt died mid-tool (worker
+                        //       lease lapsed) — labelling is correct
+                        //       AND useful, even while a later attempt
+                        //       is still running;
+                        //   (b) current live attempt — the result row
+                        //       just hasn't streamed in yet.
+                        // Gate the badge to (a) OR (terminal run) so
+                        // (b) stops false-flagging mid-flight.
+                        canInterrupt={isAbandoned || runTerminal}
                       />
                     ))}
                   </div>
@@ -798,10 +829,15 @@ function IterSection({
   iter,
   events,
   defaultOpen,
+  canInterrupt,
 }: {
   iter: number
   events: TraceEvent[]
   defaultOpen?: boolean
+  // True when a tool_call without a matching tool_result should be
+  // labelled "interrupted — no result". False during live streaming
+  // on the current attempt, where the result row is just on its way.
+  canInterrupt: boolean
 }) {
   const [open, setOpen] = useState(!!defaultOpen)
   let inTok = 0
@@ -864,7 +900,12 @@ function IterSection({
               <TraceEventRow
                 key={idx}
                 ev={ev}
-                interrupted={ev.type === 'tool_call' && !!ev.tool_id && !resolvedToolIDs.has(ev.tool_id)}
+                interrupted={
+                  canInterrupt &&
+                  ev.type === 'tool_call' &&
+                  !!ev.tool_id &&
+                  !resolvedToolIDs.has(ev.tool_id)
+                }
               />
             ))
           })()}
