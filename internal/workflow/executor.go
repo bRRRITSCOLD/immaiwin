@@ -1561,6 +1561,38 @@ func (e *WorkflowExecutor) RunWithEvents(ctx context.Context, wf Workflow, stopA
 		pendingApplied:
 		}
 	}
+
+	// Canvas Continue + set_breakpoints bridge. Worker subscribes to
+	// `burrow:run_control:<runID>` over Redis and routes decoded
+	// RunControlMessages into these in-process chans BEFORE invoking
+	// RunFromCheckpoint. Wire them onto runEnv so the BFS / agent
+	// loop sees the same channels a legacy in-process WS-resumed run
+	// would. Nil-safe — runs without a control bridge keep the
+	// post-exec breakpoint persistence semantics.
+	if cc, ok := ControlChannelsFromCtx(ctx); ok {
+		if cc.Continue != nil {
+			env.continueCh = cc.Continue
+		}
+		if cc.Breakpoints != nil {
+			// Mirror each new ID list onto the run's stopAtSet. Same
+			// goroutine pattern as the resumeBundle block above —
+			// keeps live add/remove of breakpoints visible to the
+			// next BFS step without a stop-and-restart.
+			go func(ch chan []string) {
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					case ids, ok := <-ch:
+						if !ok {
+							return
+						}
+						env.SetBreakpoints(ids)
+					}
+				}
+			}(cc.Breakpoints)
+		}
+	}
 	ctx = context.WithValue(ctx, runEnvKey, env)
 
 	// snapshotExecState materialises the current BFS state into an

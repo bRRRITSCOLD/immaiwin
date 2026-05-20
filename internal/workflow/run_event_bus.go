@@ -75,6 +75,41 @@ func (e *RedisRunEventEmitter) Emit(ev RunEvent) {
 // channel when a browser frame arrives. The worker's runEnv subscriber
 // decodes it and routes into the appropriate in-process channel.
 type RunControlMessage struct {
-	Type     string   `json:"type"`               // "continue" | "set_breakpoints"
-	NodeIDs  []string `json:"node_ids,omitempty"` // for set_breakpoints
+	Type    string   `json:"type"`               // "continue" | "set_breakpoints"
+	NodeIDs []string `json:"node_ids,omitempty"` // for set_breakpoints
+}
+
+// ControlChannels is the worker → executor handoff for canvas
+// Continue + set_breakpoints control signals. The worker owns the
+// Redis subscription on `burrow:run_control:<runID>` and routes
+// decoded RunControlMessages into these chans; the executor's
+// runEnv listens on the chans the same way it does on a legacy
+// in-process WS-resumed run.
+//
+// Nil chans (zero value) disable the corresponding feature — a
+// run without control chans behaves exactly like a pre-bridge
+// lease run (post-exec breakpoint persistence; no live continue).
+type ControlChannels struct {
+	Continue    chan struct{} // pre-exec breakpoint release
+	Breakpoints chan []string // live set_breakpoints updates
+}
+
+type controlChannelsCtxKey struct{}
+
+// WithControlChannels stashes the worker-owned control chans on
+// ctx so the executor's RunWithEvents hydration block can wire
+// them onto runEnv without a signature change on RunFromCheckpoint.
+func WithControlChannels(ctx context.Context, cc *ControlChannels) context.Context {
+	if cc == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, controlChannelsCtxKey{}, cc)
+}
+
+// ControlChannelsFromCtx returns the worker-supplied control chans
+// (if any). Executor uses these to hook runEnv.continueCh +
+// runEnv.SetBreakpoints into the worker's Redis sub goroutine.
+func ControlChannelsFromCtx(ctx context.Context) (*ControlChannels, bool) {
+	cc, ok := ctx.Value(controlChannelsCtxKey{}).(*ControlChannels)
+	return cc, ok && cc != nil
 }

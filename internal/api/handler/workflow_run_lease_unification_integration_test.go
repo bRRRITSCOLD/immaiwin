@@ -931,3 +931,160 @@ func (s *LeaseUnificationIntegrationSuite) TestTerminalCleanup_ApprovedRun_Clear
 	s.Nil(body.Run["paused_agent"], "paused_agent must be cleared on terminal success")
 	s.Nil(body.Run["pending_approval"], "pending_approval mirror must be cleared on terminal success")
 }
+
+// TestRunContinue_PublishesControlMessage verifies the canvas
+// Continue REST endpoint publishes a `continue` RunControlMessage
+// on burrow:run_control:<runID>. A live Redis subscriber receives
+// the exact JSON the worker's bridge would decode. Doesn't drive
+// the engine — just pins the wire shape.
+func (s *LeaseUnificationIntegrationSuite) TestRunContinue_PublishesControlMessage() {
+	suffix := time.Now().UnixNano()
+	client := s.authedClient(fmt.Sprintf("alice-continue-%d@example.com", suffix))
+	wfID := fmt.Sprintf("wf-continue-%d", suffix)
+	s.putGatedHTTPWorkflow(client, wfID, "continue-bridge", "http://127.0.0.1:1/never-called")
+
+	runID := s.triggerRun(client, wfID)
+	s.pollUntilStatus(client, runID, "pending_approval", 5*time.Second)
+
+	subCtx, subCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer subCancel()
+	sub := s.redis.Subscribe(subCtx, workflow.RunControlChannel(runID))
+	defer func() { _ = sub.Close() }()
+	// Block until SUBSCRIBE confirmation lands (consumes the
+	// subscription-ack envelope) BEFORE activating Channel(); the
+	// internal Channel() pump races against an external Receive on
+	// the same PubSub if both are live.
+	pingCtx, pingCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer pingCancel()
+	_, perr := sub.Receive(pingCtx)
+	s.Require().NoError(perr, "subscribe ack must arrive before publish")
+	subCh := sub.Channel()
+
+	resp, err := client.Post(s.httpSrv.URL+"/api/v1/workflow_runs/"+runID+"/continue",
+		"application/json", bytes.NewReader([]byte(`{}`)))
+	s.Require().NoError(err)
+	defer resp.Body.Close() //nolint:errcheck
+	s.Require().Equal(http.StatusOK, resp.StatusCode)
+
+	deadline := time.After(2 * time.Second)
+	var got *workflow.RunControlMessage
+loop:
+	for {
+		select {
+		case msg, ok := <-subCh:
+			if !ok {
+				break loop
+			}
+			var rcm workflow.RunControlMessage
+			if err := json.Unmarshal([]byte(msg.Payload), &rcm); err == nil {
+				got = &rcm
+				break loop
+			}
+		case <-deadline:
+			break loop
+		}
+	}
+	s.Require().NotNil(got, "expected RunControlMessage on burrow:run_control:%s", runID)
+	s.Equal("continue", got.Type)
+}
+
+// TestRunBreakpoints_PublishesSetMessage verifies the
+// PUT /breakpoints endpoint publishes a `set_breakpoints`
+// RunControlMessage carrying the exact node_ids list the body
+// supplied.
+func (s *LeaseUnificationIntegrationSuite) TestRunBreakpoints_PublishesSetMessage() {
+	suffix := time.Now().UnixNano()
+	client := s.authedClient(fmt.Sprintf("alice-bp-%d@example.com", suffix))
+	wfID := fmt.Sprintf("wf-bp-%d", suffix)
+	s.putGatedHTTPWorkflow(client, wfID, "bp-bridge", "http://127.0.0.1:1/never-called")
+
+	runID := s.triggerRun(client, wfID)
+	s.pollUntilStatus(client, runID, "pending_approval", 5*time.Second)
+
+	subCtx, subCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer subCancel()
+	sub := s.redis.Subscribe(subCtx, workflow.RunControlChannel(runID))
+	defer func() { _ = sub.Close() }()
+	pingCtx, pingCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer pingCancel()
+	_, perr := sub.Receive(pingCtx)
+	s.Require().NoError(perr, "subscribe ack must arrive before publish")
+	subCh := sub.Channel()
+
+	body, _ := json.Marshal(map[string]any{"node_ids": []string{"http-1", "agent-1"}})
+	req, _ := http.NewRequest(http.MethodPut,
+		s.httpSrv.URL+"/api/v1/workflow_runs/"+runID+"/breakpoints",
+		bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	s.Require().NoError(err)
+	defer resp.Body.Close() //nolint:errcheck
+	s.Require().Equal(http.StatusOK, resp.StatusCode)
+
+	deadline := time.After(2 * time.Second)
+	var got *workflow.RunControlMessage
+loop:
+	for {
+		select {
+		case msg, ok := <-subCh:
+			if !ok {
+				break loop
+			}
+			var rcm workflow.RunControlMessage
+			if err := json.Unmarshal([]byte(msg.Payload), &rcm); err == nil {
+				got = &rcm
+				break loop
+			}
+		case <-deadline:
+			break loop
+		}
+	}
+	s.Require().NotNil(got, "expected RunControlMessage on burrow:run_control:%s", runID)
+	s.Equal("set_breakpoints", got.Type)
+	s.Equal([]string{"http-1", "agent-1"}, got.NodeIDs)
+}
+
+// TestRunContinue_Terminal_Returns400 verifies the endpoint refuses
+// to publish on a run that already finished — a stale UI tab can't
+// endlessly POST /continue after the run terminated.
+func (s *LeaseUnificationIntegrationSuite) TestRunContinue_Terminal_Returns400() {
+	suffix := time.Now().UnixNano()
+	client := s.authedClient(fmt.Sprintf("alice-continue-term-%d@example.com", suffix))
+	wfID := fmt.Sprintf("wf-continue-term-%d", suffix)
+	s.putGatedHTTPWorkflow(client, wfID, "continue-terminal", "http://127.0.0.1:1/never-called")
+
+	runID := s.triggerRun(client, wfID)
+	s.pollUntilStatus(client, runID, "pending_approval", 5*time.Second)
+	// Cancel to drive it terminal.
+	cancelResp, err := client.Post(s.httpSrv.URL+"/api/v1/workflow_runs/"+runID+"/cancel",
+		"application/json", bytes.NewReader([]byte(`{}`)))
+	s.Require().NoError(err)
+	_ = cancelResp.Body.Close()
+	s.pollUntilStatus(client, runID, "cancelled", 5*time.Second)
+
+	resp, err := client.Post(s.httpSrv.URL+"/api/v1/workflow_runs/"+runID+"/continue",
+		"application/json", bytes.NewReader([]byte(`{}`)))
+	s.Require().NoError(err)
+	defer resp.Body.Close() //nolint:errcheck
+	s.Equal(http.StatusBadRequest, resp.StatusCode, "continue on a terminal run must 400")
+}
+
+// TestRunContinue_ForeignTenant_Returns404 verifies cross-tenant
+// access reads as 404 (same posture as /cancel + /approval) so
+// run-id existence doesn't leak.
+func (s *LeaseUnificationIntegrationSuite) TestRunContinue_ForeignTenant_Returns404() {
+	suffix := time.Now().UnixNano()
+	alice := s.authedClient(fmt.Sprintf("alice-ct-%d@example.com", suffix))
+	bob := s.authedClient(fmt.Sprintf("bob-ct-%d@example.com", suffix))
+	wfID := fmt.Sprintf("wf-ct-%d", suffix)
+	s.putGatedHTTPWorkflow(alice, wfID, "ct", "http://127.0.0.1:1/never-called")
+
+	runID := s.triggerRun(alice, wfID)
+	s.pollUntilStatus(alice, runID, "pending_approval", 5*time.Second)
+
+	resp, err := bob.Post(s.httpSrv.URL+"/api/v1/workflow_runs/"+runID+"/continue",
+		"application/json", bytes.NewReader([]byte(`{}`)))
+	s.Require().NoError(err)
+	defer resp.Body.Close() //nolint:errcheck
+	s.Equal(http.StatusNotFound, resp.StatusCode, "foreign-tenant continue must 404")
+}
