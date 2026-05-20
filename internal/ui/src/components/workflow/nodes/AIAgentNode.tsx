@@ -1,6 +1,7 @@
-import { NodeResizer, type NodeProps, useReactFlow, useNodes } from '@xyflow/react'
-import { Bot, Wrench, HelpCircle } from 'lucide-react'
-import { useContext, useState } from 'react'
+import { NodeResizer, type NodeProps, useReactFlow, useNodes, useEdges } from '@xyflow/react'
+import { Bot, Wrench, HelpCircle, Plus } from 'lucide-react'
+import { useContext, useEffect, useState } from 'react'
+import { api } from '~/lib/api'
 import { Textarea } from '~/components/ui/textarea'
 import { Input } from '~/components/ui/input'
 import { NumberField } from '~/components/ui/number-field'
@@ -277,6 +278,18 @@ export function AIAgentNode({ id, data, selected }: NodeProps) {
                   // doesn't get re-normalised away on every keystroke.
                   onChange={(e) => updateNodeData(id, { allowed_tools: e.target.value })}
                 />
+                <RegisteredToolChips
+                  agentId={id}
+                  agentData={data as Record<string, unknown>}
+                  allowedText={allowedToolsText}
+                  onAdd={(name) => {
+                    const cur = allowedToolsText
+                    const lines = cur.split('\n').map((s) => s.trim())
+                    if (lines.includes(name)) return
+                    const sep = cur.length > 0 && !cur.endsWith('\n') ? '\n' : ''
+                    updateNodeData(id, { allowed_tools: cur + sep + name + '\n' })
+                  }}
+                />
               </div>
 
               {/* Require approval toggle — gates each tool call on a
@@ -370,5 +383,137 @@ function AgentCostBadge({ id }: { id: string }) {
         </span>
       )}
     </span>
+  )
+}
+
+// RegisteredToolChips lists the tool names the agent would expose
+// at run time (built-ins + skill tools + `as_tool` edge targets),
+// rendered as clickable chips that append into the allowed_tools
+// textarea on click. Predicts the catalog client-side from canvas
+// state — same naming rules the executor's buildAgentToolCatalog
+// follows (skill tools = `<sanitized-slug>__<tool-id>`, as_tool =
+// the target's `data.as_tool.name` || `data.name` || `<type>_<id>`).
+// Eliminates the hyphen/underscore typo class that wiped the
+// catalog at runtime even though the workflow ran without error.
+
+interface SkillToolDef { id: string }
+interface SkillManifest { tools?: SkillToolDef[] }
+interface SkillRegistryRecord {
+  slug_id: string
+  version: string
+  manifest: SkillManifest
+}
+interface SkillRequest { slug_id: string }
+
+function sanitizeToolNameJS(name: string): string {
+  // Mirror the Go sanitizeToolName (agent_tools.go:320): keep
+  // a-z A-Z 0-9 _ -, replace everything else with _.
+  return name.replace(/[^a-zA-Z0-9_-]/g, '_')
+}
+
+function RegisteredToolChips({
+  agentId,
+  agentData,
+  allowedText,
+  onAdd,
+}: {
+  agentId: string
+  agentData: Record<string, unknown>
+  allowedText: string
+  onAdd: (name: string) => void
+}) {
+  const nodes = useNodes()
+  const edges = useEdges()
+
+  const [registry, setRegistry] = useState<SkillRegistryRecord[]>([])
+  // Only fetch when the agent declares skills; the registry call is
+  // tenant-scoped + cheap but no reason to make it on every render
+  // of an agent that doesn't use skills.
+  const skills = (agentData?.skills as SkillRequest[] | undefined) ?? []
+  useEffect(() => {
+    if (skills.length === 0) return
+    let cancelled = false
+    api.get<SkillRegistryRecord[]>('/api/v1/skills')
+      .then((recs) => {
+        if (!cancelled) setRegistry(recs)
+      })
+      .catch(() => {
+        // Silent — chips are a convenience, not a blocker. Failure
+        // just means the user types skill tool names manually.
+      })
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [JSON.stringify(skills)])
+
+  // Built-in tool (sandbox always wired in this UX).
+  const builtinNames = ['code_execute']
+
+  // Edge-bound as_tool target names. Mirror the executor's lookup:
+  // outgoing edges with sourceHandle === 'tool' (EdgeHandleTool)
+  // whose target node has data.as_tool.enabled.
+  const asToolNames: string[] = []
+  for (const e of edges) {
+    if (e.source !== agentId) continue
+    if (e.sourceHandle !== 'tool') continue
+    const target = nodes.find((n) => n.id === e.target)
+    if (!target) continue
+    const td = (target.data ?? {}) as Record<string, unknown>
+    const asTool = td.as_tool as Record<string, unknown> | undefined
+    if (!asTool || asTool.enabled !== true) continue
+    const name =
+      (typeof asTool.name === 'string' && asTool.name) ||
+      (typeof td.name === 'string' && (td.name as string)) ||
+      `${target.type ?? 'node'}_${target.id}`
+    asToolNames.push(sanitizeToolNameJS(name))
+  }
+
+  // Skill tool names, computed from the registry once it's loaded.
+  const skillNames: string[] = []
+  for (const req of skills) {
+    const rec = registry.find((r) => r.slug_id === req.slug_id)
+    if (!rec || !rec.manifest?.tools) continue
+    const prefix = sanitizeToolNameJS(rec.slug_id.replace(/\//g, '_'))
+    for (const t of rec.manifest.tools) {
+      skillNames.push(sanitizeToolNameJS(`${prefix}__${t.id}`))
+    }
+  }
+
+  const all = [...builtinNames, ...asToolNames, ...skillNames]
+  if (all.length === 0) return null
+
+  // Mark chips that are already in the allowed list so the user
+  // sees what's wired vs what they could add.
+  const allowedSet = new Set(
+    allowedText.split('\n').map((s) => s.trim()).filter((s) => s.length > 0),
+  )
+
+  return (
+    <div className="flex flex-wrap gap-1 pt-1.5">
+      <span className="text-[10px] text-muted-foreground self-center">
+        Registered:
+      </span>
+      {all.map((name) => {
+        const inList = allowedSet.has(name)
+        return (
+          <button
+            key={name}
+            type="button"
+            className={`nodrag flex items-center gap-0.5 rounded border px-1.5 py-0.5 text-[10px] font-mono leading-none transition-colors ${
+              inList
+                ? 'border-purple-500/40 bg-purple-500/10 text-purple-300 cursor-default'
+                : 'border-border text-muted-foreground hover:border-purple-500/40 hover:text-purple-300'
+            }`}
+            onClick={() => {
+              if (inList) return
+              onAdd(name)
+            }}
+            title={inList ? 'already allowed' : 'click to add'}
+          >
+            {!inList && <Plus className="h-2.5 w-2.5" />}
+            {name}
+          </button>
+        )
+      })}
+    </div>
   )
 }
