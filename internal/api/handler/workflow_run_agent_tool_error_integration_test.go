@@ -284,9 +284,15 @@ func (s *AgentToolErrorIntegrationSuite) authedClient(emailAddr string) (*http.C
 //
 // `toolOnError` sets the tool target's per-node `on_error` policy
 // (`stop` default, `continue` opt-in for legacy LLM-recovery behavior).
-// Empty string → omit the field, exercising the default. Returns the
-// workflow ID.
-func (s *AgentToolErrorIntegrationSuite) putAgentToolWorkflow(client *http.Client, tenantID string, toolOnError string) (wfID, connID string) {
+// Empty string → omit the field, exercising the default.
+// `allowedTools` (optional) stamps the agent's per-agent ACL —
+// nil/empty = open (no filtering applied).
+// Returns the workflow ID.
+func (s *AgentToolErrorIntegrationSuite) putAgentToolWorkflow(client *http.Client, tenantID string, toolOnError string, allowedTools ...[]string) (wfID, connID string) {
+	var allowed []string
+	if len(allowedTools) > 0 {
+		allowed = allowedTools[0]
+	}
 	suffix := time.Now().UnixNano()
 	connID = fmt.Sprintf("anthropic-toolerr-%d", suffix)
 	_, cerr := s.connRepo.Upsert(context.Background(), workflow.Connection{
@@ -315,12 +321,18 @@ func (s *AgentToolErrorIntegrationSuite) putAgentToolWorkflow(client *http.Clien
 				"id":       "agent-1",
 				"type":     "ai_agent",
 				"position": map[string]any{"x": 200, "y": 0},
-				"data": map[string]any{
-					"llm_connection_id": connID,
-					"system_prompt":     "you are a test agent",
-					"user_input":        "do the thing",
-					"max_iterations":    3,
-				},
+				"data": (func() map[string]any {
+					d := map[string]any{
+						"llm_connection_id": connID,
+						"system_prompt":     "you are a test agent",
+						"user_input":        "do the thing",
+						"max_iterations":    3,
+					}
+					if len(allowed) > 0 {
+						d["allowed_tools"] = allowed
+					}
+					return d
+				})(),
 			},
 			{
 				"id":       "fail_tool",
@@ -434,4 +446,53 @@ func (s *AgentToolErrorIntegrationSuite) TestAgent_ToolOnErrorContinue_LLMRetrie
 	_, status := s.dispatchAndPoll(client, wfID, []string{"success", "error", "cancelled"})
 	s.Equal("success", status, "tool target on_error=continue should let the LLM observe the tool error and finish via end_turn")
 	s.Equal(int32(2), s.stubProvider.chatCalls.Load(), "agent should re-prompt once after the tool error before the model emits end_turn")
+}
+
+// TestAgent_AllowedToolsPolicy_DeniedToolNeverDispatches is the
+// core authorization invariant: with `allowed_tools=["other_tool"]`
+// the agent's catalog drops fail_tool entirely. The stub keeps
+// emitting `fail_tool` tool_use, but Execute returns an
+// unknown-tool error (no handler runs), the agent feeds that
+// observation back, and the stub pivots to end_turn after seeing
+// the error tool_result. The mock HTTP target MUST NOT receive
+// any request — that's the security contract.
+func (s *AgentToolErrorIntegrationSuite) TestAgent_AllowedToolsPolicy_DeniedToolNeverDispatches() {
+	client, tenantID := s.authedClient(fmt.Sprintf("alice-acl-deny-%d@example.com", time.Now().UnixNano()))
+	var hits atomic.Int32
+	s.mockMu.Lock()
+	s.mockHandler = func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}
+	s.mockMu.Unlock()
+	// Allow ONLY a tool that doesn't exist in this workflow —
+	// fail_tool is excluded from the catalog. Stub still keeps
+	// calling fail_tool; should land "unknown tool".
+	wfID, _ := s.putAgentToolWorkflow(client, tenantID, "continue", []string{"some_other_tool"})
+
+	_, status := s.dispatchAndPoll(client, wfID, []string{"success", "error", "cancelled"})
+	s.Equal("success", status, "denied tool falls through to unknown-tool error; stub pivots to end_turn → success")
+	s.Equal(int32(0), hits.Load(), "denied tool MUST NOT reach the http_request handler (defense-in-depth)")
+}
+
+// TestAgent_AllowedToolsPolicy_EmptyList_BackCompat verifies the
+// open-default contract: empty/missing `allowed_tools` preserves
+// the legacy "every catalog tool is exposed" behaviour so existing
+// workflows authored before the ACL field don't regress.
+func (s *AgentToolErrorIntegrationSuite) TestAgent_AllowedToolsPolicy_EmptyList_BackCompat() {
+	client, tenantID := s.authedClient(fmt.Sprintf("alice-acl-open-%d@example.com", time.Now().UnixNano()))
+	var hits atomic.Int32
+	s.mockMu.Lock()
+	s.mockHandler = func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}
+	s.mockMu.Unlock()
+	wfID, _ := s.putAgentToolWorkflow(client, tenantID, "continue", []string{})
+
+	_, status := s.dispatchAndPoll(client, wfID, []string{"success", "error", "cancelled"})
+	s.Equal("success", status)
+	s.GreaterOrEqual(hits.Load(), int32(1), "open policy (empty allowed_tools) must let the LLM-requested tool dispatch")
 }

@@ -44,6 +44,7 @@ baked into the engine instead of bolted on after.
 - Chat memory (Mongo, tenant-scoped, durable)
 - Per-run + per-day cost caps; cost surfaced in the Runs tab
 - `as_tool` full isolation — only the agent's `tool` edge wires into a tool node (the engine bypasses its BFS edges anyway)
+- **Tool authorization policy** — per-agent ACL via `data.allowed_tools: string[]`. Filter is applied uniformly to built-ins, skill tools, and edge-bound `as_tool` targets AFTER the catalog is built. LLM never sees denied tools; defense-in-depth Execute path returns unknown-tool for hallucinated calls so a denied handler can never fire. Empty list = open (back-compat). Per-workflow rollup is "every agent's list" — finer than the original "per-workflow" framing.
 - Approval-gate resume is **replay-only** — no extra `Chat` call on resume. The trailing assistant tool_use is replayed from `PausedAgent.Messages`, dispatch continues from the saved `PartialNextIndex`, and the only post-resume LLM call is the final-answer prompt that observes the tool_result. Total Chat per gate = pre-gate + final-answer (locked by integration tests asserting the exact Chat-call count).
 
 ### Security
@@ -80,7 +81,6 @@ baked into the engine instead of bolted on after.
 - **Per-skill `on_error`** — follow-up to the universal node policy
 
 ### Security + governance
-- **Tool authorization policy** — per-workflow ACL ("this agent may call HTTP but not Mongo/Redis")
 - **Per-tenant sandbox isolation** — namespaces, RBAC, secret scoping; tenant workflows can't see each other's sandbox pods
 - **Per-tool cost weights / budget alerts**
 - **Provider fallback** — Anthropic 5xx → OpenAI

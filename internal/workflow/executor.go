@@ -2450,25 +2450,28 @@ func buildHTTPClient(base *http.Client, data map[string]any, dialCtrl func(netwo
 }
 
 // stringSliceData coerces data[key] into []string. Accepts a []any (most
-// JSON decoders), a []string (rare; defensive), or a single comma-
-// separated string (UI legacy). Returns nil when missing/empty so the
-// caller can branch on `len(...)==0`.
+// JSON decoders), a []string (rare; defensive), a bson.A (Mongo-decoded
+// workflow round-trip — the named type `[]interface{}` that fails a
+// plain `.([]any)` assertion), or a single comma-separated string (UI
+// legacy). Returns nil when missing/empty so the caller can branch on
+// `len(...)==0`.
 func stringSliceData(data map[string]any, key string) []string {
 	v, ok := data[key]
 	if !ok || v == nil {
 		return nil
 	}
-	switch x := v.(type) {
-	case []string:
-		return x
-	case []any:
-		out := make([]string, 0, len(x))
-		for _, item := range x {
+	if items, ok := sliceAny(v); ok {
+		out := make([]string, 0, len(items))
+		for _, item := range items {
 			if s, ok := item.(string); ok && s != "" {
 				out = append(out, s)
 			}
 		}
 		return out
+	}
+	switch x := v.(type) {
+	case []string:
+		return x
 	case string:
 		if x == "" {
 			return nil

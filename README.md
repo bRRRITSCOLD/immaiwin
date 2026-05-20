@@ -590,11 +590,10 @@ Supported types: `mongodb`, `redis`, `rabbitmq`, `anthropic`, `openai`, `ollama`
 - [x] `for_each` with `items` selector, node-level loop-abort, loop-iteration trace badges, plain-body `iter K/M` sync, cancel propagation into the loop
 - [x] Multi-tenant auth (OAuth Google + GitHub, API keys), invites, ownership transfer, audit log
 - [x] Run metrics + worker health + reaper, transactional SMTP, full CI gate
-- [x] Security hardening — explicit-connection requirement for mongo/redis nodes + rabbitmq/redis_subscribe triggers (worker + API), HTTP SSRF dial-guard (refuses cloud metadata / RFC1918 / loopback / link-local; DNS-rebind safe; per-node `allowed_hosts` opt-in), `as_tool` canvas isolation
+- [x] Security hardening — explicit-connection requirement for mongo/redis nodes + rabbitmq/redis_subscribe triggers (worker + API), HTTP SSRF dial-guard (refuses cloud metadata / RFC1918 / loopback / link-local; DNS-rebind safe; per-node `allowed_hosts` opt-in), `as_tool` canvas isolation, per-agent **tool authorization policy** (`allowed_tools` allow-list applied to built-ins + skills + as_tool nodes; denied tools never reach their handler)
 
 ### Up next (short-term picks)
 - Sub-workflow as a tool + recursion guard (biggest composability lever)
-- Tool authorization policy (per-workflow ACL)
 - Per-iter agent checkpoint (worker-death mid-ReAct = resume mid-iter)
 - Canvas Continue + breakpoints control channel (debug UX restoration)
 - First wave of standard connector nodes (Slack, S3, Postgres, etc.)

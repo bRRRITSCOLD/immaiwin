@@ -74,6 +74,48 @@ func (c *ToolCatalog) Add(def llm.ToolDef, handler ToolHandler) error {
 // passing to llm.ChatRequest.Tools.
 func (c *ToolCatalog) Defs() []llm.ToolDef { return c.defs }
 
+// FilterAllowed restricts the catalog to tools whose names appear in
+// `allowed`. Used to apply a per-agent authorization policy
+// (`data.allowed_tools`) AFTER the catalog has been built from every
+// source. Empty `allowed` is a no-op — caller decides the open-default
+// semantics. Matching is exact (no globbing in v1); names that don't
+// exist in the catalog are silently dropped, mirroring the lenient
+// "ignore unknown" posture the rest of the agent loop already uses.
+//
+// Defense-in-depth: the LLM never sees filtered defs in its tool list,
+// AND a hallucinated call to a filtered name falls through to Execute's
+// unknown-tool error path so the model self-corrects without firing
+// any handler.
+func (c *ToolCatalog) FilterAllowed(allowed []string) {
+	if len(allowed) == 0 {
+		return
+	}
+	allowSet := make(map[string]struct{}, len(allowed))
+	for _, name := range allowed {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		allowSet[name] = struct{}{}
+	}
+	if len(allowSet) == 0 {
+		return
+	}
+	keptDefs := c.defs[:0]
+	for _, d := range c.defs {
+		if _, ok := allowSet[d.Name]; ok {
+			keptDefs = append(keptDefs, d)
+			continue
+		}
+		// Drop matching handler + validator entries so a hallucinated
+		// call to a denied tool falls through to Execute's unknown-tool
+		// error path instead of silently dispatching.
+		delete(c.handlers, d.Name)
+		delete(c.validators, d.Name)
+	}
+	c.defs = keptDefs
+}
+
 // Execute looks up a handler by name and invokes it. Returns the
 // observation text. Unknown tool returns an error with a clear message
 // the LLM can correct from. When a compiled InputSchema exists for the
