@@ -2476,7 +2476,13 @@ func stringSliceData(data map[string]any, key string) []string {
 		if x == "" {
 			return nil
 		}
-		parts := strings.Split(x, ",")
+		// Accept both comma- and newline-separated forms. The UI's
+		// `allowed_tools` textarea persists a raw newline-delimited
+		// string so authors can press Enter mid-edit without a
+		// split-filter-rejoin loop eating the newline; legacy callers
+		// that pass `"a,b,c"` still work unchanged.
+		splitter := func(r rune) bool { return r == ',' || r == '\n' }
+		parts := strings.FieldsFunc(x, splitter)
 		out := make([]string, 0, len(parts))
 		for _, p := range parts {
 			if p = strings.TrimSpace(p); p != "" {
