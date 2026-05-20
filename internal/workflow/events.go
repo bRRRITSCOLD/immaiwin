@@ -35,6 +35,7 @@ const (
 	EventNodeApprovalPending EventType = "node_approval_pending" // require_node_approval gate awaiting user decision (OOB / non-live path)
 	EventAgentFinal          EventType = "agent_final"
 	EventRunDone             EventType = "run_done"
+	EventWorkerHeartbeat     EventType = "worker_heartbeat" // worker still alive on this run's lease; UI uses it to keep streamStale at bay during legit quiet pauses (breakpoints, slow LLM)
 )
 
 // RunEvent is the wire shape pushed onto the event channel. Same struct

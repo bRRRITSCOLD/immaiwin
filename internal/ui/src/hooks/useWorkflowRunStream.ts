@@ -20,6 +20,7 @@ export interface RunEvent {
     | 'agent_tool_result'
     | 'agent_final'
     | 'run_done'
+    | 'worker_heartbeat'
     | 'cost_exceeded'
     | 'error'
   at: string
@@ -148,10 +149,13 @@ export interface WorkflowRunStream {
 }
 
 // STREAM_STALE_AFTER_MS — quiet period before the canvas shows
-// "worker may have died" banner. Tuned > the worker's lease TTL
-// (30s) + heartbeat (10s) so legitimate-but-quiet runs don't
-// flicker the warning.
-const STREAM_STALE_AFTER_MS = 45_000
+// "worker may have died" banner. With worker_heartbeat events
+// emitted every 10s by the executor worker, the legit "alive
+// worker, paused at breakpoint / mid-LLM" case keeps refreshing
+// lastEventAt every 10s, so a tight threshold doesn't false-
+// positive on slow LLM jitter. 15s = within one missed
+// heartbeat → real worker death surfaces fast.
+const STREAM_STALE_AFTER_MS = 15_000
 
 /**
  * useWorkflowRunStream wraps the `/api/v1/workflows/:id/run/stream` WS
@@ -196,11 +200,12 @@ export function useWorkflowRunStream(): WorkflowRunStream {
   const wsRef = useRef<WebSocket | null>(null)
 
   // Periodic now-tick drives the streamStale flag without each
-  // component computing its own setInterval. 5s cadence is fine —
-  // the threshold is 45s so 5s precision doesn't matter UX-wise.
+  // component computing its own setInterval. 3s cadence at a 15s
+  // threshold keeps detection latency to within 3s of crossing
+  // the threshold.
   useEffect(() => {
     if (status !== 'running') return
-    const t = window.setInterval(() => setNow(Date.now()), 5000)
+    const t = window.setInterval(() => setNow(Date.now()), 3000)
     return () => window.clearInterval(t)
   }, [status])
 
@@ -211,8 +216,16 @@ export function useWorkflowRunStream(): WorkflowRunStream {
     } catch {
       return
     }
-    setEvents((prev) => [...prev, ev])
+    // Worker heartbeats are purely "I'm still alive" signals — they
+    // refresh lastEventAt (so streamStale doesn't fire during a
+    // legit pause) but never append to the events log or touch the
+    // per-node state. Skipping the setEvents avoids unbounded growth
+    // on a long pause.
     setLastEventAt(Date.now())
+    if (ev.type === 'worker_heartbeat') {
+      return
+    }
+    setEvents((prev) => [...prev, ev])
 
     setNodes((prev) => {
       const next = { ...prev }
