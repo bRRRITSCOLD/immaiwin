@@ -207,11 +207,12 @@ func (s *WorkflowRunLeaseIntegrationSuite) TestExtendLease_FromForeignWorker_Ret
 	s.ErrorIs(err, workflow.ErrLeaseNotHeld)
 }
 
-// TestExpiredLease_AutoReclaimable_NewWorkerWins verifies the
-// restart-recovery path: a lease whose owner died (no heartbeat) goes
-// stale + a new worker can claim. This is what makes the platform
-// restart-safe.
-func (s *WorkflowRunLeaseIntegrationSuite) TestExpiredLease_AutoReclaimable_NewWorkerWins() {
+// TestExpiredLease_WithCheckpoint_AutoReclaimable_NewWorkerWins
+// verifies the restart-recovery path for DURABLE runs: a lease
+// whose owner died (no heartbeat) goes stale + a new worker can
+// claim, provided the run carries a checkpoint to resume from.
+// This is what makes the platform restart-safe.
+func (s *WorkflowRunLeaseIntegrationSuite) TestExpiredLease_WithCheckpoint_AutoReclaimable_NewWorkerWins() {
 	now := time.Now().UTC()
 	s.seedRun("run-stale", "wf-1", now)
 
@@ -220,6 +221,15 @@ func (s *WorkflowRunLeaseIntegrationSuite) TestExpiredLease_AutoReclaimable_NewW
 		[]workflow.RunStatus{workflow.RunStatusQueued, workflow.RunStatusRunning})
 	s.Require().NoError(err)
 	s.Require().True(ok)
+
+	// Simulate worker-a committing a checkpoint before dying. Without
+	// this the run isn't reclaimable under the new ClaimLease
+	// contract — see TestExpiredLease_WithoutCheckpoint_Orphaned for
+	// the no-checkpoint counterpart.
+	rec, err := s.repo.Get(context.Background(), "run-stale")
+	s.Require().NoError(err)
+	rec.ExecutionState = &workflow.ExecutionState{Visited: []string{"trigger-1"}}
+	s.Require().NoError(s.repo.Update(context.Background(), rec))
 
 	// Wait for the lease to lapse.
 	time.Sleep(200 * time.Millisecond)
@@ -236,6 +246,33 @@ func (s *WorkflowRunLeaseIntegrationSuite) TestExpiredLease_AutoReclaimable_NewW
 	// lease was re-claimed.
 	err = s.repo.ExtendLease(context.Background(), "run-stale", "worker-a", 30*time.Second)
 	s.ErrorIs(err, workflow.ErrLeaseNotHeld, "stale-lease re-claim must invalidate the original holder")
+}
+
+// TestExpiredLease_WithoutCheckpoint_Orphaned verifies the
+// pre-exec-breakpoint / mid-init-crash case: a worker grabbed
+// the lease, never wrote a checkpoint, then died. ClaimLease
+// MUST NOT auto-reclaim — restarting from trigger is silent re-
+// execution AND blocks fresh queued runs under concurrency=1.
+// The orphan-sweep loop in the executor worker terminates such
+// runs explicitly so the operator sees a clear error state.
+func (s *WorkflowRunLeaseIntegrationSuite) TestExpiredLease_WithoutCheckpoint_Orphaned() {
+	now := time.Now().UTC()
+	s.seedRun("run-orphan", "wf-1", now)
+
+	_, ok, err := s.repo.ClaimLease(context.Background(), "worker-a", 100*time.Millisecond,
+		[]workflow.RunStatus{workflow.RunStatusQueued, workflow.RunStatusRunning})
+	s.Require().NoError(err)
+	s.Require().True(ok)
+
+	// Don't write a checkpoint. Simulate worker-a dying immediately.
+	time.Sleep(200 * time.Millisecond)
+
+	// Worker-b's claim must MISS — the run is an orphan, not
+	// resumable. ClaimLease returns ok=false.
+	_, ok, err = s.repo.ClaimLease(context.Background(), "worker-b", 30*time.Second,
+		[]workflow.RunStatus{workflow.RunStatusQueued, workflow.RunStatusRunning})
+	s.Require().NoError(err)
+	s.False(ok, "orphan-no-checkpoint run must NOT be auto-reclaimable; sweep terminates it instead")
 }
 
 // TestReleaseLease_FromHolder_ClearsLease verifies the explicit

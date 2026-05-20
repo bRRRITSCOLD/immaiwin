@@ -506,12 +506,24 @@ func (r *WorkflowRunRepository) ClaimLease(ctx context.Context, workerID string,
 	for i, s := range statuses {
 		statusStrs[i] = string(s)
 	}
+	// Claimable iff:
+	//   1. Never been leased (fresh queued runs + legacy in-process
+	//      tier). lease_owner empty/missing.
+	//   2. Lease lapsed AND there's a checkpoint to resume from.
+	//      Without `execution_state` we'd be restarting BFS from
+	//      trigger — silent re-execution + (worse) blocks new
+	//      queued runs from being claimed under concurrency=1 if
+	//      the orphan keeps pausing. The orphan-sweep loop
+	//      (SweepWorkerOrphansCollect) terminates such runs
+	//      explicitly so the operator sees a clear error state.
 	filter := bson.M{
 		"status": bson.M{"$in": statusStrs},
 		"$or": []bson.M{
 			{"lease_owner": bson.M{"$in": []any{nil, ""}}},
-			{"lease_expires_at": bson.M{"$lte": now}},
-			{"lease_expires_at": bson.M{"$exists": false}},
+			{
+				"lease_expires_at": bson.M{"$lte": now},
+				"execution_state":  bson.M{"$ne": nil},
+			},
 		},
 	}
 	expiresAt := now.Add(leaseDur)
