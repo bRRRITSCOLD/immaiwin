@@ -166,6 +166,7 @@ export function ConnectionDialog({ open, onOpenChange, connection, onSaved }: Pr
                       <SelectItem value="openai">OpenAI</SelectItem>
                       <SelectItem value="ollama">Ollama</SelectItem>
                       <SelectItem value="slack">Slack</SelectItem>
+                      <SelectItem value="websocket">WebSocket</SelectItem>
                     </SelectContent>
                   </Select>
                 </Field>
@@ -192,6 +193,7 @@ export function ConnectionDialog({ open, onOpenChange, connection, onSaved }: Pr
                     if (type === 'anthropic') return <AnthropicFields config={config} setField={setField} />
                     if (type === 'openai') return <OpenAIFields config={config} setField={setField} />
                     if (type === 'slack') return <SlackFields config={config} setField={setField} />
+                    if (type === 'websocket') return <WebSocketFields config={config} setField={setField} />
                     return <OllamaFields config={config} setField={setField} />
 
                   }}
@@ -515,6 +517,59 @@ function RedisFields({ config, setField }: { config: Record<string, string>; set
           options={[{ value: '2', label: '2' }]}
         />
         <ConfigCheckbox label="Context Timeout Enabled" configKey="context_timeout_enabled" config={config} setField={setField} />
+      </Section>
+    </FieldGroup>
+  )
+}
+
+// ── WebSocket fields ─────────────────────────────────────────────────────────
+//
+// Provider-agnostic config for the generic WebSocket trigger. Auth
+// is intentionally static — bearer / header / query token supplied by
+// the operator. OAuth per-provider stays out of scope: 80% of WS
+// APIs accept a long-lived token in a header or query string.
+
+function WebSocketFields({ config, setField }: { config: Record<string, string>; setField: (k: string, v: string) => void }) {
+  return (
+    <FieldGroup>
+      <ConfigInput
+        label="URL"
+        configKey="url"
+        config={config}
+        setField={setField}
+        placeholder="wss://stream.example.com/v1/feed"
+      />
+
+      <Section title="Authentication (optional)">
+        <ConfigInput
+          label="Auth header"
+          configKey="auth_header"
+          config={config}
+          setField={setField}
+          placeholder="Authorization: Bearer …"
+          type="password"
+        />
+        <ConfigInput
+          label="Auth query"
+          configKey="auth_query"
+          config={config}
+          setField={setField}
+          placeholder="token=…&apiKey=…"
+        />
+      </Section>
+
+      <Section title="Additional headers (optional)">
+        <ConfigInput
+          label="Headers"
+          configKey="headers"
+          config={config}
+          setField={setField}
+          placeholder={'One per line\nX-Tenant: acme\nX-Trace: …'}
+        />
+      </Section>
+
+      <Section title="TLS">
+        <ConfigCheckbox label="Insecure (skip cert verify) — dev only" configKey="tls_insecure_skip_verify" config={config} setField={setField} />
       </Section>
     </FieldGroup>
   )

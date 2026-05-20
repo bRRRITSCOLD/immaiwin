@@ -56,7 +56,7 @@ export interface Workflow {
   disabled_reason?: string
 }
 
-export type ConnectionType = 'mongodb' | 'redis' | 'rabbitmq' | 'anthropic' | 'openai' | 'ollama' | 'slack'
+export type ConnectionType = 'mongodb' | 'redis' | 'rabbitmq' | 'anthropic' | 'openai' | 'ollama' | 'slack' | 'websocket'
 
 export interface Connection {
   id: string

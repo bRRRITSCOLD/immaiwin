@@ -87,6 +87,7 @@ func UpsertConnection(store ConnectionStore, invalidator ConnectionInvalidator) 
 			workflow.ConnectionTypeOpenAI:    true,
 			workflow.ConnectionTypeOllama:    true,
 			workflow.ConnectionTypeSlack:     true,
+			workflow.ConnectionTypeWebSocket: true,
 		}
 		if !validTypes[conn.Type] {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported connection type"})
@@ -129,6 +130,11 @@ func UpsertConnection(store ConnectionStore, invalidator ConnectionInvalidator) 
 		case workflow.ConnectionTypeSlack:
 			if conn.Config["bot_token"] == "" {
 				c.JSON(http.StatusBadRequest, gin.H{"error": "config.bot_token is required for slack (xoxb-* token)"})
+				return
+			}
+		case workflow.ConnectionTypeWebSocket:
+			if conn.Config["url"] == "" {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "config.url is required for websocket (ws:// or wss://)"})
 				return
 			}
 		}
@@ -236,6 +242,11 @@ func TestConnection(db *mongo.Database) gin.HandlerFunc {
 			}
 		case workflow.ConnectionTypeSlack:
 			if err := testSlack(ctx, req.Config); err != nil {
+				c.JSON(http.StatusOK, gin.H{"ok": false, "error": err.Error()})
+				return
+			}
+		case workflow.ConnectionTypeWebSocket:
+			if err := testWebSocket(ctx, req.Config); err != nil {
 				c.JSON(http.StatusOK, gin.H{"ok": false, "error": err.Error()})
 				return
 			}
@@ -371,6 +382,25 @@ func testSlack(ctx context.Context, cfg map[string]string) error {
 		}
 		return fmt.Errorf("slack auth.test: ok=false")
 	}
+	return nil
+}
+
+// testWebSocket dials the configured ws:// or wss:// URL with the
+// operator-supplied auth header / query / extra headers and closes
+// immediately. Confirms TLS + handshake + auth without subscribing.
+func testWebSocket(ctx context.Context, cfg map[string]string) error {
+	dialer, target, hdr, err := workflow.BuildWSDialer(cfg)
+	if err != nil {
+		return err
+	}
+	conn, resp, err := dialer.DialContext(ctx, target, hdr)
+	if err != nil {
+		if resp != nil {
+			return fmt.Errorf("dial %s: %w (status %d)", target, err, resp.StatusCode)
+		}
+		return fmt.Errorf("dial %s: %w", target, err)
+	}
+	_ = conn.Close()
 	return nil
 }
 

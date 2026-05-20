@@ -249,13 +249,14 @@ This is what makes AI agent integration safe — an agent can write and execute 
 
 ### Workflow Triggers
 
-Five ways to kick off workflows:
+Six ways to kick off workflows:
 
 - **Manual** — run on-demand from the UI
 - **Webhook (HTTP)** — POST to `/api/v1/webhooks/<slug>` with optional HMAC signature verification
 - **Cron** — schedule workflows on any interval (`workflow-cron` worker)
 - **RabbitMQ** — trigger from message queue events (`workflow-rabbitmq` worker)
 - **Redis Subscribe** — trigger from Redis pub/sub channels and patterns (`workflow-redis-subscribe` worker)
+- **WebSocket** — provider-agnostic dialer with operator-supplied bearer/header/query auth, exponential reconnect, ping/pong heartbeat, and a `event_path` dot-extract on each frame (`workflow-websocket-subscribe` worker)
 
 ### Run History + Approvals
 
@@ -402,6 +403,7 @@ make list-workers                              # See all available workers
 make worker NAME=workflow-cron                 # Cron-triggered workflows
 make worker NAME=workflow-rabbitmq             # RabbitMQ-triggered workflows
 make worker NAME=workflow-redis-subscribe      # Redis pub/sub-triggered workflows
+make worker NAME=workflow-websocket-subscribe  # WebSocket-triggered workflows
 make worker NAME=reaper                        # Sweeps stuck workflow runs (running/paused/pending_approval)
 ```
 
@@ -505,7 +507,7 @@ What each touches:
 
 ### Connections (data sources, LLM providers)
 
-Supported types: `mongodb`, `redis`, `rabbitmq`, `anthropic`, `openai`, `ollama`.
+Supported types: `mongodb`, `redis`, `rabbitmq`, `anthropic`, `openai`, `ollama`, `slack`, `websocket`.
 
 > **Security:** `mongo_request` / `redis_request` nodes and
 > `rabbitmq` / `redis_subscribe` triggers **require** an explicit
@@ -595,7 +597,7 @@ Supported types: `mongodb`, `redis`, `rabbitmq`, `anthropic`, `openai`, `ollama`
 - Tool authorization policy (per-workflow ACL)
 - Per-iter agent checkpoint (worker-death mid-ReAct = resume mid-iter)
 - Canvas Continue + breakpoints control channel (debug UX restoration)
-- Generic WebSocket trigger; first wave of standard connector nodes (Slack, S3, Postgres, etc.)
+- First wave of standard connector nodes (Slack, S3, Postgres, etc.)
 - Slack OOB approvals — full ladder (bot token → Block Kit → per-tenant OAuth → Slack Connect)
 - Sandbox + infra: container warm-start pool, image-layer caching for `packages`, multi-node Kubernetes validation, per-tenant sandbox isolation
 

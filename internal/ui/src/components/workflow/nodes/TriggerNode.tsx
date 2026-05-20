@@ -21,6 +21,7 @@ const triggerTypes = [
   { value: 'webhook', label: 'Webhook (HTTP)' },
   { value: 'rabbitmq', label: 'RabbitMQ' },
   { value: 'redis_subscribe', label: 'Redis Subscribe' },
+  { value: 'websocket', label: 'WebSocket' },
 ] as const
 
 type TriggerType = (typeof triggerTypes)[number]['value']
@@ -88,6 +89,7 @@ export function TriggerNode({ id, data, selected }: NodeProps) {
   const isWebhook = triggerType === 'webhook'
   const isRabbitMQ = triggerType === 'rabbitmq'
   const isRedisSubscribe = triggerType === 'redis_subscribe'
+  const isWebSocket = triggerType === 'websocket'
 
   // Sync individual fields from legacy `cron` string on first render
   const hasFields = cronFields.some((f) => data[f.key] != null)
@@ -118,6 +120,11 @@ export function TriggerNode({ id, data, selected }: NodeProps) {
           {isRedisSubscribe && (
             <div className="ml-auto">
               <ConnectionPicker nodeId={id} connectionType="redis" data={data as Record<string, unknown>} activeColor="text-blue-500" requireExplicit />
+            </div>
+          )}
+          {isWebSocket && (
+            <div className="ml-auto">
+              <ConnectionPicker nodeId={id} connectionType="websocket" data={data as Record<string, unknown>} activeColor="text-blue-500" requireExplicit />
             </div>
           )}
         </div>
@@ -200,6 +207,55 @@ export function TriggerNode({ id, data, selected }: NodeProps) {
                 <label htmlFor={`${id}-auto-ack`} className="text-xs text-muted-foreground cursor-pointer">
                   Auto-acknowledge
                 </label>
+              </div>
+            </div>
+          )}
+          {isWebSocket && (
+            <div className="space-y-2">
+              <div className="space-y-0.5">
+                <label className="text-xs text-muted-foreground">Subscribe payload (optional)</label>
+                <Textarea
+                  className="nodrag font-mono text-xs min-h-[60px]"
+                  placeholder={'JSON sent once on connect\ne.g. {"action":"subscribe","channel":"trades"}'}
+                  value={(data.subscribe_payload as string) ?? ''}
+                  onChange={(e) => updateNodeData(id, { subscribe_payload: e.target.value })}
+                />
+                <p className="text-[10px] text-muted-foreground">
+                  Provider's subscribe handshake. Skipped when empty.
+                </p>
+              </div>
+              <div className="space-y-0.5">
+                <label className="text-xs text-muted-foreground">Event path (optional)</label>
+                <input
+                  className="nodrag w-full bg-background border border-border rounded px-2 py-1 text-xs font-mono"
+                  placeholder="e.g. data.payload"
+                  value={(data.event_path as string) ?? ''}
+                  onChange={(e) => updateNodeData(id, { event_path: e.target.value })}
+                />
+                <p className="text-[10px] text-muted-foreground">
+                  Dot-path into a JSON frame. Exposed to the workflow as{' '}
+                  <code className="text-[10px]">{'{{input.extracted}}'}</code>.
+                  Empty = whole frame on{' '}
+                  <code className="text-[10px]">{'{{input.json}}'}</code> /{' '}
+                  <code className="text-[10px]">{'{{input.raw}}'}</code>.
+                </p>
+              </div>
+              <div className="space-y-0.5">
+                <label className="text-xs text-muted-foreground">Heartbeat (seconds)</label>
+                <input
+                  type="number"
+                  min={0}
+                  className="nodrag w-full bg-background border border-border rounded px-2 py-1 text-xs font-mono"
+                  placeholder="30"
+                  value={(data.heartbeat_seconds as number | undefined) ?? ''}
+                  onChange={(e) => {
+                    const n = parseInt(e.target.value, 10)
+                    updateNodeData(id, { heartbeat_seconds: Number.isFinite(n) ? n : undefined })
+                  }}
+                />
+                <p className="text-[10px] text-muted-foreground">
+                  Ping interval. 0 disables. Idle servers are detected within ~2× this.
+                </p>
               </div>
             </div>
           )}
