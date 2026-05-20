@@ -577,35 +577,34 @@ Supported types: `mongodb`, `redis`, `rabbitmq`, `anthropic`, `openai`, `ollama`
 
 ## Roadmap
 
-### Done
-- [x] Visual workflow canvas (React Flow)
-- [x] 8 node types (trigger, http_request, sandbox_script, ai_agent, for_each, mongo_request, redis_request, notify)
-- [x] Multi-language sandbox execution (JS, Python, Go, Rust, PHP)
-- [x] Interactive debugging (DAP for Python, CDP for JavaScript)
-- [x] HTTP Request node with full Go `http.Client` parity (method, headers, query, body, auth, redirects, TLS, JSON parse)
-- [x] Webhook trigger (HMAC SHA-256 signature verification)
-- [x] Email + password auth, OAuth (Google + GitHub), API keys, password reset
-- [x] Multi-tenancy w/ owner/admin/member roles, invites, ownership transfer
-- [x] Audit log (append-only ledger of privileged actions)
-- [x] Run metrics dashboard (`/admin`) + worker health heartbeats
-- [x] Reaper worker (sweeps stuck running/paused/pending_approval runs)
-- [x] Transactional email (SMTP via Mailpit dev sink or any standard relay)
-- [x] CI pipeline (vet/build/test -race/lint/typecheck) on push + PR; branch protection on `main`
-- [x] gVisor integration (syscall-level isolation via k3s `RuntimeClass=runsc`)
-- [x] Kubernetes-API sandbox backend (single-node k3s today; portable to upstream Kubernetes — see `examples/k3s/MIGRATION.md`)
-- [x] AI agent node (reason-act-observe loop, Anthropic / OpenAI / Ollama, edge-bound tool nodes, built-in `code_execute`)
-- [x] LLM connection types (`anthropic`, `openai`, `ollama`)
-- [x] Workflow run persistence (`workflow_runs` collection) + agent trace logging
-- [x] Custom sandbox images (`data.custom_image` per node)
-- [x] Per-node package list (`data.packages`) for installable runtimes
-- [x] Streaming sandbox runs (WebSocket `/api/v1/sandbox/run`, stdout/stderr/output frames)
+**Full living roadmap → [`ROADMAP.md`](./ROADMAP.md).** Highlights:
 
-### In progress / next
-- [ ] Container pool warm starts (sub-100ms cold start)
+### Shipped (recent)
+- [x] Multi-language sandbox (JS / Python / Go / Rust / PHP), Docker + k3s + gVisor backends, DAP/CDP interactive debug
+- [x] Visual canvas with 8 node types (`trigger`, `http_request`, `sandbox_script`, `ai_agent`, `for_each`, `mongo_request`, `redis_request`, `notify`)
+- [x] AI agent (Anthropic / OpenAI / Ollama) — ReAct loop, edge-bound tool nodes, built-in `code_execute`, chat memory, JSON-Schema arg validation, skills system
+- [x] Durable execution — lease workers + checkpoint resume + boot sweep (every trigger type runs on the lease plane)
+- [x] Universal `on_error: stop|continue` (dual-edge) on every fallible node + the for_each, with approval-rejection security invariant
+- [x] `for_each` with `items` selector, node-level loop-abort, loop-iteration trace badges, plain-body `iter K/M` sync, cancel propagation into the loop
+- [x] Multi-tenant auth (OAuth Google + GitHub, API keys), invites, ownership transfer, audit log
+- [x] Run metrics + worker health + reaper, transactional SMTP, full CI gate
+- [x] Security hardening — explicit-connection requirement for mongo/redis nodes + rabbitmq/redis_subscribe triggers (worker + API), HTTP SSRF dial-guard (refuses cloud metadata / RFC1918 / loopback / link-local; DNS-rebind safe; per-node `allowed_hosts` opt-in), `as_tool` canvas isolation
+
+### In progress
+- [ ] Container pool warm starts (sub-100ms cold)
 - [ ] Image-layer caching for `packages` to skip per-run installs
 - [ ] Multi-node Kubernetes validation (HPA, pod priority, ResourceQuotas)
-- [ ] Skills + plugins layer (`.private/ai-automation/SKILLS-AND-PLUGINS-PLAN.md`)
-- [ ] Per-tenant isolation (namespaces, RBAC, secret scoping)
+- [ ] Per-tenant isolation in the sandbox (namespaces, RBAC, secret scoping)
+
+### Up next (short-term picks)
+- Sub-workflow as a tool + recursion guard (biggest composability lever)
+- Tool authorization policy (per-workflow ACL)
+- Per-iter agent checkpoint (worker-death mid-ReAct = resume mid-iter)
+- Canvas Continue + breakpoints control channel (debug UX restoration)
+- Generic WebSocket trigger; first wave of standard connector nodes (Slack, S3, Postgres, etc.)
+- Slack OOB approvals — full ladder (bot token → Block Kit → per-tenant OAuth → Slack Connect)
+
+See [`ROADMAP.md`](./ROADMAP.md) for the rest — aspirational items (chat-platform triggers, agent eval/replay, tool synthesis), UX polish, observability, and the doc relationship table.
 
 ---
 
