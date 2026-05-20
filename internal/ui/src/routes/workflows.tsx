@@ -297,6 +297,7 @@ function WorkflowsPage() {
               lastRun={displayedRun ?? undefined}
               runRunning={stream.status === 'connecting' || stream.status === 'running'}
               hasLivePause={Object.values(stream.nodes).some((n) => n.status === 'paused')}
+              streamStale={stream.streamStale}
               agentRuns={agentRuns}
               pausedRunID={stream.pausedRunID}
               pendingApprovalRunID={stream.pendingApprovalRunID}
