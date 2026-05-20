@@ -33,6 +33,7 @@ baked into the engine instead of bolted on after.
 - Approval gates — per-node + per-tool, durable across worker restarts, OOB via Slack / email magic link
 - Durable execution: lease workers, checkpoint-per-step resume, boot-time stuck-run sweep, no-orphans on api restart
 - **Workflow enable/disable toggle** — `PATCH /api/v1/workflows/:id/enabled` flips a first-class state; disabled workflows drop from every trigger worker's sync-tick active set (cron / RabbitMQ / Redis-subscribe) while staying fully editable + manually runnable. Backfilled on boot so existing rows default to enabled.
+- **Workflow rename** — `PATCH /api/v1/workflows/:id/name` rewrites the display name without round-tripping the whole graph. Inline double-click / pencil-button edit in the sidebar; audit-logged.
 
 ### AI agent
 - ReAct loop with Anthropic, OpenAI, Ollama providers behind a single `Provider` interface
