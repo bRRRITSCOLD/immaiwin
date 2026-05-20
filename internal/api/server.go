@@ -261,7 +261,11 @@ func NewServer(
 	r.POST("/api/v1/webhooks/:slug", handler.HandleWebhook(wfStore, wfRunStore, rc))
 
 	// Workflow templates — bundled at compile time, served read-only.
+	// The fork endpoint bypasses UpsertWorkflow's connection validator;
+	// templates ship with empty connection_id placeholders by design,
+	// and the next canvas save runs through the normal guard.
 	r.GET("/api/v1/workflow_templates", handler.ListWorkflowTemplates())
+	r.POST("/api/v1/workflow_templates/:slug/fork", requireAuth, handler.ForkWorkflowTemplate(handler.ForkWorkflowTemplateDeps{Store: wfStore, Audit: audit}))
 
 	// Connections — tenant-scoped.
 	r.GET("/api/v1/connections", requireAuth, handler.ListConnections(connStore))

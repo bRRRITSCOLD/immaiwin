@@ -1,9 +1,9 @@
 {
-  "name": "AI Weather Agent — Redis-subscribe trigger",
-  "description": "Same agent as the manual AI Weather template, but kicked off by a Redis pub/sub message on `burrow.weather.requests`. The message body's `city` field becomes the agent's user_input. Demonstrates: redis_subscribe trigger, agent + as_tool nodes, skill-based formatting, redis_request publish to a separate channel.\n\nSmoke fire-off:  `bash scripts/publish-redis.sh \"Boise\" burrow.weather.requests`",
+  "name": "AI Weather Agent — WebSocket trigger",
+  "description": "Same agent as the manual AI Weather template, but kicked off by a WebSocket frame. The trigger dials the configured `websocket` Connection, and every frame whose JSON body is shaped `{\"city\":\"…\"}` dispatches a run. The frame's `city` field becomes the agent's user_input. Demonstrates: websocket trigger, agent + as_tool nodes, skill-based formatting, redis_request publish to a separate channel.\n\nSmoke fire-off:  `bash scripts/websocket-push.sh \"Boise\"` (spins up a local WS server on `ws://localhost:9991/feed` that pushes one frame per second — point the workflow's `websocket` Connection at that URL).",
   "category": "AI",
   "workflow": {
-    "name": "AI Weather Agent — Redis-subscribe trigger",
+    "name": "AI Weather Agent — WebSocket trigger",
     "params": {
       "redis_channel": "weather.alerts",
       "weather_format": "%l:+%C,+%t,+humidity+%h,+wind+%w",
@@ -15,11 +15,12 @@
         "type": "trigger",
         "position": { "x": -200, "y": 0 },
         "data": {
-          "name": "redis_in",
-          "trigger_type": "redis_subscribe",
+          "name": "ws_in",
+          "trigger_type": "websocket",
           "connection_id": "",
-          "channels": "burrow.weather.requests",
-          "patterns": "",
+          "subscribe_payload": "",
+          "event_path": "",
+          "heartbeat_seconds": 30,
           "handles": [
             { "id": "start-out", "side": "right", "offset": 50, "paletteType": "start" }
           ]
@@ -38,7 +39,7 @@
           "temperature": 0.2,
           "timeout_seconds": 120,
           "system_prompt": "You are a weather-reporting agent. Procedure:\n1. Call get_weather(city) to fetch current text weather.\n2. Call weather_formatter__format_weather({city, raw}) where raw is the get_weather output.\n3. Call publish_weather({city, summary, temp_f, formatted_by:'weather-formatter'}) where summary is the message field from step 2.\n4. Reply with a short confirmation.",
-          "user_input": "Fetch, format, and publish the current weather for {{input.payload.city}}.",
+          "user_input": "Fetch, format, and publish the current weather for {{input.json.city}}.",
           "skills": [{ "slug_id": "weather-formatter", "range": "^0.1.0" }],
           "skill_config": { "weather-formatter": { "default_style": "{{params.weather_style}}", "temp_unit": "F" } },
           "handles": [

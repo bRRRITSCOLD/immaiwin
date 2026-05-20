@@ -55,6 +55,7 @@ const (
 	AuditWorkflowEnabled      AuditAction = "workflow_enabled"
 	AuditWorkflowDisabled     AuditAction = "workflow_disabled"
 	AuditWorkflowRenamed      AuditAction = "workflow_renamed"
+	AuditWorkflowTemplateForked AuditAction = "workflow_template_forked"
 	AuditApprovalRedeemed     AuditAction = "approval_redeemed"
 )
 

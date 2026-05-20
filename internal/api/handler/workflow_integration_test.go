@@ -743,3 +743,85 @@ func (s *WorkflowCRUDIntegrationSuite) TestWorkflow_Rename_CrossTenant_Returns40
 	code, _ := s.patchName(bob, wfID, "bob-renaming-alices-wf")
 	s.Equal(http.StatusNotFound, code, "foreign-tenant rename must read as 404")
 }
+
+func (s *WorkflowCRUDIntegrationSuite) forkTemplate(client *http.Client, slug string, payload map[string]any) (int, map[string]any) {
+	body, _ := json.Marshal(payload)
+	req, _ := http.NewRequest(http.MethodPost, s.httpSrv.URL+"/api/v1/workflow_templates/"+slug+"/fork", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	s.Require().NoError(err)
+	defer resp.Body.Close() //nolint:errcheck
+	raw, _ := io.ReadAll(resp.Body)
+	var out map[string]any
+	_ = json.Unmarshal(raw, &out)
+	return resp.StatusCode, out
+}
+
+// TestWorkflowTemplate_Fork_BundledTemplate_BypassesConnectionValidator
+// verifies the regression that templates ship with empty
+// connection_id placeholders by design — the fork endpoint MUST
+// land the workflow even though `UpsertWorkflow` would refuse the
+// same body. The next canvas save still runs through the normal
+// validator and surfaces an actionable toast at the right moment.
+func (s *WorkflowCRUDIntegrationSuite) TestWorkflowTemplate_Fork_BundledTemplate_BypassesConnectionValidator() {
+	suffix := time.Now().UnixNano()
+	alice, _ := s.authedClient(fmt.Sprintf("alice-tpl-fork-%d@example.com", suffix))
+
+	// Sanity: the redis-subscribe template ships with an empty
+	// connection_id (post PR #78 hardening). UpsertWorkflow refuses
+	// that body — we're testing that the fork path doesn't.
+	code, body := s.forkTemplate(alice, "ai-weather-redis-subscribe", map[string]any{})
+	s.Require().Equal(http.StatusCreated, code, "fork must accept template with empty connection placeholders. body=%v", body)
+	s.NotEmpty(body["id"], "fork must return a fresh ULID")
+	s.NotEmpty(body["name"])
+	s.Equal(true, body["enabled"], "fresh fork defaults to enabled")
+}
+
+// TestWorkflowTemplate_Fork_NextSaveStillRefusesEmptyConnection
+// verifies that the connection-validator escape hatch is scoped to
+// the fork endpoint ONLY. As soon as the user saves the forked
+// workflow via the normal PUT endpoint (no connection wired yet),
+// the validator fires — the user gets the actionable toast at the
+// right moment.
+func (s *WorkflowCRUDIntegrationSuite) TestWorkflowTemplate_Fork_NextSaveStillRefusesEmptyConnection() {
+	suffix := time.Now().UnixNano()
+	alice, _ := s.authedClient(fmt.Sprintf("alice-tpl-resave-%d@example.com", suffix))
+
+	code, body := s.forkTemplate(alice, "ai-weather-redis-subscribe", map[string]any{})
+	s.Require().Equal(http.StatusCreated, code)
+	wfID := body["id"].(string)
+
+	// Re-PUT the same workflow body via the normal endpoint — the
+	// connection validator must refuse it now (defense-in-depth
+	// against a direct API client bypassing the canvas guard).
+	resaveCode, resaveBody := s.putWorkflow(alice, wfID, map[string]any{
+		"name":   body["name"],
+		"params": body["params"],
+		"nodes":  body["nodes"],
+		"edges":  body["edges"],
+	})
+	s.Require().Equal(http.StatusBadRequest, resaveCode)
+	missing, _ := resaveBody["missing"].([]any)
+	s.NotEmpty(missing, "validator must surface the empty connection")
+}
+
+// TestWorkflowTemplate_Fork_UnknownSlug_Returns404 verifies the
+// fork endpoint refuses unknown slugs cleanly.
+func (s *WorkflowCRUDIntegrationSuite) TestWorkflowTemplate_Fork_UnknownSlug_Returns404() {
+	suffix := time.Now().UnixNano()
+	alice, _ := s.authedClient(fmt.Sprintf("alice-tpl-404-%d@example.com", suffix))
+	code, _ := s.forkTemplate(alice, "no-such-template", map[string]any{})
+	s.Equal(http.StatusNotFound, code)
+}
+
+// TestWorkflowTemplate_Fork_NoCookie_Returns401 verifies the fork
+// endpoint is auth-gated — anonymous clients can't probe template
+// content (template content is fine, but the fork creates state).
+func (s *WorkflowCRUDIntegrationSuite) TestWorkflowTemplate_Fork_NoCookie_Returns401() {
+	req, _ := http.NewRequest(http.MethodPost, s.httpSrv.URL+"/api/v1/workflow_templates/ai-weather-manual/fork", bytes.NewReader([]byte("{}")))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	s.Require().NoError(err)
+	defer resp.Body.Close() //nolint:errcheck
+	s.Equal(http.StatusUnauthorized, resp.StatusCode)
+}
