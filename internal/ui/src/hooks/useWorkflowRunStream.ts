@@ -606,24 +606,45 @@ export function useWorkflowRunStream(): WorkflowRunStream {
     return true
   }, [lastRunID])
 
-  const setBreakpoints = useCallback((_nodeIds: string[]) => {
-    // Phase 2 TODO: route through a Redis control channel so the
-    // worker can mutate the run's breakpoint set mid-flight. The old
-    // WS frame doesn't reach the worker any more (lease unification);
-    // this is a no-op until the control bridge lands. Surfacing as a
-    // false return so callers know nothing happened.
-    console.warn('setBreakpoints: control channel not yet wired (Phase 2)')
-    return false
-  }, [])
+  const setBreakpoints = useCallback((nodeIds: string[]) => {
+    // Routes through the Phase-2 control bridge: PUT publishes a
+    // RunControlMessage on burrow:run_control:<runID>; the worker's
+    // bridge goroutine mutates env.stopAtSet which the next BFS
+    // step honours. Best-effort — terminal runs return 400, an
+    // already-finished run won't have a worker listening.
+    if (!lastRunID) {
+      console.warn('setBreakpoints: no active run')
+      return false
+    }
+    api
+      .put(`/api/v1/workflow_runs/${lastRunID}/breakpoints`, { node_ids: nodeIds })
+      .catch((err) => {
+        console.warn('setBreakpoints failed:', err)
+      })
+    return true
+  }, [lastRunID])
 
   const continue_ = useCallback(() => {
-    // Phase 2 TODO: same story as setBreakpoints — needs a control
-    // channel so the worker's runEnv can release a breakpoint pause
-    // from outside its process. Until then, breakpoint pauses on
-    // canvas runs require restarting the run.
-    console.warn('continue: control channel not yet wired (Phase 2)')
-    return false
-  }, [])
+    // Routes through the Phase-2 control bridge — same pattern as
+    // setBreakpoints. Worker bridge wakes runEnv.continueCh which
+    // releases the pre-exec breakpoint pause.
+    if (!lastRunID) {
+      console.warn('continue: no active run')
+      return false
+    }
+    api
+      .post(`/api/v1/workflow_runs/${lastRunID}/continue`, {})
+      .then(() => {
+        // Optimistically clear local paused indicator so the UI
+        // flips to running immediately. Authoritative status flows
+        // back over the live event stream.
+        setPausedRunID((prev) => (prev === lastRunID ? null : prev))
+      })
+      .catch((err) => {
+        console.warn('continue failed:', err)
+      })
+    return true
+  }, [lastRunID])
 
   const reset = useCallback(() => {
     cancel()

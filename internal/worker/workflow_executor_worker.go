@@ -23,6 +23,7 @@ package worker
 import (
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -275,7 +276,26 @@ func claimAndRun(
 			RunID: rec.ID,
 		}
 	}
-	_, err = exec.RunFromCheckpoint(runCtx, wf, rec, workerID, emitter)
+
+	// Canvas Continue + set_breakpoints control bridge. Subscribe to
+	// `burrow:run_control:<runID>` and route inbound messages into
+	// in-process chans the executor's runEnv listens on. Without this
+	// the engine has continueCh/SetBreakpoints primitives but the
+	// API-side REST endpoints have no path to reach the worker that
+	// holds the run. Bridge survives the run-pass; chans close on
+	// runCtx cancel (heartbeat + outer cancel both feed runCtx).
+	bridgeCtx := runCtx
+	if exec.ApprovalBroker != nil {
+		controlCh := make(chan struct{}, 4)
+		bpCh := make(chan []string, 4)
+		startRunControlBridge(runCtx, exec.ApprovalBroker, rec.ID, controlCh, bpCh)
+		bridgeCtx = workflow.WithControlChannels(runCtx, &workflow.ControlChannels{
+			Continue:    controlCh,
+			Breakpoints: bpCh,
+		})
+	}
+
+	_, err = exec.RunFromCheckpoint(bridgeCtx, wf, rec, workerID, emitter)
 
 	runCancel() // stop the heartbeat once the run-pass returns
 	<-hbDone
@@ -323,4 +343,54 @@ func heartbeatLease(ctx context.Context, runRepo *mongodb.WorkflowRunRepository,
 			}
 		}
 	}
+}
+
+// startRunControlBridge subscribes to the per-run control channel on
+// Redis and routes decoded RunControlMessages into the worker-owned
+// in-process chans the executor's runEnv listens on. Goroutine exits
+// on ctx cancel (lease lost / run-pass returned) and unsubscribes so
+// the next claim of the same run gets a fresh bridge.
+//
+// Buffered chans (4 slots) keep a fast double-click from blocking
+// the subscription pump; the executor's continueCh drain loop in
+// waitAtBreakpoint handles legit "click Continue twice" UX.
+func startRunControlBridge(ctx context.Context, sub workflow.ApprovalSubscriber, runID string, continueCh chan struct{}, bpCh chan []string) {
+	pubsub := sub.Subscribe(ctx, workflow.RunControlChannel(runID))
+	go func() {
+		defer func() {
+			_ = pubsub.Close()
+		}()
+		ch := pubsub.Channel()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case msg, ok := <-ch:
+				if !ok {
+					return
+				}
+				var rcm workflow.RunControlMessage
+				if err := json.Unmarshal([]byte(msg.Payload), &rcm); err != nil {
+					slog.Warn("workflow-executor: bad run_control payload", "run_id", runID, "err", err)
+					continue
+				}
+				switch rcm.Type {
+				case "continue":
+					select {
+					case continueCh <- struct{}{}:
+					default:
+						// Buffer full — a click already pending; drop.
+					}
+				case "set_breakpoints":
+					select {
+					case bpCh <- rcm.NodeIDs:
+					case <-ctx.Done():
+						return
+					}
+				default:
+					slog.Debug("workflow-executor: unknown run_control type", "run_id", runID, "type", rcm.Type)
+				}
+			}
+		}
+	}()
 }

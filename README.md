@@ -595,7 +595,6 @@ Supported types: `mongodb`, `redis`, `rabbitmq`, `anthropic`, `openai`, `ollama`
 ### Up next (short-term picks)
 - Sub-workflow as a tool + recursion guard (biggest composability lever)
 - Per-iter agent checkpoint (worker-death mid-ReAct = resume mid-iter)
-- Canvas Continue + breakpoints control channel (debug UX restoration)
 - First wave of standard connector nodes (Slack, S3, Postgres, etc.)
 - Slack OOB approvals — full ladder (bot token → Block Kit → per-tenant OAuth → Slack Connect)
 - Sandbox + infra: container warm-start pool, image-layer caching for `packages`, multi-node Kubernetes validation, per-tenant sandbox isolation

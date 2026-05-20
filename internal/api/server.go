@@ -254,6 +254,10 @@ func NewServer(
 		JWTSecret: []byte(authCfg.JWTSecret),
 	}))
 	r.POST("/api/v1/workflow_runs/:id/cancel", requireAuth, handler.CancelRun(wfExec, wfRunStore))
+	// Canvas Continue + set_breakpoints control bridge. Publishes
+	// onto burrow:run_control:<runID>; worker bridge consumes.
+	r.POST("/api/v1/workflow_runs/:id/continue", requireAuth, handler.ContinueRun(wfExec, wfRunStore))
+	r.PUT("/api/v1/workflow_runs/:id/breakpoints", requireAuth, handler.SetRunBreakpoints(wfExec, wfRunStore))
 
 	// Webhook trigger — POST /api/v1/webhooks/:slug runs the workflow
 	// whose trigger node has matching webhook_slug. Body becomes the
