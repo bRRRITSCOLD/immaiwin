@@ -259,10 +259,11 @@ export function AIAgentNode({ id, data, selected }: NodeProps) {
                         <HelpCircle className="h-3 w-3" />
                       </button>
                     </TooltipTrigger>
-                    <TooltipContent side="top" className="max-w-[320px] text-[11px] leading-snug">
+                    <TooltipContent side="top" className="max-w-[340px] text-[11px] leading-snug">
                       <p className="font-medium mb-1">Per-agent tool ACL.</p>
                       <p>Names use the same form the LLM sees: built-ins like <code>code_execute</code>, as_tool node names (the <code>name</code> field on each tool node), and skill tools as <code>&lt;slug&gt;__&lt;tool&gt;</code>.</p>
                       <p className="mt-1">Empty = every tool exposed (back-compat with workflows authored before this field). Non-empty = STRICT allow-list — anything not listed is removed from the catalog and a hallucinated call to it surfaces as <code>unknown tool</code>.</p>
+                      <p className="mt-1 text-muted-foreground/80">Skill tools are <em>self-contained</em>: each skill's code runs directly in the sandbox runtime, not through the <code>code_execute</code> tool. Allowing <code>&lt;slug&gt;__&lt;tool&gt;</code> alone is enough — you only need <code>code_execute</code> if you want the LLM to write + run arbitrary code itself.</p>
                     </TooltipContent>
                   </Tooltip>
                 </div>
