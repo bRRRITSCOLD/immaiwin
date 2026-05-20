@@ -195,6 +195,28 @@ func RunWorkflowWS(store WorkflowStore, runStore workflow.WorkflowRunStore, exec
 		// handler subscribes below and forwards each event to the
 		// browser.
 		runID := ulid.Make().String()
+		// Decode stop_at: accepts a single string id (legacy) or a
+		// list (canvas multi-breakpoint). Stamped onto the run record
+		// so the worker's RunFromCheckpoint seeds the executor's
+		// stopAtSet on first claim — the async dispatch path was
+		// otherwise stop_at-deaf, so canvas Debug ↓ runs would skip
+		// every breakpoint that wasn't the very first node.
+		var initialBreakpoints []string
+		if len(req.StopAt) > 0 {
+			var single string
+			if err := json.Unmarshal(req.StopAt, &single); err == nil && single != "" {
+				initialBreakpoints = []string{single}
+			} else {
+				var multi []string
+				if err := json.Unmarshal(req.StopAt, &multi); err == nil {
+					for _, id := range multi {
+						if id != "" {
+							initialBreakpoints = append(initialBreakpoints, id)
+						}
+					}
+				}
+			}
+		}
 		rec := workflow.WorkflowRun{
 			ID:         runID,
 			WorkflowID: wf.ID,
@@ -203,9 +225,10 @@ func RunWorkflowWS(store WorkflowStore, runStore workflow.WorkflowRunStore, exec
 			// Same dispatch contract as POST /run: queued until a
 			// worker claims the lease + flips status=running atomically.
 			// StartedAt stays nil until ClaimLease stamps it.
-			Status:       workflow.RunStatusQueued,
-			Params:       wf.Params,
-			TriggerInput: req.Input,
+			Status:             workflow.RunStatusQueued,
+			Params:             wf.Params,
+			TriggerInput:       req.Input,
+			InitialBreakpoints: initialBreakpoints,
 		}
 		if _, cerr := runStore.Create(runCtx, rec); cerr != nil {
 			writeWfWsError(ws, "create run: "+cerr.Error())

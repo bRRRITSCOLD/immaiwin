@@ -1271,10 +1271,16 @@ func (e *WorkflowExecutor) RunFromCheckpoint(ctx context.Context, wf Workflow, r
 	}
 	var steps []StepResult
 	var err error
+	// Seed initial breakpoints from rec — set by the canvas WS
+	// handler from req.StopAt at dispatch time so the engine halts
+	// at pre-selected breakpoints even though the async /run path is
+	// otherwise stop_at-deaf. Mid-run edits ride the control bridge
+	// (PUT /breakpoints) which mutates the same in-memory set.
+	stopIDs := rec.InitialBreakpoints
 	if rec.TriggerInput != nil {
-		steps, err = e.RunWithEvents(ctx, wf, nil, emitter, rec.TriggerInput)
+		steps, err = e.RunWithEvents(ctx, wf, stopIDs, emitter, rec.TriggerInput)
 	} else {
-		steps, err = e.RunWithEvents(ctx, wf, nil, emitter)
+		steps, err = e.RunWithEvents(ctx, wf, stopIDs, emitter)
 	}
 	// Determine final status. Lease loss surfaces as ErrLeaseNotHeld
 	// — propagate so the worker loop can re-claim or move on.

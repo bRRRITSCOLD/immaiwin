@@ -70,6 +70,16 @@ type WorkflowRun struct {
 	// not making progress.
 	LastCheckpointAt *time.Time `bson:"last_checkpoint_at,omitempty" json:"last_checkpoint_at,omitempty"`
 
+	// InitialBreakpoints carries the breakpoint set the canvas had
+	// when it kicked the run off. Worker seeds the executor's
+	// stopAtSet from this on the first claim so the BFS halts at
+	// pre-set breakpoints even though `stop_at` is otherwise inert on
+	// the async dispatch path. Mutated mid-run via PUT
+	// /workflow_runs/:id/breakpoints (live edits go through the
+	// control bridge, not back into this field — this is the dispatch
+	// seed only).
+	InitialBreakpoints []string `bson:"initial_breakpoints,omitempty" json:"initial_breakpoints,omitempty"`
+
 	// ExecutionState carries the BFS frontier + visited set + named-
 	// node context map needed to resume mid-run after a worker death
 	// or an approval-gate yield. nil = run never checkpointed (legacy
