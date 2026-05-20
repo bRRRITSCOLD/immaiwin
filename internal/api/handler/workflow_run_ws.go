@@ -77,6 +77,19 @@ func (e *wsEventEmitter) Emit(ev workflow.RunEvent) {
 	_ = e.ws.WriteMessage(websocket.TextMessage, data)
 }
 
+// ping writes a control PingMessage through the same mutex the
+// event emitter uses. gorilla/websocket is not safe for concurrent
+// writers; idle keepalive shares the lock with normal frames.
+// Returns true on success, false on write failure (caller exits
+// the read/forward loop on failure since the socket is dead).
+func (e *wsEventEmitter) ping() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	_ = e.ws.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	defer func() { _ = e.ws.SetWriteDeadline(time.Time{}) }()
+	return e.ws.WriteMessage(websocket.PingMessage, nil) == nil
+}
+
 // writeWfWsError is a one-off error frame writer for failures that
 // happen before the run starts (bad upgrade, missing workflow, etc.).
 func writeWfWsError(ws *websocket.Conn, msg string) {
@@ -255,10 +268,27 @@ func RunWorkflowWS(store WorkflowStore, runStore workflow.WorkflowRunStore, exec
 		sub := exec.ApprovalBroker.Subscribe(runCtx, workflow.RunEventChannel(runID))
 		defer func() { _ = sub.Close() }()
 		ch := sub.Channel()
+
+		// Keepalive: send a WS ping every 20s so an idle pause
+		// (debug breakpoint, long approval wait, slow LLM) doesn't
+		// silently time the socket out at the browser / proxy
+		// (most defaults are 30–60s of silence). Without this, the
+		// connection drops mid-pause; the api's run_events sub
+		// stays subscribed but its writes go to a dead socket and
+		// fail, so the next worker reclaim's step_pending event
+		// publishes into the void and the canvas never reflects
+		// the resumed paused state.
+		pingT := time.NewTicker(20 * time.Second)
+		defer pingT.Stop()
+
 		for {
 			select {
 			case <-runCtx.Done():
 				return
+			case <-pingT.C:
+				if !emitter.ping() {
+					return
+				}
 			case msg, ok := <-ch:
 				if !ok {
 					return
