@@ -662,3 +662,84 @@ func (s *WorkflowCRUDIntegrationSuite) TestWorkflow_EnabledToggle_CrossTenant_Re
 	code, _ := s.patchEnabled(bob, wfID, false, "")
 	s.Equal(http.StatusNotFound, code, "foreign-tenant PATCH must read as 404")
 }
+
+// patchName is a thin helper around PATCH /api/v1/workflows/:id/name.
+func (s *WorkflowCRUDIntegrationSuite) patchName(client *http.Client, id, name string) (int, map[string]any) {
+	body, _ := json.Marshal(map[string]any{"name": name})
+	req, _ := http.NewRequest(http.MethodPatch, s.httpSrv.URL+"/api/v1/workflows/"+id+"/name", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	s.Require().NoError(err)
+	defer resp.Body.Close() //nolint:errcheck
+	raw, _ := io.ReadAll(resp.Body)
+	var out map[string]any
+	_ = json.Unmarshal(raw, &out)
+	return resp.StatusCode, out
+}
+
+// TestWorkflow_Rename_PatchRoundTrips verifies the focused rename
+// endpoint:
+//  1. PATCH with a new name updates the workflow.
+//  2. Whitespace trims; empty / whitespace-only → 400.
+//  3. Length cap at 200 → 400.
+//  4. No-op (same name) returns 200 + current doc.
+//  5. Missing id → 404.
+func (s *WorkflowCRUDIntegrationSuite) TestWorkflow_Rename_PatchRoundTrips() {
+	client, _ := s.authedClient(fmt.Sprintf("alice-rename-%d@example.com", time.Now().UnixNano()))
+	wfID := fmt.Sprintf("wf-rename-%d", time.Now().UnixNano())
+	status, _ := s.putWorkflow(client, wfID, map[string]any{
+		"name":   "original-name",
+		"params": map[string]any{},
+		"nodes":  []map[string]any{},
+		"edges":  []map[string]any{},
+	})
+	s.Require().Equal(http.StatusOK, status)
+
+	// Happy path: new name persists, trims whitespace.
+	code, body := s.patchName(client, wfID, "  shiny new name  ")
+	s.Require().Equal(http.StatusOK, code)
+	s.Equal("shiny new name", body["name"])
+
+	// Empty rejected.
+	code, _ = s.patchName(client, wfID, "")
+	s.Equal(http.StatusBadRequest, code, "empty name must 400")
+
+	// Whitespace-only rejected (trims to empty).
+	code, _ = s.patchName(client, wfID, "   ")
+	s.Equal(http.StatusBadRequest, code, "whitespace-only name must 400")
+
+	// 201 chars rejected.
+	long := make([]byte, 201)
+	for i := range long {
+		long[i] = 'a'
+	}
+	code, _ = s.patchName(client, wfID, string(long))
+	s.Equal(http.StatusBadRequest, code, "name >200 chars must 400")
+
+	// No-op (same name) returns 200 with current doc.
+	code, body = s.patchName(client, wfID, "shiny new name")
+	s.Require().Equal(http.StatusOK, code, "no-op rename returns 200")
+	s.Equal("shiny new name", body["name"])
+
+	// Missing id → 404.
+	code, _ = s.patchName(client, "wf-does-not-exist-"+fmt.Sprint(time.Now().UnixNano()), "anything")
+	s.Equal(http.StatusNotFound, code)
+}
+
+// TestWorkflow_Rename_CrossTenant_Returns404 — same tenant isolation
+// as the other PATCH endpoints.
+func (s *WorkflowCRUDIntegrationSuite) TestWorkflow_Rename_CrossTenant_Returns404() {
+	suffix := time.Now().UnixNano()
+	alice, _ := s.authedClient(fmt.Sprintf("alice-rename-iso-%d@example.com", suffix))
+	bob, _ := s.authedClient(fmt.Sprintf("bob-rename-iso-%d@example.com", suffix+1))
+
+	wfID := fmt.Sprintf("wf-rename-iso-%d", suffix)
+	status, _ := s.putWorkflow(alice, wfID, map[string]any{
+		"name": "alice's wf", "params": map[string]any{},
+		"nodes": []map[string]any{}, "edges": []map[string]any{},
+	})
+	s.Require().Equal(http.StatusOK, status)
+
+	code, _ := s.patchName(bob, wfID, "bob-renaming-alices-wf")
+	s.Equal(http.StatusNotFound, code, "foreign-tenant rename must read as 404")
+}

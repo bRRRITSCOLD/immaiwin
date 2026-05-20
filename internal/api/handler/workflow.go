@@ -31,6 +31,7 @@ type WorkflowStore interface {
 	Upsert(ctx context.Context, wf workflow.Workflow) (workflow.Workflow, error)
 	Delete(ctx context.Context, id string) error
 	SetEnabled(ctx context.Context, id string, enabled bool, reason string) (workflow.Workflow, error)
+	SetName(ctx context.Context, id, name string) (workflow.Workflow, error)
 }
 
 // ListWorkflows returns workflows scoped to the caller's tenant.
@@ -583,6 +584,73 @@ func PatchWorkflowEnabled(deps WorkflowEnableDeps) gin.HandlerFunc {
 		recordAudit(c, deps.Audit, action,
 			map[string]any{"type": "workflow", "id": id, "name": updated.Name},
 			map[string]any{"reason": req.Reason})
+		c.JSON(http.StatusOK, updated)
+	}
+}
+
+// PatchWorkflowName rewrites a workflow's display name without
+// round-tripping the rest of the graph. Same tenant-isolation +
+// audit-log shape as PatchWorkflowEnabled.
+//
+// Body: { "name": "<new name>" }. Name is trimmed; empty after
+// trim → 400. Length capped at 200 chars to keep the sidebar /
+// breadcrumb / list views honest.
+func PatchWorkflowName(deps WorkflowEnableDeps) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		id := c.Param("id")
+		if id == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "id required"})
+			return
+		}
+		var req struct {
+			Name string `json:"name"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		name := strings.TrimSpace(req.Name)
+		if name == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "name required"})
+			return
+		}
+		if len(name) > 200 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "name too long (max 200 chars)"})
+			return
+		}
+
+		var oldName string
+		if tenantID, ok := auth.TenantFromCtx(c.Request.Context()); ok {
+			existing, gerr := deps.Store.GetByIDForTenant(c.Request.Context(), id, tenantID)
+			if gerr != nil {
+				if errors.Is(gerr, mongo.ErrNoDocuments) {
+					c.JSON(http.StatusNotFound, gin.H{"error": "workflow not found"})
+					return
+				}
+				c.JSON(http.StatusInternalServerError, gin.H{"error": gerr.Error()})
+				return
+			}
+			oldName = existing.Name
+			if existing.Name == name {
+				// No-op short-circuit — avoids a write + audit row.
+				c.JSON(http.StatusOK, existing)
+				return
+			}
+		}
+
+		updated, err := deps.Store.SetName(c.Request.Context(), id, name)
+		if err != nil {
+			if errors.Is(err, mongo.ErrNoDocuments) {
+				c.JSON(http.StatusNotFound, gin.H{"error": "workflow not found"})
+				return
+			}
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
+		recordAudit(c, deps.Audit, mongodb.AuditWorkflowRenamed,
+			map[string]any{"type": "workflow", "id": id, "name": updated.Name},
+			map[string]any{"old_name": oldName, "new_name": updated.Name})
 		c.JSON(http.StatusOK, updated)
 	}
 }

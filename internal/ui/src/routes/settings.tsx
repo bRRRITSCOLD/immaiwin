@@ -93,6 +93,7 @@ const ACTION_FILTERS = [
   { value: 'workflow_duplicated', label: 'Workflow duplicated' },
   { value: 'workflow_enabled', label: 'Workflow enabled' },
   { value: 'workflow_disabled', label: 'Workflow disabled' },
+  { value: 'workflow_renamed', label: 'Workflow renamed' },
 ]
 
 function AuditLogSection() {

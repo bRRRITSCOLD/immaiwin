@@ -231,6 +231,25 @@ func (r *WorkflowRepository) SetEnabled(ctx context.Context, id string, enabled 
 	return wf, nil
 }
 
+// SetName rewrites just the display name of a workflow, leaving
+// nodes / edges / params / version untouched. Used by the rename
+// affordance in the workflow sidebar so a focused rename doesn't
+// round-trip the full graph (and doesn't bump the schema version
+// the way Upsert would). Returns ErrNoDocuments when the workflow
+// is gone.
+func (r *WorkflowRepository) SetName(ctx context.Context, id, name string) (workflow.Workflow, error) {
+	update := bson.M{"$set": bson.M{
+		"name":       name,
+		"updated_at": time.Now().UTC(),
+	}}
+	opts := options.FindOneAndUpdate().SetReturnDocument(options.After)
+	var wf workflow.Workflow
+	if err := r.col.FindOneAndUpdate(ctx, bson.M{"_id": id}, update, opts).Decode(&wf); err != nil {
+		return workflow.Workflow{}, err
+	}
+	return wf, nil
+}
+
 // BackfillEnabled sets enabled=true on every workflow document that
 // was inserted before the field existed (no `enabled` key). Idempotent
 // — re-running is a no-op. Called from cmd/api boot so existing

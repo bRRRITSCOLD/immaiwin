@@ -30,6 +30,10 @@ export function WorkflowSidebar({ onSelect, onReload }: Props) {
   const [connectionsOpen, setConnectionsOpen] = useState(true)
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editingConn, setEditingConn] = useState<Connection | null>(null)
+  // Inline-rename state: which workflow row is in edit mode + the
+  // current draft name. Enter saves, Esc / blur cancels.
+  const [renameId, setRenameId] = useState<string | null>(null)
+  const [renameDraft, setRenameDraft] = useState('')
 
   async function reloadConnections() {
     try {
@@ -49,6 +53,37 @@ export function WorkflowSidebar({ onSelect, onReload }: Props) {
       onReload()
     } catch {
       toast.error('Failed to delete workflow')
+    }
+  }
+
+  function beginRename(e: React.MouseEvent, wf: Workflow) {
+    e.stopPropagation()
+    setRenameId(wf.id)
+    setRenameDraft(wf.name)
+  }
+
+  function cancelRename() {
+    setRenameId(null)
+    setRenameDraft('')
+  }
+
+  async function commitRename(wf: Workflow) {
+    const next = renameDraft.trim()
+    if (!next || next === wf.name) {
+      cancelRename()
+      return
+    }
+    if (next.length > 200) {
+      toast.error('Name too long (max 200 chars)')
+      return
+    }
+    try {
+      await api.patch<Workflow>(`/api/v1/workflows/${wf.id}/name`, { name: next })
+      toast.success('Workflow renamed')
+      cancelRename()
+      onReload()
+    } catch {
+      toast.error('Failed to rename workflow')
     }
   }
 
@@ -120,24 +155,52 @@ export function WorkflowSidebar({ onSelect, onReload }: Props) {
           const enabled = wf.enabled !== false // undefined = enabled (legacy / new doc default)
           return (
           <div key={wf.id} className={`group flex items-center ${enabled ? '' : 'opacity-60'}`}>
-            <Button
-              variant={activeId === wf.id ? 'secondary' : 'ghost'}
-              size="sm"
-              className="flex-1 justify-start text-sm truncate gap-1"
-              onClick={() => onSelect(wf.id)}
-            >
-              <span className="truncate">{wf.name}</span>
-              {!enabled && (
-                <span className="text-[10px] text-amber-400 font-medium shrink-0" title="Trigger-driven runs are paused. Manual Run still works.">
-                  disabled
-                </span>
-              )}
-              {typeof wf.version === 'number' && wf.version > 0 && (
-                <span className="text-[10px] text-muted-foreground font-mono shrink-0" title={`Saved revision ${wf.version}`}>
-                  v{wf.version}
-                </span>
-              )}
-            </Button>
+            {renameId === wf.id ? (
+              <form
+                className="flex-1 flex items-center"
+                onSubmit={(e) => { e.preventDefault(); void commitRename(wf) }}
+              >
+                <input
+                  autoFocus
+                  className="flex-1 bg-background border border-border rounded px-2 py-1 text-sm outline-none focus:border-primary"
+                  value={renameDraft}
+                  onChange={(e) => setRenameDraft(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Escape') cancelRename() }}
+                  onBlur={() => void commitRename(wf)}
+                  maxLength={200}
+                />
+              </form>
+            ) : (
+              <Button
+                variant={activeId === wf.id ? 'secondary' : 'ghost'}
+                size="sm"
+                className="flex-1 justify-start text-sm truncate gap-1"
+                onClick={() => onSelect(wf.id)}
+                onDoubleClick={(e) => beginRename(e, wf)}
+                title="Double-click to rename"
+              >
+                <span className="truncate">{wf.name}</span>
+                {!enabled && (
+                  <span className="text-[10px] text-amber-400 font-medium shrink-0" title="Trigger-driven runs are paused. Manual Run still works.">
+                    disabled
+                  </span>
+                )}
+                {typeof wf.version === 'number' && wf.version > 0 && (
+                  <span className="text-[10px] text-muted-foreground font-mono shrink-0" title={`Saved revision ${wf.version}`}>
+                    v{wf.version}
+                  </span>
+                )}
+              </Button>
+            )}
+            {renameId !== wf.id && (
+              <button
+                className="opacity-0 group-hover:opacity-100 p-1 hover:text-foreground text-muted-foreground transition-opacity shrink-0"
+                onClick={(e) => beginRename(e, wf)}
+                title="Rename workflow"
+              >
+                <Pencil className="h-3.5 w-3.5" />
+              </button>
+            )}
             <button
               className={`p-1 transition-opacity shrink-0 ${enabled ? 'opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-foreground' : 'opacity-100 text-amber-400 hover:text-amber-300'}`}
               onClick={(e) => handleToggleEnabled(e, wf)}
