@@ -128,6 +128,12 @@ func (r *WorkflowRepository) Upsert(ctx context.Context, wf workflow.Workflow) (
 		"nodes":      wf.Nodes,
 		"edges":      wf.Edges,
 		"updated_at": wf.UpdatedAt,
+		// `enabled` rides through every Upsert so an existing doc
+		// can't silently drop the field (next PATCH would compare
+		// against a zero-value `false` and short-circuit). The Go
+		// Workflow.UnmarshalJSON normalises an absent JSON `enabled`
+		// to true so older API clients keep workflows enabled.
+		"enabled": wf.Enabled,
 	}
 	update := bson.M{
 		"$set":         setFields,
@@ -135,6 +141,18 @@ func (r *WorkflowRepository) Upsert(ctx context.Context, wf workflow.Workflow) (
 		"$setOnInsert": bson.M{"created_at": wf.CreatedAt},
 	}
 	unsetFields := bson.M{}
+	// Disabled metadata travels via SetEnabled only; Upsert clears
+	// stale fields if the caller passed a Workflow with them empty.
+	if wf.DisabledAt != nil {
+		setFields["disabled_at"] = wf.DisabledAt
+	} else {
+		unsetFields["disabled_at"] = ""
+	}
+	if wf.DisabledReason != "" {
+		setFields["disabled_reason"] = wf.DisabledReason
+	} else {
+		unsetFields["disabled_reason"] = ""
+	}
 	// Pointer field — when nil (caps cleared) we want $unset rather than
 	// $set: nil so existing docs don't carry a stale value. Mongo doesn't
 	// allow $set + $unset on the same field in one update, so branch.
@@ -188,4 +206,42 @@ func (r *WorkflowRepository) FindByName(ctx context.Context, name string) (workf
 	var wf workflow.Workflow
 	err := r.col.FindOne(ctx, bson.M{"name": name}).Decode(&wf)
 	return wf, err
+}
+
+// SetEnabled flips the trigger-routing gate on a workflow without
+// touching the rest of the doc. enabled=false also writes
+// disabled_at + disabled_reason so the UI + audit log can surface
+// who/when/why. enabled=true clears both. Returns ErrNoDocuments if
+// the workflow is gone.
+func (r *WorkflowRepository) SetEnabled(ctx context.Context, id string, enabled bool, reason string) (workflow.Workflow, error) {
+	now := time.Now().UTC()
+	setDoc := bson.M{"enabled": enabled, "updated_at": now}
+	update := bson.M{"$set": setDoc}
+	if enabled {
+		update["$unset"] = bson.M{"disabled_at": "", "disabled_reason": ""}
+	} else {
+		setDoc["disabled_at"] = now
+		setDoc["disabled_reason"] = reason
+	}
+	opts := options.FindOneAndUpdate().SetReturnDocument(options.After)
+	var wf workflow.Workflow
+	if err := r.col.FindOneAndUpdate(ctx, bson.M{"_id": id}, update, opts).Decode(&wf); err != nil {
+		return workflow.Workflow{}, err
+	}
+	return wf, nil
+}
+
+// BackfillEnabled sets enabled=true on every workflow document that
+// was inserted before the field existed (no `enabled` key). Idempotent
+// — re-running is a no-op. Called from cmd/api boot so existing
+// deployments don't have every workflow appear disabled after upgrade.
+func (r *WorkflowRepository) BackfillEnabled(ctx context.Context) (int64, error) {
+	res, err := r.col.UpdateMany(ctx,
+		bson.M{"enabled": bson.M{"$exists": false}},
+		bson.M{"$set": bson.M{"enabled": true}},
+	)
+	if err != nil {
+		return 0, err
+	}
+	return res.ModifiedCount, nil
 }

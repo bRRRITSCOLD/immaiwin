@@ -205,6 +205,11 @@ func syncSchedules(
 	}
 	active := make(map[string]activeInfo)
 	for _, wf := range wfs {
+		// Skip disabled workflows — the existing diff-and-cancel
+		// logic tears down any tracked schedule on the next pass.
+		if !wf.Enabled {
+			continue
+		}
 		info, ok := cronInfoFromWorkflow(wf)
 		if !ok {
 			continue

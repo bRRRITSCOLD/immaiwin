@@ -179,6 +179,13 @@ func syncRMQConsumers(
 	}
 	active := make(map[string]activeEntry)
 	for _, wf := range wfs {
+		// Skip disabled workflows — the existing diff-and-cancel
+		// logic tears down any tracked consumer on the next pass
+		// (messages stay in the queue / hit the queue's TTL+DLQ
+		// per RMQ config).
+		if !wf.Enabled {
+			continue
+		}
 		info, ok := rmqInfoFromWorkflow(wf)
 		if !ok {
 			continue

@@ -90,6 +90,9 @@ const ACTION_FILTERS = [
   { value: 'invite_accepted', label: 'Invite accepted' },
   { value: 'member_removed', label: 'Member removed' },
   { value: 'tenant_ownership_transferred', label: 'Ownership transferred' },
+  { value: 'workflow_duplicated', label: 'Workflow duplicated' },
+  { value: 'workflow_enabled', label: 'Workflow enabled' },
+  { value: 'workflow_disabled', label: 'Workflow disabled' },
 ]
 
 function AuditLogSection() {

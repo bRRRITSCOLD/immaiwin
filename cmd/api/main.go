@@ -61,6 +61,14 @@ func main() {
 		slog.Error("failed to init workflow repository", "err", err)
 		os.Exit(1)
 	}
+	// One-time backfill: pre-existing workflow docs (no `enabled`
+	// field) default to enabled=true so the new trigger gate doesn't
+	// silently pause every workflow on upgrade. Idempotent.
+	if n, berr := wfRepo.BackfillEnabled(ctx); berr != nil {
+		slog.Warn("workflow backfill enabled failed (continuing)", "err", berr)
+	} else if n > 0 {
+		slog.Info("workflow backfill: stamped enabled=true on legacy docs", "count", n)
+	}
 
 	var encKey []byte
 	if trimmed := strings.TrimSpace(cfg.EncryptionKey); trimmed != "" {

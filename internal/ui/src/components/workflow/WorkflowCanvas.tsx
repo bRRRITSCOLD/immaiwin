@@ -684,6 +684,12 @@ function WorkflowCanvasInner({ workflow, onSave, onRun, onCancel, onContinue, on
             without having to navigate the Runs tab manually. When the
             dispatcher FAILED (token type wrong, channel unreachable,
             etc.), this banner is the only visible recovery path. */}
+        {workflow.enabled === false && (
+          <div className="absolute top-3 left-1/2 -translate-x-1/2 z-10 text-xs bg-amber-600/90 text-white px-3 py-1.5 rounded-md border border-amber-300 shadow-lg pointer-events-none">
+            <span className="font-semibold">Workflow disabled</span>
+            <span className="opacity-90"> — triggers paused. Manual Run still works. Re-enable from the sidebar to resume trigger-driven runs.</span>
+          </div>
+        )}
         {pendingApprovalRunID && runRunning && (
           <div className="absolute top-16 right-3 z-20 max-w-[480px] text-xs bg-amber-600 text-white px-3 py-2 rounded-md border border-amber-300 shadow-lg flex items-start gap-2">
             <span className="font-semibold shrink-0">Awaiting approval:</span>

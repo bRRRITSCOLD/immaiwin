@@ -1,4 +1,4 @@
-import { Globe, Play, Container, Database, Bell, RefreshCw, Radio, ChevronDown, ChevronUp, CheckCircle2, XCircle, Circle, Plus, Pencil, Trash2, Plug, Download, Bot, Wrench, Copy } from 'lucide-react'
+import { Globe, Play, Container, Database, Bell, RefreshCw, Radio, ChevronDown, ChevronUp, CheckCircle2, XCircle, Circle, Plus, Pencil, Trash2, Plug, Download, Bot, Wrench, Copy, Power, PowerOff } from 'lucide-react'
 import { useState } from 'react'
 import { toast } from 'sonner'
 import { Separator } from '~/components/ui/separator'
@@ -49,6 +49,18 @@ export function WorkflowSidebar({ onSelect, onReload }: Props) {
       onReload()
     } catch {
       toast.error('Failed to delete workflow')
+    }
+  }
+
+  async function handleToggleEnabled(e: React.MouseEvent, wf: Workflow) {
+    e.stopPropagation()
+    const next = wf.enabled === false // current disabled → enable
+    try {
+      await api.patch<Workflow>(`/api/v1/workflows/${wf.id}/enabled`, { enabled: next })
+      toast.success(next ? 'Workflow enabled' : 'Workflow disabled — triggers paused, manual Run still works')
+      onReload()
+    } catch {
+      toast.error(next ? 'Failed to enable workflow' : 'Failed to disable workflow')
     }
   }
 
@@ -104,8 +116,10 @@ export function WorkflowSidebar({ onSelect, onReload }: Props) {
         {workflows.length === 0 && (
           <p className="px-2 text-xs text-muted-foreground">No workflows yet.</p>
         )}
-        {workflows.map((wf: Workflow) => (
-          <div key={wf.id} className="group flex items-center">
+        {workflows.map((wf: Workflow) => {
+          const enabled = wf.enabled !== false // undefined = enabled (legacy / new doc default)
+          return (
+          <div key={wf.id} className={`group flex items-center ${enabled ? '' : 'opacity-60'}`}>
             <Button
               variant={activeId === wf.id ? 'secondary' : 'ghost'}
               size="sm"
@@ -113,12 +127,24 @@ export function WorkflowSidebar({ onSelect, onReload }: Props) {
               onClick={() => onSelect(wf.id)}
             >
               <span className="truncate">{wf.name}</span>
+              {!enabled && (
+                <span className="text-[10px] text-amber-400 font-medium shrink-0" title="Trigger-driven runs are paused. Manual Run still works.">
+                  disabled
+                </span>
+              )}
               {typeof wf.version === 'number' && wf.version > 0 && (
                 <span className="text-[10px] text-muted-foreground font-mono shrink-0" title={`Saved revision ${wf.version}`}>
                   v{wf.version}
                 </span>
               )}
             </Button>
+            <button
+              className={`p-1 transition-opacity shrink-0 ${enabled ? 'opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-foreground' : 'opacity-100 text-amber-400 hover:text-amber-300'}`}
+              onClick={(e) => handleToggleEnabled(e, wf)}
+              title={enabled ? 'Disable workflow (pause triggers)' : 'Enable workflow (resume triggers)'}
+            >
+              {enabled ? <Power className="h-3.5 w-3.5" /> : <PowerOff className="h-3.5 w-3.5" />}
+            </button>
             <button
               className="opacity-0 group-hover:opacity-100 p-1 hover:text-foreground text-muted-foreground transition-opacity shrink-0"
               onClick={(e) => handleDuplicateWorkflow(e, wf.id)}
@@ -141,7 +167,8 @@ export function WorkflowSidebar({ onSelect, onReload }: Props) {
               <Trash2 className="h-3.5 w-3.5" />
             </button>
           </div>
-        ))}
+          )
+        })}
         <AddWorkflowDialog onCreated={onReload} />
       </div>
 
