@@ -590,19 +590,15 @@ Supported types: `mongodb`, `redis`, `rabbitmq`, `anthropic`, `openai`, `ollama`
 - [x] Run metrics + worker health + reaper, transactional SMTP, full CI gate
 - [x] Security hardening — explicit-connection requirement for mongo/redis nodes + rabbitmq/redis_subscribe triggers (worker + API), HTTP SSRF dial-guard (refuses cloud metadata / RFC1918 / loopback / link-local; DNS-rebind safe; per-node `allowed_hosts` opt-in), `as_tool` canvas isolation
 
-### In progress
-- [ ] Container pool warm starts (sub-100ms cold)
-- [ ] Image-layer caching for `packages` to skip per-run installs
-- [ ] Multi-node Kubernetes validation (HPA, pod priority, ResourceQuotas)
-- [ ] Per-tenant isolation in the sandbox (namespaces, RBAC, secret scoping)
-
 ### Up next (short-term picks)
 - Sub-workflow as a tool + recursion guard (biggest composability lever)
 - Tool authorization policy (per-workflow ACL)
+- Workflow enable/disable toggle
 - Per-iter agent checkpoint (worker-death mid-ReAct = resume mid-iter)
 - Canvas Continue + breakpoints control channel (debug UX restoration)
 - Generic WebSocket trigger; first wave of standard connector nodes (Slack, S3, Postgres, etc.)
 - Slack OOB approvals — full ladder (bot token → Block Kit → per-tenant OAuth → Slack Connect)
+- Sandbox + infra: container warm-start pool, image-layer caching for `packages`, multi-node Kubernetes validation, per-tenant sandbox isolation
 
 See [`ROADMAP.md`](./ROADMAP.md) for the rest — aspirational items (chat-platform triggers, agent eval/replay, tool synthesis), UX polish, observability, and the doc relationship table.
 
