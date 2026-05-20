@@ -1282,14 +1282,25 @@ func (e *WorkflowExecutor) buildAgentToolCatalog(agent Node, env *runEnv,
 	// error path (defense-in-depth — never depend on the model
 	// honouring its own tool list).
 	allowed := stringSliceData(agent.Data, "allowed_tools")
-	before := len(cat.Defs())
+	beforeNames := make([]string, 0, len(cat.Defs()))
+	for _, d := range cat.Defs() {
+		beforeNames = append(beforeNames, d.Name)
+	}
 	cat.FilterAllowed(allowed)
 	if len(allowed) > 0 {
+		afterNames := make([]string, 0, len(cat.Defs()))
+		for _, d := range cat.Defs() {
+			afterNames = append(afterNames, d.Name)
+		}
+		// Surface every catalog name so mismatches between the
+		// operator's allow-list and the actual registered names
+		// (skill prefixes, as_tool node names) are obvious at a
+		// glance.
 		slog.Info("ai_agent: applied allowed_tools policy",
 			"agent", agent.ID,
 			"allowed", allowed,
-			"before", before,
-			"after", len(cat.Defs()),
+			"catalog_before", beforeNames,
+			"catalog_after", afterNames,
 		)
 	}
 
