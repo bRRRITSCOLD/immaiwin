@@ -287,6 +287,18 @@ func claimAndRun(
 	hbDone := make(chan struct{})
 	go heartbeatLease(runCtx, runRepo, rec.ID, workerID, runCancel, hbDone)
 
+	// Worker-alive heartbeat — publishes a worker_heartbeat RunEvent
+	// on the per-run event channel each lease-extend cycle so the
+	// canvas's streamStale detector knows the worker is still
+	// holding the run during legit quiet pauses (debug breakpoints,
+	// slow LLM calls). Stops on runCtx cancel (end of run-pass or
+	// lease loss). Independent goroutine from the lease heartbeat
+	// because the lease heartbeat uses Mongo (its failure has to
+	// cancel the run), and a Redis publish failure should NOT.
+	if exec.ApprovalBroker != nil {
+		go runHeartbeatPublisher(runCtx, exec.ApprovalBroker, rec.ID)
+	}
+
 	// Per-run event emitter publishes RunEvents to a Redis pub/sub
 	// topic so the WS handler can stream them to the browser. Without
 	// this, canvas runs would have no live updates because the worker
@@ -419,6 +431,42 @@ func runOrphanSweepLoop(ctx context.Context, runRepo *mongodb.WorkflowRunReposit
 				}
 			}
 		}
+	}
+}
+
+// runHeartbeatPublisher publishes a worker_heartbeat RunEvent on the
+// per-run channel every executorHeartbeatDur. Lets the canvas's
+// streamStale detector distinguish "worker silently alive during a
+// pause" from "worker died". Best-effort — publish errors log at warn
+// but don't take down the worker.
+func runHeartbeatPublisher(ctx context.Context, pub workflow.ApprovalSubscriber, runID string) {
+	t := time.NewTicker(executorHeartbeatDur)
+	defer t.Stop()
+	// Emit one immediately so the UI's lastEventAt advances inside
+	// one tick of the run starting, rather than waiting the full
+	// heartbeat interval.
+	publishWorkerHeartbeat(ctx, pub, runID)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			publishWorkerHeartbeat(ctx, pub, runID)
+		}
+	}
+}
+
+func publishWorkerHeartbeat(ctx context.Context, pub workflow.ApprovalSubscriber, runID string) {
+	payload, err := json.Marshal(workflow.RunEvent{
+		Type:  workflow.EventWorkerHeartbeat,
+		RunID: runID,
+		At:    time.Now().UTC(),
+	})
+	if err != nil {
+		return
+	}
+	if _, perr := pub.PublishWithCount(ctx, workflow.RunEventChannel(runID), payload); perr != nil {
+		slog.Debug("workflow-executor: worker_heartbeat publish failed", "run_id", runID, "err", perr)
 	}
 }
 
