@@ -725,15 +725,15 @@ This is the right default for agents that wrap flaky upstream APIs. It's the wro
 
 `as_tool` target nodes carry their own red badge on the canvas (via `step_done(IsError)`), but the run-status promotion logic only counts the AGENT's own error, not the per-tool dispatch error — a tool error the agent recovered from doesn't retroactively flip the run. Because an `as_tool` node is dispatched by the agent (it bypasses the BFS entirely), its own `success`/`error` edges are inert; the canvas hides those handles and prunes such edges (only the agent's `tool` edge wires into it).
 
-### Why does an approval-gated agent run pay an extra LLM call when I approve?
+### Does an approval-gated agent run pay an extra LLM call when I approve?
 
-The lease-based executor yields the worker's lease the moment an `as_tool` target's `require_node_approval` gate fires — BEFORE the tool runs. The agent's mid-loop snapshot (current iteration, message history so far, accumulated usage + trace) is persisted to Mongo so a later worker can pick up exactly where this one paused.
+**No.** The resume path is replay-only — the resumed worker does not re-prompt the model.
 
-Persisting messages mid-tool-dispatch is the catch. Most LLM providers expect a tool_call to be followed by a matching tool_result, never the other way around. If we saved the assistant turn that emitted the tool_call alongside the rest of the conversation, the resumed worker would feed the model its own pending un-answered tool_call and either error or emit incoherent output. To avoid that, the executor pops the trailing assistant turn before persisting and the resumed agent re-prompts the model fresh.
+The lease-based executor yields the worker's lease the moment an `as_tool` target's `require_node_approval` gate fires — BEFORE the tool runs. The agent's mid-loop snapshot (current iteration, message history so far including the trailing assistant turn that emitted the gated tool_use, accumulated usage + trace, the partial tool-call list, the index of the call that fired the gate, and the previously-approved gate identity) is persisted to Mongo so a later worker picks up exactly where this one paused.
 
-The trade-off: **one extra `Chat` call per approval gate**. Token cost = roughly the prompt length at yield time. With moderate prompts and one gate per run that's a few cents at most; with very long prompts or many gates per run it adds up. Mitigations on the roadmap: per-provider request-id idempotency to dedupe the resume Chat (where supported), and / or a stateful resume mode that replays the LLM's previous response from the saved trace instead of re-prompting.
+On resume the executor synthesises the original `ChatResponse` from the persisted trailing assistant turn (`PausedAgent.Messages[last]`), continues dispatching from the saved `PartialNextIndex`, and re-enters the agent loop **without calling `Chat`**. The provider's tool_call/tool_result protocol invariant is preserved because the assistant turn was never popped from the saved messages — it just isn't observed by the model on the wire a second time. One follow-up `Chat` fires after the tool_result is appended so the model can emit its final answer. Total Chat per gate = the original pre-gate call + one post-resume final-answer call. No extra re-prompt, no extra token spend.
 
-Documented in `.private/ai-automation/DURABLE-EXECUTION-PLAN.md` (long-tail edge cases section); the smoke-test reproduction lives in `internal/api/handler/workflow_run_agent_yield_integration_test.go`.
+Locked by the integration tests in `internal/api/handler/workflow_run_agent_yield_integration_test.go` + `..._parallel_yield_..._test.go` (each asserts the exact Chat-call count over the run, so any regression to a re-prompt path fails CI).
 
 ### `Bind for 0.0.0.0:<port> failed: port is already allocated` even though no container shows that port
 

@@ -42,6 +42,7 @@ baked into the engine instead of bolted on after.
 - Chat memory (Mongo, tenant-scoped, durable)
 - Per-run + per-day cost caps; cost surfaced in the Runs tab
 - `as_tool` full isolation — only the agent's `tool` edge wires into a tool node (the engine bypasses its BFS edges anyway)
+- Approval-gate resume is **replay-only** — no extra `Chat` call on resume. The trailing assistant tool_use is replayed from `PausedAgent.Messages`, dispatch continues from the saved `PartialNextIndex`, and the only post-resume LLM call is the final-answer prompt that observes the tool_result. Total Chat per gate = pre-gate + final-answer (locked by integration tests asserting the exact Chat-call count).
 
 ### Security
 - `mongo_request` / `redis_request` and `rabbitmq` / `redis_subscribe` triggers **require** an explicit user connection — the platform's own Mongo/Redis (workflow records, audit log, lease, chat memory) are not reachable from a user workflow
@@ -80,10 +81,6 @@ baked into the engine instead of bolted on after.
 
 ### Engine
 - **Workflow enable/disable toggle** — first-class `enabled` state on every workflow (today the only way to stop one firing is to delete it, which is destructive). Disabled workflows drop from cron / RabbitMQ / Redis-subscribe / WebSocket worker sync-tick active sets; trigger events get dropped (cron) or stay queued (RMQ) per source semantics; the manual `Run` button stays usable so authors can still test in isolation. Backfill all existing workflows to `enabled: true`. ~1 day.
-- **Approval-gate resume cost optimisation** — every approval gate today pays one extra `Chat` call on resume, because the executor pops the trailing assistant tool_call before persisting (most providers reject a re-saved un-answered tool_call) and the resumed agent re-prompts the model fresh. With long prompts or many gates per run, the per-resume token cost adds up. Two mitigation paths:
-  1. **Per-provider request-id idempotency** to dedupe the resume `Chat` (where the provider supports it — Anthropic / OpenAI).
-  2. **Stateful resume mode** that replays the LLM's previous response from the saved trace instead of re-prompting (cheaper but constrained by tool-call protocol invariants).
-  High-leverage cost win for any user running approval-gated agent workflows at volume.
 - **Per-iter agent checkpoint** — worker death mid-ReAct resumes at the same iteration instead of restarting the loop
 - **Per-tool gate Skip button** (vs Reject) — Skip = soft, agent observes the rejection and pivots; Reject = hard veto
 - **Canvas Continue + breakpoints control channel** — restore the lease-era debug UX (set / clear breakpoints mid-run, Continue button releases a pause)
