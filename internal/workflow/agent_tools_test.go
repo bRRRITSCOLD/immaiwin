@@ -103,3 +103,29 @@ func callExecute(cat *ToolCatalog, name string) (string, string, error) {
 	out, err := cat.Execute(context.Background(), name, json.RawMessage(`{}`))
 	return out, name, err
 }
+
+// TestStringSliceData_NewlineSeparated verifies the UI-side
+// `allowed_tools` textarea contract: the raw textarea string lands
+// in node data as a `\n`-delimited string (so the user can press
+// Enter mid-edit without onChange swallowing the newline) and
+// stringSliceData splits it back into the canonical []string the
+// agent's ACL filter expects. Comma-separated legacy still works.
+func (s *ToolCatalogFilterSuite) TestStringSliceData_NewlineSeparated() {
+	cases := []struct {
+		name  string
+		input map[string]any
+		want  []string
+	}{
+		{name: "newlines", input: map[string]any{"allowed_tools": "code_execute\nget_weather\n"}, want: []string{"code_execute", "get_weather"}},
+		{name: "commas", input: map[string]any{"allowed_tools": "code_execute, get_weather"}, want: []string{"code_execute", "get_weather"}},
+		{name: "mixed", input: map[string]any{"allowed_tools": "code_execute,\nget_weather\n,foo"}, want: []string{"code_execute", "get_weather", "foo"}},
+		{name: "trailing-newline-only", input: map[string]any{"allowed_tools": "tool1\n"}, want: []string{"tool1"}},
+		{name: "empty", input: map[string]any{"allowed_tools": ""}, want: nil},
+		{name: "missing", input: map[string]any{}, want: nil},
+	}
+	for _, c := range cases {
+		s.Run(c.name, func() {
+			s.Equal(c.want, stringSliceData(c.input, "allowed_tools"))
+		})
+	}
+}

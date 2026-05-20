@@ -34,11 +34,17 @@ export function AIAgentNode({ id, data, selected }: NodeProps) {
   const requireNodeApproval = (data?.require_node_approval as boolean) ?? false
   const outputSchema = (data?.output_schema as string) ?? ''
   // Per-agent tool authorization policy. Stored on the node as
-  // `allowed_tools: string[]` — empty/missing = open. The textarea
-  // edits a newline-joined view of the list so authors can paste
-  // one name per line.
-  const allowedToolsRaw = (data?.allowed_tools as string[] | undefined) ?? []
-  const allowedToolsText = allowedToolsRaw.join('\n')
+  // `allowed_tools` — the textarea binds to it as a raw string so
+  // the user can press Enter mid-edit without the eager
+  // split-filter-rejoin loop swallowing the newline. The engine's
+  // `stringSliceData` coercer splits on both `\n` and `,`, so a
+  // legacy `[]string` value still round-trips fine.
+  const allowedToolsText = (() => {
+    const v = data?.allowed_tools
+    if (typeof v === 'string') return v
+    if (Array.isArray(v)) return (v as string[]).join('\n')
+    return ''
+  })()
 
   // Trigger awareness — surfaced in tooltip copy. Both manual and
   // non-manual triggers now route through the approval gate: manual
@@ -265,13 +271,10 @@ export function AIAgentNode({ id, data, selected }: NodeProps) {
                   rows={3}
                   placeholder={'code_execute\nget_weather\nweather-formatter__format_weather'}
                   value={allowedToolsText}
-                  onChange={(e) => {
-                    const list = e.target.value
-                      .split('\n')
-                      .map((s) => s.trim())
-                      .filter((s) => s.length > 0)
-                    updateNodeData(id, { allowed_tools: list })
-                  }}
+                  // Persist the RAW textarea string — the engine
+                  // splits on \n + , so a trailing newline mid-edit
+                  // doesn't get re-normalised away on every keystroke.
+                  onChange={(e) => updateNodeData(id, { allowed_tools: e.target.value })}
                 />
               </div>
 
