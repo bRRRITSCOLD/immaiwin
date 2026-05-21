@@ -18,13 +18,13 @@ import (
 )
 
 // eligibleForPool reports whether a RunRequest can be served from
-// the warm pod pool. Pool pods are sized with defaults + no custom
-// image + no packages + network=none. Any divergence falls through
-// to the per-run create path which honors the request as-is.
+// the warm pod pool. Pool pods are sized at create time with
+// specific mem/cpu/network — only requests using the defaults can
+// be served from a shared pool. Custom image / packages are NOT
+// disqualifying anymore; the pool keys by resolved image tag so
+// per-package warm pools work on the second-and-onwards hit.
 func eligibleForPool(req sandbox.RunRequest) bool {
-	return req.Image == "" &&
-		len(req.Packages) == 0 &&
-		!req.Network &&
+	return !req.Network &&
 		req.MemLimit == sandbox.DefaultMemLimit &&
 		req.CPULimit == sandbox.DefaultCPULimit
 }
@@ -138,21 +138,24 @@ func (r *Runtime) Run(ctx context.Context, req sandbox.RunRequest) (*sandbox.Run
 		return nil, fmt.Errorf("sandbox/k3s: marshal payload: %w", err)
 	}
 
-	// Pool fast-path: when the request matches the warm-pod
-	// envelope (default mem/cpu, no custom image, no packages, no
-	// network) and the pool has a ready pod, skip the create +
-	// wait-for-running overhead.
+	// Pool fast-path: when the request envelope (default mem/cpu,
+	// no network) matches, try the pool keyed by (lang, image-tag).
+	// Custom image / packages are now allowed — the resolved image
+	// tag (which already encodes both via builder.go) becomes the
+	// pool key, so per-package warm pools fill on the second-and-
+	// onwards hit. Cold misses still fall through to per-run create
+	// and trigger a background replenish for that key.
 	var podName string
 	var fromPool bool
 	if r.pool != nil && eligibleForPool(req) {
-		if name := r.pool.Acquire(req.Language); name != "" {
+		if name := r.pool.Acquire(req.Language, image); name != "" {
 			podName = name
 			fromPool = true
-			slog.Info("sandbox/k3s: pool acquired", "pod", name, "language", req.Language)
+			slog.Info("sandbox/k3s: pool acquired", "pod", name, "language", req.Language, "image", image)
 		}
 	}
 	if !fromPool {
-		slog.Info("sandbox/k3s: cold start (no pool match)", "language", req.Language, "has_packages", len(req.Packages) > 0, "custom_image", req.Image != "")
+		slog.Info("sandbox/k3s: cold start", "language", req.Language, "image", image)
 		pod := r.buildPod(req, image, false)
 		created, err := r.clientset.CoreV1().Pods(r.ns).Create(ctx, pod, metav1.CreateOptions{})
 		if err != nil {
@@ -223,10 +226,10 @@ func (r *Runtime) StreamRun(ctx context.Context, req sandbox.RunRequest) (<-chan
 	var podName string
 	var fromPool bool
 	if r.pool != nil && eligibleForPool(req) {
-		if name := r.pool.Acquire(req.Language); name != "" {
+		if name := r.pool.Acquire(req.Language, image); name != "" {
 			podName = name
 			fromPool = true
-			slog.Info("sandbox/k3s: pool acquired (stream)", "pod", name, "language", req.Language)
+			slog.Info("sandbox/k3s: pool acquired (stream)", "pod", name, "language", req.Language, "image", image)
 		}
 	}
 	if !fromPool {

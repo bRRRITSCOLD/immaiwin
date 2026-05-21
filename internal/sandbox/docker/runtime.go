@@ -173,18 +173,18 @@ func (r *Runtime) Run(ctx context.Context, req sandbox.RunRequest) (*sandbox.Run
 	var containerID string
 	var fromPool bool
 
-	if r.pool != nil && req.Image == "" && len(req.Packages) == 0 && !req.Network &&
+	if r.pool != nil && !req.Network &&
 		req.MemLimit == sandbox.DefaultMemLimit &&
 		req.CPULimit == sandbox.DefaultCPULimit {
-		if id := r.pool.Acquire(req.Language); id != "" {
+		if id := r.pool.Acquire(req.Language, img); id != "" {
 			containerID = id
 			fromPool = true
-			slog.Info("sandbox/docker: pool acquired", "container", id[:12], "language", req.Language)
+			slog.Info("sandbox/docker: pool acquired", "container", id[:12], "language", req.Language, "image", img)
 		}
 	}
 
 	if !fromPool {
-		slog.Info("sandbox/docker: cold start (no pool)", "language", req.Language)
+		slog.Info("sandbox/docker: cold start", "language", req.Language, "image", img)
 		cfg := &container.Config{
 			Image:       img,
 			Labels:      sandboxLabels(),
@@ -336,13 +336,13 @@ func (r *Runtime) StreamRun(ctx context.Context, req sandbox.RunRequest) (<-chan
 	var containerID string
 	var fromPool bool
 
-	if r.pool != nil && req.Image == "" && len(req.Packages) == 0 && !req.Network &&
+	if r.pool != nil && !req.Network &&
 		req.MemLimit == sandbox.DefaultMemLimit &&
 		req.CPULimit == sandbox.DefaultCPULimit {
-		if id := r.pool.Acquire(req.Language); id != "" {
+		if id := r.pool.Acquire(req.Language, img); id != "" {
 			containerID = id
 			fromPool = true
-			slog.Info("sandbox/docker: pool acquired", "container", id[:12], "language", req.Language, "stream", true)
+			slog.Info("sandbox/docker: pool acquired", "container", id[:12], "language", req.Language, "image", img, "stream", true)
 		}
 	}
 
