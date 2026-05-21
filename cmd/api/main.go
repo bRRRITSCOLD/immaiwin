@@ -233,6 +233,7 @@ func main() {
 		Memory:         chatMem,
 		RunRepo:      runStore,
 		SkillRes:     skillRes,
+		Workflows:    wfRepo, // enables sub_workflow tool dispatch
 	}
 
 	// Eval harness (Tier C). Best-effort init — the rest of the API stays
