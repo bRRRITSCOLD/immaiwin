@@ -927,6 +927,45 @@ func (e *WorkflowExecutor) runAIAgent(ctx context.Context, node Node, data map[s
 					}
 				}
 
+				// As_tool pre-exec breakpoint durability: when the
+				// target node has a breakpoint set AND we're in a
+				// lease-driven run, persist the agent's mid-loop
+				// state BEFORE entering waitAtBreakpoint (which
+				// happens inside the catalog.Execute closure).
+				// Worker death during the wait then leaves a
+				// durable AgentPauseState behind. On reclaim the
+				// new worker hydrates from it + jumps to
+				// PartialNextIndex = this callIdx + re-enters the
+				// same as_tool BP — no replay of earlier tools,
+				// no fresh LLM call. The BFS pre-exec BP check
+				// for the agent itself is skipped when
+				// PausedAgent.AgentNodeID matches (see
+				// executor.go).
+				if targetID, ok := env.toolNameToNodeID[call.Name]; ok &&
+					env.isBreakpoint(targetID) && env.continueCh != nil &&
+					env.checkpoint && e.RunRepo != nil && env.workerID != "" && env.runID != "" {
+					if rec, gerr := e.RunRepo.Get(ctx, env.runID); gerr == nil {
+						rec.PausedAgent = &AgentPauseState{
+							AgentNodeID:           node.ID,
+							Iter:                  iter,
+							Messages:              messages,
+							UsageTotal:            usageTotal,
+							Trace:                 traceEvents,
+							SystemPrompt:          systemPrompt,
+							UserInput:             userInputText,
+							PartialToolCalls:      toolCalls,
+							PartialToolResults:    append([]llm.Content{}, results...),
+							PartialNextIndex:      callIdx,
+							ApprovedToolCallNames: snapshotApprovedToolCallNames(),
+							ApprovedNodeIDs:       snapshotApprovedNodeIDs(),
+						}
+						if uerr := e.RunRepo.Update(ctx, rec); uerr != nil {
+							slog.Warn("ai_agent: persist paused-agent at as_tool BP failed",
+								"run_id", env.runID, "agent", node.ID, "tool", call.Name, "err", uerr)
+						}
+					}
+				}
+
 				obs, err := catalog.Execute(loopCtx, call.Name, call.Input)
 				// Approval-gate yield: an `as_tool` target's
 				// `require_node_approval=true` fired the lease-yield path.

@@ -1714,32 +1714,45 @@ func (e *WorkflowExecutor) RunWithEvents(ctx context.Context, wf Workflow, stopA
 		// view; the in-memory state stays correct so the LIVE worker
 		// can continue once the user clicks Continue.
 		if env.isBreakpoint(node.ID) && env.continueCh != nil {
-			if env.checkpoint && e.RunRepo != nil && env.workerID != "" && env.runID != "" {
-				// Roll back: re-queue + un-visit.
-				delete(visited, item.nodeID)
-				queue = append([]queueItem{item}, queue...)
-				state := snapshotExecState()
-				cperr := e.RunRepo.CheckpointExecutionState(ctx, env.runID, env.workerID, state, results, "")
-				// Roll forward so the live BFS proceeds correctly
-				// after Continue: re-pop + re-visit.
-				queue = queue[1:]
-				visited[item.nodeID] = true
-				if cperr != nil {
-					return results, cperr
+			// Skip the BFS-level wait when we're resuming an agent
+			// that was paused mid-flight at an as_tool BP. The
+			// AgentPauseState carries the agent's iter / messages /
+			// PartialNextIndex; re-firing the BFS BP here would
+			// force the user to click Continue past the agent
+			// before the as_tool BP resumes — exactly the "lost
+			// my place" complaint. Skipping lets the agent's
+			// partial-resume path land directly at its inner BP.
+			//
+			// Restricting the skip to a matching AgentNodeID means
+			// other breakpoints in the same run keep working
+			// normally — only the one node carrying the live
+			// PausedAgent gets the pass-through.
+			skip := env.resumeAgentState != nil && env.resumeAgentState.AgentNodeID == node.ID
+			if !skip {
+				if env.checkpoint && e.RunRepo != nil && env.workerID != "" && env.runID != "" {
+					// Roll back: re-queue + un-visit.
+					delete(visited, item.nodeID)
+					queue = append([]queueItem{item}, queue...)
+					state := snapshotExecState()
+					cperr := e.RunRepo.CheckpointExecutionState(ctx, env.runID, env.workerID, state, results, "")
+					// Roll forward so the live BFS proceeds correctly
+					// after Continue: re-pop + re-visit.
+					queue = queue[1:]
+					visited[item.nodeID] = true
+					if cperr != nil {
+						return results, cperr
+					}
 				}
-			}
-			env.waitAtBreakpoint(ctx, node)
-			// Bail without running the node when the wait ended via
-			// ctx cancel (worker death / lease loss / force-cancel).
-			// Without this check, the BFS continues to emit
-			// step_start + run the node with a canceled ctx → the
-			// node fails → step_done(is_error) lands → UI's paused
-			// marker flips to 'error' and the yellow indicator
-			// vanishes. Returning ctx.Err() short-circuits cleanly so
-			// the next-worker reclaim can re-emit step_pending and
-			// keep the paused marker stable.
-			if cerr := ctx.Err(); cerr != nil {
-				return results, cerr
+				env.waitAtBreakpoint(ctx, node)
+				// Bail without running the node when the wait ended
+				// via ctx cancel (worker death / lease loss /
+				// force-cancel). Without this check, the BFS
+				// continues to emit step_start + run the node with a
+				// canceled ctx → the node fails → step_done(is_error)
+				// lands → UI's paused marker flips to 'error'.
+				if cerr := ctx.Err(); cerr != nil {
+					return results, cerr
+				}
 			}
 		}
 
