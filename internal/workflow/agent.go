@@ -1142,6 +1142,17 @@ func (e *WorkflowExecutor) buildAgentToolCatalog(agent Node, env *runEnv,
 			// in the breakpoint set. Skipped when no continueCh wired.
 			if env, ok := envFromCtx(ctx); ok && env.isBreakpoint(targetNode.ID) && env.continueCh != nil {
 				env.waitAtBreakpoint(ctx, targetNode)
+				// Bail without running the tool when the wait ended via
+				// ctx cancel (worker death). Continuing would emit
+				// step_start + run runNode with a canceled ctx → tool
+				// errors → step_done(is_error) lands → UI's paused
+				// marker flips to 'error' and yellow vanishes. Return
+				// ctx.Err() so the agent loop unwinds cleanly; the
+				// next-worker reclaim re-emits step_pending and the
+				// paused marker stays stable.
+				if cerr := ctx.Err(); cerr != nil {
+					return "", cerr
+				}
 			}
 
 			// Pre-exec NODE-level approval gate. The BFS-side gate

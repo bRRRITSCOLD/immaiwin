@@ -1729,6 +1729,18 @@ func (e *WorkflowExecutor) RunWithEvents(ctx context.Context, wf Workflow, stopA
 				}
 			}
 			env.waitAtBreakpoint(ctx, node)
+			// Bail without running the node when the wait ended via
+			// ctx cancel (worker death / lease loss / force-cancel).
+			// Without this check, the BFS continues to emit
+			// step_start + run the node with a canceled ctx → the
+			// node fails → step_done(is_error) lands → UI's paused
+			// marker flips to 'error' and the yellow indicator
+			// vanishes. Returning ctx.Err() short-circuits cleanly so
+			// the next-worker reclaim can re-emit step_pending and
+			// keep the paused marker stable.
+			if cerr := ctx.Err(); cerr != nil {
+				return results, cerr
+			}
 		}
 
 		// Pre-exec approval gate. Routes through preExecApproval which
