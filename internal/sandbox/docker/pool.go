@@ -30,10 +30,15 @@ import (
 )
 
 // poolKey identifies a unique warm-container template. Same key
-// = interchangeable containers (same language, same image).
+// = interchangeable containers (same lang, image, network mode,
+// resource sizing). Resource + network fields are in the key
+// because container HostConfig bakes them at create time.
 type poolKey struct {
-	lang     sandbox.Language
-	imageTag string
+	lang      sandbox.Language
+	imageTag  string
+	network   bool
+	memBytes  int64
+	cpuMillis int64
 }
 
 // Pool maintains warm containers per (lang, image-tag) key.
@@ -68,7 +73,13 @@ func NewPool(cli client.APIClient, maxPerKey int, runtime string) *Pool {
 // first Acquire miss.
 func (p *Pool) Warm(ctx context.Context, langs ...sandbox.Language) {
 	for _, lang := range langs {
-		key := poolKey{lang: lang, imageTag: sandbox.ImageForLanguage(lang)}
+		key := poolKey{
+			lang:      lang,
+			imageTag:  sandbox.ImageForLanguage(lang),
+			network:   false,
+			memBytes:  sandbox.DefaultMemLimit,
+			cpuMillis: int64(sandbox.DefaultCPULimit * 1000),
+		}
 		if key.imageTag == "" {
 			continue
 		}
@@ -83,10 +94,16 @@ func (p *Pool) Warm(ctx context.Context, langs ...sandbox.Language) {
 	}
 }
 
-// Acquire returns a warm container ID for (lang, image-tag), or
-// empty if no slot ready. Always triggers replenish.
-func (p *Pool) Acquire(lang sandbox.Language, imageTag string) string {
-	key := poolKey{lang: lang, imageTag: imageTag}
+// Acquire returns a warm container ID matching the request's
+// envelope, or empty if no slot ready. Always triggers replenish.
+func (p *Pool) Acquire(req sandbox.RunRequest, imageTag string) string {
+	key := poolKey{
+		lang:      req.Language,
+		imageTag:  imageTag,
+		network:   req.Network,
+		memBytes:  req.MemLimit,
+		cpuMillis: int64(req.CPULimit * 1000),
+	}
 	p.mu.Lock()
 	ids := p.warm[key]
 	if len(ids) == 0 {
@@ -196,6 +213,15 @@ func (p *Pool) createWarm(ctx context.Context, key poolKey) (string, error) {
 	if key.imageTag == "" {
 		return "", fmt.Errorf("sandbox/docker pool: empty image tag for lang %s", key.lang)
 	}
+	memBytes := key.memBytes
+	if memBytes == 0 {
+		memBytes = sandbox.DefaultMemLimit
+	}
+	cpuMillis := key.cpuMillis
+	if cpuMillis == 0 {
+		cpuMillis = int64(sandbox.DefaultCPULimit * 1000)
+	}
+	nanoCPUs := cpuMillis * 1_000_000 // millicores → nanocores
 
 	cfg := &container.Config{
 		Image:       key.imageTag,
@@ -206,13 +232,17 @@ func (p *Pool) createWarm(ctx context.Context, key poolKey) (string, error) {
 		Tty:         false,
 	}
 
+	netMode := container.NetworkMode("none")
+	if key.network {
+		netMode = "bridge"
+	}
 	hostCfg := &container.HostConfig{
 		Resources: container.Resources{
-			Memory:    sandbox.DefaultMemLimit,
-			NanoCPUs:  int64(sandbox.DefaultCPULimit * 1e9),
+			Memory:    memBytes,
+			NanoCPUs:  nanoCPUs,
 			PidsLimit: intPtr(256),
 		},
-		NetworkMode: "none",
+		NetworkMode: netMode,
 	}
 	if p.runtime != "" {
 		hostCfg.Runtime = p.runtime

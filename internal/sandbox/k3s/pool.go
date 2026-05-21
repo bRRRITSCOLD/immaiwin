@@ -51,12 +51,20 @@ const poolPodTimeout = 90 * time.Second
 const warmPodIdleTTL = 24 * time.Hour
 
 // poolKey identifies a unique warm-pod template. Two requests
-// hash to the same key (and therefore the same warm pool) iff
-// they would produce an interchangeable pod — same language and
-// same resolved image.
+// hash to the same key (and therefore share warm pods) iff they
+// produce an interchangeable pod — same lang, same resolved
+// image, same network policy, same resource sizing.
+//
+// Resource fields are required in the key because pod
+// spec.containers[].resources.{limits,requests} + the network
+// policy label are baked at create time and cannot be changed
+// to satisfy a later request with a different envelope.
 type poolKey struct {
-	lang     sandbox.Language
-	imageTag string
+	lang      sandbox.Language
+	imageTag  string
+	network   bool
+	memBytes  int64
+	cpuMillis int64
 }
 
 // Pool maintains warm pods per (lang, image-tag) key. Acquire
@@ -90,12 +98,18 @@ func NewPool(rt *Runtime, maxPerKey int) *Pool {
 }
 
 // Warm pre-creates idle pods for the default base image of each
-// language. Background-safe — failures log and skip. Custom-image
-// or packages keys aren't seeded here; they get warmed lazily on
-// first Acquire miss.
+// language at default resources + network=false. Custom keys
+// (different image / network / mem / cpu) warm lazily on first
+// Acquire miss.
 func (p *Pool) Warm(ctx context.Context, langs ...sandbox.Language) {
 	for _, lang := range langs {
-		key := poolKey{lang: lang, imageTag: p.rt.imageWithRegistry(sandbox.ImageForLanguage(lang))}
+		key := poolKey{
+			lang:      lang,
+			imageTag:  p.rt.imageWithRegistry(sandbox.ImageForLanguage(lang)),
+			network:   false,
+			memBytes:  sandbox.DefaultMemLimit,
+			cpuMillis: int64(sandbox.DefaultCPULimit * 1000),
+		}
 		for i := 0; i < p.maxWarm; i++ {
 			name, err := p.createWarm(ctx, key)
 			if err != nil {
@@ -107,12 +121,19 @@ func (p *Pool) Warm(ctx context.Context, langs ...sandbox.Language) {
 	}
 }
 
-// Acquire returns a warm pod name for the given (lang, image-tag),
-// or empty string if none available. Always triggers replenish so
-// the next request for the same key hits the pool. Caller MUST
-// treat the pod as single-use: attach, run payload, delete.
-func (p *Pool) Acquire(lang sandbox.Language, imageTag string) string {
-	key := poolKey{lang: lang, imageTag: imageTag}
+// Acquire returns a warm pod name matching the request's
+// envelope, or empty string if none available. Always triggers
+// replenish so the next request for the same key hits the pool.
+// Caller MUST treat the pod as single-use: attach, run payload,
+// delete.
+func (p *Pool) Acquire(req sandbox.RunRequest, imageTag string) string {
+	key := poolKey{
+		lang:      req.Language,
+		imageTag:  imageTag,
+		network:   req.Network,
+		memBytes:  req.MemLimit,
+		cpuMillis: int64(req.CPULimit * 1000),
+	}
 	for {
 		p.mu.Lock()
 		ids := p.warm[key]
@@ -215,7 +236,12 @@ func (p *Pool) replenish(key poolKey) {
 func (p *Pool) addToKey(key poolKey, name string) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.closed || len(p.warm[key]) >= p.maxWarm {
+	if p.closed {
+		slog.Info("sandbox/k3s pool: addToKey skipped — closed", "pod", name, "lang", key.lang)
+		return false
+	}
+	if len(p.warm[key]) >= p.maxWarm {
+		slog.Info("sandbox/k3s pool: addToKey skipped — slot full", "pod", name, "lang", key.lang, "image", key.imageTag, "slot_len", len(p.warm[key]))
 		return false
 	}
 	// New key — enforce maxKeys cap via FIFO eviction of the
@@ -237,6 +263,7 @@ func (p *Pool) addToKey(key poolKey, name string) bool {
 		p.keyOrder = append(p.keyOrder, key)
 	}
 	p.warm[key] = append(p.warm[key], name)
+	slog.Info("sandbox/k3s pool: warm slot updated", "pod", name, "lang", key.lang, "image", key.imageTag, "slot_len", len(p.warm[key]), "keys", len(p.warm))
 	return true
 }
 
@@ -257,21 +284,33 @@ func (p *Pool) touchKey(key poolKey) {
 // resources, network=none, long deadline. Waits for Running
 // before returning so Acquire callers attach immediately.
 func (p *Pool) createWarm(ctx context.Context, key poolKey) (string, error) {
+	memBytes := key.memBytes
+	if memBytes == 0 {
+		memBytes = sandbox.DefaultMemLimit
+	}
+	cpuMillis := key.cpuMillis
+	if cpuMillis == 0 {
+		cpuMillis = int64(sandbox.DefaultCPULimit * 1000)
+	}
 	req := sandbox.RunRequest{
 		Language: key.lang,
-		MemLimit: sandbox.DefaultMemLimit,
-		CPULimit: sandbox.DefaultCPULimit,
+		MemLimit: memBytes,
+		CPULimit: float64(cpuMillis) / 1000,
 		Timeout:  warmPodIdleTTL,
-		Network:  false,
+		Network:  key.network,
 	}
 	pod := p.rt.buildPod(req, key.imageTag, false)
 	created, err := p.cli.CoreV1().Pods(p.rt.ns).Create(ctx, pod, metav1.CreateOptions{})
 	if err != nil {
+		slog.Warn("sandbox/k3s pool: create pod failed", "lang", key.lang, "image", key.imageTag, "err", err)
 		return "", err
 	}
+	slog.Info("sandbox/k3s pool: pod creating", "pod", created.Name, "lang", key.lang, "image", key.imageTag)
 	if werr := waitPodRunning(ctx, p.cli, p.rt.ns, created.Name, poolPodTimeout); werr != nil {
+		slog.Warn("sandbox/k3s pool: pod never reached Running", "pod", created.Name, "lang", key.lang, "image", key.imageTag, "err", werr)
 		deletePod(context.Background(), p.cli, p.rt.ns, created.Name)
 		return "", werr
 	}
+	slog.Info("sandbox/k3s pool: warm pod ready", "pod", created.Name, "lang", key.lang, "image", key.imageTag)
 	return created.Name, nil
 }

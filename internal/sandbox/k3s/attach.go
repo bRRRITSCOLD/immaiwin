@@ -17,17 +17,11 @@ import (
 	"k8s.io/client-go/tools/remotecommand"
 )
 
-// eligibleForPool reports whether a RunRequest can be served from
-// the warm pod pool. Pool pods are sized at create time with
-// specific mem/cpu/network — only requests using the defaults can
-// be served from a shared pool. Custom image / packages are NOT
-// disqualifying anymore; the pool keys by resolved image tag so
-// per-package warm pools work on the second-and-onwards hit.
-func eligibleForPool(req sandbox.RunRequest) bool {
-	return !req.Network &&
-		req.MemLimit == sandbox.DefaultMemLimit &&
-		req.CPULimit == sandbox.DefaultCPULimit
-}
+// (eligibleForPool removed — the pool now keys by every dimension
+// that affects pod spec, so any request can be served from a key-
+// specific slot. Cold miss for a new key triggers a background
+// replenish; second-and-onwards requests with the same envelope
+// hit warm.)
 
 // attachAndStream attaches to the named pod's main container, writes the JSON
 // payload to its stdin, and streams stdout/stderr through the provided writers.
@@ -147,8 +141,8 @@ func (r *Runtime) Run(ctx context.Context, req sandbox.RunRequest) (*sandbox.Run
 	// and trigger a background replenish for that key.
 	var podName string
 	var fromPool bool
-	if r.pool != nil && eligibleForPool(req) {
-		if name := r.pool.Acquire(req.Language, image); name != "" {
+	if r.pool != nil {
+		if name := r.pool.Acquire(req, image); name != "" {
 			podName = name
 			fromPool = true
 			slog.Info("sandbox/k3s: pool acquired", "pod", name, "language", req.Language, "image", image)
@@ -221,12 +215,12 @@ func (r *Runtime) StreamRun(ctx context.Context, req sandbox.RunRequest) (<-chan
 		return nil, fmt.Errorf("sandbox/k3s: marshal payload: %w", err)
 	}
 
-	// Same pool fast-path as Run — eligible requests skip pod
-	// creation; ineligible requests fall through to per-run create.
+	// Same pool fast-path as Run — every request can pool, just on
+	// its own (lang,image,network,mem,cpu) key.
 	var podName string
 	var fromPool bool
-	if r.pool != nil && eligibleForPool(req) {
-		if name := r.pool.Acquire(req.Language, image); name != "" {
+	if r.pool != nil {
+		if name := r.pool.Acquire(req, image); name != "" {
 			podName = name
 			fromPool = true
 			slog.Info("sandbox/k3s: pool acquired (stream)", "pod", name, "language", req.Language, "image", image)
