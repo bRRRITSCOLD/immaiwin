@@ -142,9 +142,13 @@ func main() {
 				os.Exit(1)
 			}
 			rt.CleanupOrphans(ctx)
+			pool := k3s.NewPool(rt, cfg.Sandbox.PoolSize)
+			pool.Warm(ctx, sandbox.LangJavaScript, sandbox.LangPython)
+			rt.SetPool(pool)
+			defer pool.Close(context.Background())
 			defer func() { _ = rt.Close() }()
 			sandboxRT = rt
-			slog.Info("sandbox enabled", "backend", "k3s", "namespace", cfg.Sandbox.Namespace, "registry", cfg.Sandbox.ImageRegistry)
+			slog.Info("sandbox enabled", "backend", "k3s", "namespace", cfg.Sandbox.Namespace, "registry", cfg.Sandbox.ImageRegistry, "pool_size", cfg.Sandbox.PoolSize)
 		default:
 			slog.Error("unknown sandbox backend", "backend", backend)
 			os.Exit(1)

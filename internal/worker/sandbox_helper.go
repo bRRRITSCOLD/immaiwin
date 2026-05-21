@@ -64,7 +64,10 @@ func buildSandboxRT(ctx context.Context, cfg *config.Config) sandbox.Runtime {
 			return nil
 		}
 		rt.CleanupOrphans(ctx)
-		slog.Info("worker: sandbox enabled", "backend", "k3s", "namespace", cfg.Sandbox.Namespace, "registry", cfg.Sandbox.ImageRegistry)
+		pool := k3s.NewPool(rt, cfg.Sandbox.PoolSize)
+		pool.Warm(ctx, sandbox.LangJavaScript, sandbox.LangPython)
+		rt.SetPool(pool)
+		slog.Info("worker: sandbox enabled", "backend", "k3s", "namespace", cfg.Sandbox.Namespace, "registry", cfg.Sandbox.ImageRegistry, "pool_size", cfg.Sandbox.PoolSize)
 		return rt
 	default:
 		slog.Warn("worker: unknown sandbox backend (skill tools will be unavailable)", "backend", backend)

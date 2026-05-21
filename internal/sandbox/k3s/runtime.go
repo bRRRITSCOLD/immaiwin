@@ -33,9 +33,16 @@ type Runtime struct {
 	registry     string
 
 	bldr          *builder // optional package builder (nil if Docker daemon unavailable)
+	pool          *Pool    // warm pod pool; nil if not configured
 	portAlloc     *sandbox.PortAllocator
 	debugMu       sync.Mutex
 	debugSessions map[string]*debugSessionEntry
+}
+
+// SetPool attaches a warm pod pool post-construction. Same pattern as the
+// docker backend — pool creation needs the Runtime so we wire it after New.
+func (r *Runtime) SetPool(p *Pool) {
+	r.pool = p
 }
 
 // debugSessionEntry holds runtime state for an active debug session.
@@ -63,6 +70,16 @@ func New(opts Options) (*Runtime, error) {
 	if err != nil {
 		return nil, fmt.Errorf("sandbox/k3s: kubeconfig: %w", err)
 	}
+
+	// Default client-go config caps at 5 QPS / 10 burst — fine for
+	// occasional one-shot pod creates, but the warm-pod pool + lease
+	// heartbeat + attach traffic blow through that within a single
+	// run. Symptom is "rate: Wait(n=1) would exceed context deadline"
+	// on attach + a stuck pod create. Bump well above the steady-
+	// state rate so a burst (Warm at boot, multi-skill agent run)
+	// doesn't starve.
+	cfg.QPS = 50
+	cfg.Burst = 100
 
 	cs, err := kubernetes.NewForConfig(cfg)
 	if err != nil {

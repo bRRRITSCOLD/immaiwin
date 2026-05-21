@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -15,6 +16,18 @@ import (
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/remotecommand"
 )
+
+// eligibleForPool reports whether a RunRequest can be served from
+// the warm pod pool. Pool pods are sized with defaults + no custom
+// image + no packages + network=none. Any divergence falls through
+// to the per-run create path which honors the request as-is.
+func eligibleForPool(req sandbox.RunRequest) bool {
+	return req.Image == "" &&
+		len(req.Packages) == 0 &&
+		!req.Network &&
+		req.MemLimit == sandbox.DefaultMemLimit &&
+		req.CPULimit == sandbox.DefaultCPULimit
+}
 
 // attachAndStream attaches to the named pod's main container, writes the JSON
 // payload to its stdin, and streams stdout/stderr through the provided writers.
@@ -118,12 +131,35 @@ func (r *Runtime) Run(ctx context.Context, req sandbox.RunRequest) (*sandbox.Run
 		return nil, fmt.Errorf("sandbox/k3s: marshal payload: %w", err)
 	}
 
-	pod := r.buildPod(req, image, false)
-	created, err := r.clientset.CoreV1().Pods(r.ns).Create(ctx, pod, metav1.CreateOptions{})
-	if err != nil {
-		return nil, fmt.Errorf("sandbox/k3s: create pod: %w", err)
+	// Pool fast-path: when the request matches the warm-pod
+	// envelope (default mem/cpu, no custom image, no packages, no
+	// network) and the pool has a ready pod, skip the create +
+	// wait-for-running overhead.
+	var podName string
+	var fromPool bool
+	if r.pool != nil && eligibleForPool(req) {
+		if name := r.pool.Acquire(req.Language); name != "" {
+			podName = name
+			fromPool = true
+			slog.Info("sandbox/k3s: pool acquired", "pod", name, "language", req.Language)
+		}
 	}
-	defer deletePod(context.Background(), r.clientset, r.ns, created.Name)
+	if !fromPool {
+		slog.Info("sandbox/k3s: cold start (no pool match)", "language", req.Language, "has_packages", len(req.Packages) > 0, "custom_image", req.Image != "")
+		pod := r.buildPod(req, image, false)
+		created, err := r.clientset.CoreV1().Pods(r.ns).Create(ctx, pod, metav1.CreateOptions{})
+		if err != nil {
+			return nil, fmt.Errorf("sandbox/k3s: create pod: %w", err)
+		}
+		podName = created.Name
+	}
+	defer func() {
+		if fromPool {
+			r.pool.Release(context.Background(), podName)
+		} else {
+			deletePod(context.Background(), r.clientset, r.ns, podName)
+		}
+	}()
 
 	start := time.Now()
 	var stdoutBuf, stderrBuf bytes.Buffer
@@ -131,7 +167,7 @@ func (r *Runtime) Run(ctx context.Context, req sandbox.RunRequest) (*sandbox.Run
 	execCtx, cancel := context.WithTimeout(ctx, req.Timeout+10*time.Second) // allow pod scheduling overhead
 	defer cancel()
 
-	exitCode, streamErr := r.attachAndStream(execCtx, created.Name, payload, &stdoutBuf, &stderrBuf)
+	exitCode, streamErr := r.attachAndStream(execCtx, podName, payload, &stdoutBuf, &stderrBuf)
 	if streamErr != nil && exitCode == -1 {
 		return nil, fmt.Errorf("sandbox/k3s: attach: %w", streamErr)
 	}
@@ -175,17 +211,37 @@ func (r *Runtime) StreamRun(ctx context.Context, req sandbox.RunRequest) (<-chan
 		return nil, fmt.Errorf("sandbox/k3s: marshal payload: %w", err)
 	}
 
-	pod := r.buildPod(req, image, false)
-	created, err := r.clientset.CoreV1().Pods(r.ns).Create(ctx, pod, metav1.CreateOptions{})
-	if err != nil {
-		return nil, fmt.Errorf("sandbox/k3s: create pod: %w", err)
+	// Same pool fast-path as Run — eligible requests skip pod
+	// creation; ineligible requests fall through to per-run create.
+	var podName string
+	var fromPool bool
+	if r.pool != nil && eligibleForPool(req) {
+		if name := r.pool.Acquire(req.Language); name != "" {
+			podName = name
+			fromPool = true
+			slog.Info("sandbox/k3s: pool acquired (stream)", "pod", name, "language", req.Language)
+		}
+	}
+	if !fromPool {
+		pod := r.buildPod(req, image, false)
+		created, err := r.clientset.CoreV1().Pods(r.ns).Create(ctx, pod, metav1.CreateOptions{})
+		if err != nil {
+			return nil, fmt.Errorf("sandbox/k3s: create pod: %w", err)
+		}
+		podName = created.Name
 	}
 
 	ch := make(chan sandbox.OutputEvent, 64)
 
 	go func() {
 		defer close(ch)
-		defer deletePod(context.Background(), r.clientset, r.ns, created.Name)
+		defer func() {
+			if fromPool {
+				r.pool.Release(context.Background(), podName)
+			} else {
+				deletePod(context.Background(), r.clientset, r.ns, podName)
+			}
+		}()
 
 		stdoutW := &sandbox.StreamWriter{Stream: "stdout", Ch: ch}
 		stderrW := &sandbox.StreamWriter{Stream: "stderr", Ch: ch}
@@ -194,7 +250,7 @@ func (r *Runtime) StreamRun(ctx context.Context, req sandbox.RunRequest) (<-chan
 		defer cancel()
 
 		start := time.Now()
-		exitCode, streamErr := r.attachAndStream(execCtx, created.Name, payload, stdoutW, stderrW)
+		exitCode, streamErr := r.attachAndStream(execCtx, podName, payload, stdoutW, stderrW)
 
 		if streamErr != nil && exitCode == -1 {
 			ch <- sandbox.OutputEvent{Stream: "exit", Error: streamErr.Error()}
