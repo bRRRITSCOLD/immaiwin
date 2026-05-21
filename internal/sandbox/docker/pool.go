@@ -1,3 +1,20 @@
+// Package docker — warm container pool, keyed by (language, image-tag).
+//
+// Pre-creates a small set of containers per (language, image-tag)
+// at startup (defaults) and on-demand (custom-image / packages).
+// On Acquire, a container is plucked from the pool and the
+// existing Run path attaches to it instead of paying the create +
+// image-pull overhead. After use the container is removed
+// (single-use under stdinOnce) and a fresh one is created in the
+// background to replenish the slot.
+//
+// Pool key includes the resolved image tag so package-using runs
+// (which use docker BuildOrReuse for a deterministic tag) hit a
+// per-package warm pool from the second run onwards. First run
+// still pays cold-start; subsequent runs with the SAME packages
+// list hit the pool. Total unique keys capped at maxKeys (default
+// 16), FIFO-evict on overflow.
+
 package docker
 
 import (
@@ -12,68 +29,83 @@ import (
 	"github.com/docker/docker/client"
 )
 
-// Pool maintains a set of warm, idle containers per language for fast starts.
-// When a container is acquired, a new one is created in the background to
-// replenish the pool.
-type Pool struct {
-	mu      sync.Mutex
-	cli     client.APIClient
-	warm    map[sandbox.Language][]string
-	maxWarm int
-	runtime string
-	closed  bool
+// poolKey identifies a unique warm-container template. Same key
+// = interchangeable containers (same language, same image).
+type poolKey struct {
+	lang     sandbox.Language
+	imageTag string
 }
 
-// NewPool creates a container pool. maxPerLang controls how many warm
-// containers are kept per language (default 2).
-func NewPool(cli client.APIClient, maxPerLang int, runtime string) *Pool {
-	if maxPerLang <= 0 {
-		maxPerLang = 2
+// Pool maintains warm containers per (lang, image-tag) key.
+type Pool struct {
+	mu       sync.Mutex
+	cli      client.APIClient
+	warm     map[poolKey][]string
+	keyOrder []poolKey
+	maxWarm  int
+	maxKeys  int
+	runtime  string
+	closed   bool
+}
+
+// NewPool creates a container pool. maxPerKey = warm containers
+// per (lang, image-tag).
+func NewPool(cli client.APIClient, maxPerKey int, runtime string) *Pool {
+	if maxPerKey <= 0 {
+		maxPerKey = 2
 	}
 	return &Pool{
 		cli:     cli,
-		warm:    make(map[sandbox.Language][]string),
-		maxWarm: maxPerLang,
+		warm:    make(map[poolKey][]string),
+		maxWarm: maxPerKey,
+		maxKeys: 16,
 		runtime: runtime,
 	}
 }
 
-// Warm pre-creates idle containers for the given languages.
-// Call once at startup.
+// Warm pre-creates idle containers for the default base image of
+// each language. Custom-image / packages keys warm lazily on
+// first Acquire miss.
 func (p *Pool) Warm(ctx context.Context, langs ...sandbox.Language) {
 	for _, lang := range langs {
+		key := poolKey{lang: lang, imageTag: sandbox.ImageForLanguage(lang)}
+		if key.imageTag == "" {
+			continue
+		}
 		for i := 0; i < p.maxWarm; i++ {
-			id, err := p.createWarm(ctx, lang)
+			id, err := p.createWarm(ctx, key)
 			if err != nil {
-				slog.Warn("sandbox/docker pool: warm failed", "lang", lang, "err", err)
+				slog.Warn("sandbox/docker pool: warm failed", "lang", lang, "image", key.imageTag, "err", err)
 				continue
 			}
-			p.mu.Lock()
-			p.warm[lang] = append(p.warm[lang], id)
-			p.mu.Unlock()
+			p.addToKey(key, id)
 		}
 	}
 }
 
-// Acquire returns a warm container ID for the language, or empty string if none available.
-func (p *Pool) Acquire(lang sandbox.Language) string {
+// Acquire returns a warm container ID for (lang, image-tag), or
+// empty if no slot ready. Always triggers replenish.
+func (p *Pool) Acquire(lang sandbox.Language, imageTag string) string {
+	key := poolKey{lang: lang, imageTag: imageTag}
 	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	ids := p.warm[lang]
+	ids := p.warm[key]
 	if len(ids) == 0 {
+		p.mu.Unlock()
+		// Cold miss — replenish so the SECOND request for this
+		// key hits warm.
+		go p.replenish(key)
 		return ""
 	}
-
 	id := ids[0]
-	p.warm[lang] = ids[1:]
+	p.warm[key] = ids[1:]
+	p.touchKey(key)
+	p.mu.Unlock()
 
-	go p.replenish(lang)
-
+	go p.replenish(key)
 	return id
 }
 
-// Release removes a used container (containers are single-use after exec).
+// Release removes a used container (single-use under stdinOnce).
 func (p *Pool) Release(ctx context.Context, containerID string) {
 	rmCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -88,7 +120,8 @@ func (p *Pool) Close(ctx context.Context) {
 	for _, ids := range p.warm {
 		all = append(all, ids...)
 	}
-	p.warm = make(map[sandbox.Language][]string)
+	p.warm = make(map[poolKey][]string)
+	p.keyOrder = nil
 	p.mu.Unlock()
 
 	for _, id := range all {
@@ -98,9 +131,9 @@ func (p *Pool) Close(ctx context.Context) {
 	}
 }
 
-func (p *Pool) replenish(lang sandbox.Language) {
+func (p *Pool) replenish(key poolKey) {
 	p.mu.Lock()
-	if p.closed || len(p.warm[lang]) >= p.maxWarm {
+	if p.closed || len(p.warm[key]) >= p.maxWarm {
 		p.mu.Unlock()
 		return
 	}
@@ -109,17 +142,12 @@ func (p *Pool) replenish(lang sandbox.Language) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	id, err := p.createWarm(ctx, lang)
+	id, err := p.createWarm(ctx, key)
 	if err != nil {
-		slog.Warn("sandbox/docker pool: replenish failed", "lang", lang, "err", err)
+		slog.Warn("sandbox/docker pool: replenish failed", "lang", key.lang, "image", key.imageTag, "err", err)
 		return
 	}
-
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if !p.closed && len(p.warm[lang]) < p.maxWarm {
-		p.warm[lang] = append(p.warm[lang], id)
-	} else {
+	if !p.addToKey(key, id) {
 		go func() {
 			rmCtx, rmCancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer rmCancel()
@@ -128,14 +156,49 @@ func (p *Pool) replenish(lang sandbox.Language) {
 	}
 }
 
-func (p *Pool) createWarm(ctx context.Context, lang sandbox.Language) (string, error) {
-	img := sandbox.ImageForLanguage(lang)
-	if img == "" {
-		return "", fmt.Errorf("unsupported language: %s", lang)
+func (p *Pool) addToKey(key poolKey, id string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed || len(p.warm[key]) >= p.maxWarm {
+		return false
+	}
+	if _, exists := p.warm[key]; !exists {
+		if len(p.keyOrder) >= p.maxKeys {
+			oldest := p.keyOrder[0]
+			p.keyOrder = p.keyOrder[1:]
+			victims := p.warm[oldest]
+			delete(p.warm, oldest)
+			go func(ids []string) {
+				for _, cid := range ids {
+					rmCtx, rmCancel := context.WithTimeout(context.Background(), 10*time.Second)
+					_ = p.cli.ContainerRemove(rmCtx, cid, container.RemoveOptions{Force: true})
+					rmCancel()
+				}
+			}(victims)
+		}
+		p.keyOrder = append(p.keyOrder, key)
+	}
+	p.warm[key] = append(p.warm[key], id)
+	return true
+}
+
+func (p *Pool) touchKey(key poolKey) {
+	for i, k := range p.keyOrder {
+		if k == key {
+			p.keyOrder = append(p.keyOrder[:i], p.keyOrder[i+1:]...)
+			p.keyOrder = append(p.keyOrder, key)
+			return
+		}
+	}
+}
+
+func (p *Pool) createWarm(ctx context.Context, key poolKey) (string, error) {
+	if key.imageTag == "" {
+		return "", fmt.Errorf("sandbox/docker pool: empty image tag for lang %s", key.lang)
 	}
 
 	cfg := &container.Config{
-		Image:       img,
+		Image:       key.imageTag,
 		Labels:      map[string]string{sandbox.SandboxLabel: "true"},
 		AttachStdin: true,
 		OpenStdin:   true,
