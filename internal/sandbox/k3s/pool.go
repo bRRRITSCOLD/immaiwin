@@ -86,17 +86,47 @@ func (p *Pool) Warm(ctx context.Context, langs ...sandbox.Language) {
 // Acquire returns a warm pod name for the language, or empty
 // string if none available. Caller MUST treat the pod as
 // single-use: attach, run the user payload, delete.
+//
+// Validates pod phase before returning — k8s can kill a pod for
+// many reasons (OOM, node eviction, exhausted activeDeadline)
+// while it's idle in the pool. Returning a dead pod would fail
+// the next attach with "pod entered terminal phase Failed". The
+// validation loop skips dead pods (deletes them in the
+// background) and tries the next slot.
 func (p *Pool) Acquire(lang sandbox.Language) string {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	ids := p.warm[lang]
-	if len(ids) == 0 {
-		return ""
+	for {
+		p.mu.Lock()
+		ids := p.warm[lang]
+		if len(ids) == 0 {
+			p.mu.Unlock()
+			return ""
+		}
+		name := ids[0]
+		p.warm[lang] = ids[1:]
+		p.mu.Unlock()
+
+		// Liveness check — quick GET. If pod is Running, hand it
+		// back. If not, dispose + try next.
+		checkCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		pod, err := p.cli.CoreV1().Pods(p.rt.ns).Get(checkCtx, name, metav1.GetOptions{})
+		cancel()
+		if err == nil && pod.Status.Phase == "Running" {
+			go p.replenish(lang)
+			return name
+		}
+		phase := ""
+		if pod != nil {
+			phase = string(pod.Status.Phase)
+		}
+		slog.Warn("sandbox/k3s pool: discarding dead warm pod", "pod", name, "phase", phase, "err", err)
+		go func(podName string) {
+			rmCtx, rmCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer rmCancel()
+			deletePod(rmCtx, p.cli, p.rt.ns, podName)
+		}(name)
+		go p.replenish(lang)
+		// loop to try the next slot
 	}
-	name := ids[0]
-	p.warm[lang] = ids[1:]
-	go p.replenish(lang)
-	return name
 }
 
 // Release deletes a used pod. Matching the Docker pool's per-
@@ -160,13 +190,27 @@ func (p *Pool) replenish(lang sandbox.Language) {
 // resources, network=none, no custom image, no packages. Waits for
 // Running before returning so Acquire callers can attach
 // immediately.
+// warmPodIdleTTL is the activeDeadlineSeconds stamped on warm pods.
+// Pool pods sit idle until an Acquire picks them up — must outlive
+// the default 30s execution timeout that buildPod inherits from
+// req.Timeout. 24h is well over any realistic Acquire latency
+// (pool keeps a handful warm) while still bounding orphan pods if
+// the controlling worker exits without Close().
+const warmPodIdleTTL = 24 * time.Hour
+
 func (p *Pool) createWarm(ctx context.Context, lang sandbox.Language) (string, error) {
 	req := sandbox.RunRequest{
 		Language: lang,
 		MemLimit: sandbox.DefaultMemLimit,
 		CPULimit: sandbox.DefaultCPULimit,
-		Timeout:  sandbox.DefaultTimeout,
-		Network:  false,
+		// Long deadline keeps the pod alive while waiting for an
+		// Acquire. Without this, buildPod stamps the default 30s
+		// execution timeout into activeDeadlineSeconds; the pod
+		// then enters Failed before any attach can land, and pool
+		// acquires return a dead pod that immediately errors on
+		// attach.
+		Timeout: warmPodIdleTTL,
+		Network: false,
 	}
 	image := p.rt.imageWithRegistry(sandbox.ImageForLanguage(lang))
 	pod := p.rt.buildPod(req, image, false)
