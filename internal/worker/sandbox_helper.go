@@ -41,8 +41,8 @@ func buildSandboxRT(ctx context.Context, cfg *config.Config) sandbox.Runtime {
 		}
 		rt.CleanupOrphans(ctx)
 		pool := docker.NewPool(rt.DockerClient(), cfg.Sandbox.PoolSize, cfg.Sandbox.Runtime)
-		pool.Warm(ctx, sandbox.LangJavaScript, sandbox.LangPython)
 		rt.SetPool(pool)
+		go pool.Warm(context.Background(), sandbox.LangJavaScript, sandbox.LangPython)
 		slog.Info("worker: sandbox enabled", "backend", "docker", "runtime", cfg.Sandbox.Runtime, "pool_size", cfg.Sandbox.PoolSize)
 		return rt
 	case "k3s":
@@ -65,8 +65,14 @@ func buildSandboxRT(ctx context.Context, cfg *config.Config) sandbox.Runtime {
 		}
 		rt.CleanupOrphans(ctx)
 		pool := k3s.NewPool(rt, cfg.Sandbox.PoolSize)
-		pool.Warm(ctx, sandbox.LangJavaScript, sandbox.LangPython)
 		rt.SetPool(pool)
+		// Warm in the background — each pod create + wait-for-Running
+		// can run >90s on a cold registry, and stacking that on the
+		// boot path would block ClaimLease for minutes. Cold-start
+		// fallback handles the gap: requests served from per-run
+		// pod-create until the pool fills, then take the pool fast
+		// path automatically.
+		go pool.Warm(context.Background(), sandbox.LangJavaScript, sandbox.LangPython)
 		slog.Info("worker: sandbox enabled", "backend", "k3s", "namespace", cfg.Sandbox.Namespace, "registry", cfg.Sandbox.ImageRegistry, "pool_size", cfg.Sandbox.PoolSize)
 		return rt
 	default:
