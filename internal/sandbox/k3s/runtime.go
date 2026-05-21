@@ -71,6 +71,16 @@ func New(opts Options) (*Runtime, error) {
 		return nil, fmt.Errorf("sandbox/k3s: kubeconfig: %w", err)
 	}
 
+	// Default client-go config caps at 5 QPS / 10 burst — fine for
+	// occasional one-shot pod creates, but the warm-pod pool + lease
+	// heartbeat + attach traffic blow through that within a single
+	// run. Symptom is "rate: Wait(n=1) would exceed context deadline"
+	// on attach + a stuck pod create. Bump well above the steady-
+	// state rate so a burst (Warm at boot, multi-skill agent run)
+	// doesn't starve.
+	cfg.QPS = 50
+	cfg.Burst = 100
+
 	cs, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("sandbox/k3s: clientset: %w", err)
