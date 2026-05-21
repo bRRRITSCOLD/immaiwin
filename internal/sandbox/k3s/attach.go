@@ -84,11 +84,18 @@ func (r *Runtime) attachAndStream(
 	return -1, streamErr
 }
 
-// waitForTerminated polls the pod until the "user" container reports a
-// Terminated state or the deadline elapses.
+// waitForTerminated polls the pod until the "user" container reports
+// a Terminated state or the deadline elapses.
+//
+// Polling cadence is tight (10ms initial, 50ms cap) because this
+// runs AFTER the attach stream has already closed — the user
+// process is provably done; we're just waiting for kubelet to
+// reflect the terminated state. With exponential backoff (50ms →
+// 800ms) a single missed-by-a-tick check stretched skill calls
+// to 1.5s+, dominating the runtime for sub-second skills.
 func waitForTerminated(ctx context.Context, r *Runtime, podName string, maxWait time.Duration) (int32, bool) {
 	deadline := time.Now().Add(maxWait)
-	delay := 50 * time.Millisecond
+	delay := 10 * time.Millisecond
 	for {
 		pod, err := r.clientset.CoreV1().Pods(r.ns).Get(ctx, podName, metav1.GetOptions{})
 		if err == nil {
@@ -106,7 +113,7 @@ func waitForTerminated(ctx context.Context, r *Runtime, podName string, maxWait 
 			return 0, false
 		case <-time.After(delay):
 		}
-		if delay < 500*time.Millisecond {
+		if delay < 50*time.Millisecond {
 			delay *= 2
 		}
 	}
