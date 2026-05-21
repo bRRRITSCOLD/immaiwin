@@ -88,8 +88,8 @@ baked into the engine instead of bolted on after.
 - **Per-tenant cost cap** (per-run + per-day already exist)
 
 ### Sandbox + infra
-- **Container pool warm starts** — keep a warm pool of language-runtime pods so cold start is sub-100ms (versus the current per-run create + image-pull + entrypoint)
-- **Image-layer caching for `packages`** — skip the per-run pip / npm / cargo install when the `packages` list is the same as a previously-cached layer
+- **Container pool warm starts** — *partial: docker + k3s default-language pools shipped*. Boot-time async warm + per-Acquire liveness check + 24h activeDeadline on warm pods + tightened post-attach termination poll (10ms init / 50ms cap). Still unbuilt: per-(image, packages-hash) pool sharding so package-using runs also skip cold start.
+- **Image-layer caching for `packages`** — *partial: docker `BuildOrReuse` exists (sha256-tagged image, reused on next run)*. Still unbuilt: k3s variant that pushes the built image to the configured registry so k3s containerd can pull it; pool integration with the package-image tag as the pool key.
 - **Multi-node Kubernetes validation** — exercise the k3s backend on real multi-node clusters; verify HPA, pod priority, ResourceQuotas, anti-affinity behave as expected
 
 ### Standard integrations + connectors
