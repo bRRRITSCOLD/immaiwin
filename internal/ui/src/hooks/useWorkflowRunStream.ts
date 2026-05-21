@@ -492,18 +492,22 @@ export function useWorkflowRunStream(): WorkflowRunStream {
           // Without this it spins "Running" forever. Flip any
           // non-terminal node (and its loop iterations) to 'cancelled'.
           //
-          // EXCEPT 'paused' — a debug breakpoint pause that ended via
-          // worker death / sweep / explicit cancel is still meaningful
-          // diagnostic info ("the run died at this breakpoint"). Wiping
-          // the yellow paused marker makes the canvas look like it lost
-          // its place. Preserve paused status so the operator can see
-          // where the run was halted.
+          // Paused nodes get differentiated treatment:
+          //   - status='cancelled' = explicit user cancel. Clear the
+          //     paused marker too — the user said "stop". Leaving
+          //     yellow + Continue button after a cancel is confusing.
+          //   - status='error'     = orphan-sweep, cost cap, real
+          //     error. Preserve the paused marker so the operator can
+          //     see where the run was halted (debug context survives
+          //     worker-death cleanup).
           if (ev.status === 'cancelled' || ev.status === 'error') {
+            const clearPaused = ev.status === 'cancelled'
             for (const nid of Object.keys(next)) {
               const nn = next[nid]!
               const stuck =
                 nn.status === 'running' ||
-                nn.status === 'pending'
+                nn.status === 'pending' ||
+                (clearPaused && nn.status === 'paused')
               let lsChanged = false
               const ls = nn.loopSteps?.map((s) => {
                 if (s.status === 'running' || s.status === 'pending') {
@@ -624,10 +628,13 @@ export function useWorkflowRunStream(): WorkflowRunStream {
       const next = { ...prev }
       for (const id of Object.keys(next)) {
         const n = next[id]!
-        // Preserve 'paused' (debug breakpoint state) for the same
-        // diagnostic reason as the run_done handler — wiping the
-        // yellow marker makes the canvas look like it lost its place.
-        if (n.status === 'running' || n.status === 'pending') {
+        // Explicit user cancel — also clear the paused marker.
+        // Worker-death / orphan-sweep takes a separate path
+        // (run_done status='error') which preserves paused for
+        // diagnostic value; clicking Cancel is an intentional
+        // "stop everything" so the yellow marker + Continue
+        // button should go away.
+        if (n.status === 'running' || n.status === 'pending' || n.status === 'paused') {
           next[id] = { ...n, status: 'cancelled' }
         }
       }
