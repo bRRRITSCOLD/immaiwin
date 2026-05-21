@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/bRRRITSCOLD/burrow/internal/sandbox"
 	dockerpkg "github.com/bRRRITSCOLD/burrow/internal/sandbox/docker"
@@ -21,6 +22,17 @@ type builder struct {
 	docker   *dockerpkg.ImageBuilder
 	dcli     dockerclient.APIClient
 	registry string
+	// pushedTags caches "we've pushed this tag during this process
+	// lifetime" so we don't re-push on every workflow run. The
+	// registry's HEAD-manifest check has been observed to return
+	// false-negative against the local-dev registry (anonymous
+	// HEAD semantics + content-type mismatch), causing the push
+	// to fire on every run even after a successful prior push.
+	// In-memory cache bypasses the bad HEAD without changing
+	// correctness — a fresh process restart re-pushes once, then
+	// caches.
+	pushedMu sync.Mutex
+	pushed   map[string]struct{}
 }
 
 // newBuilder attempts to connect to the local Docker daemon. Returns nil if
@@ -38,6 +50,7 @@ func newBuilder(registry string) *builder {
 		docker:   dockerpkg.NewImageBuilder(cli, registry),
 		dcli:     cli,
 		registry: registry,
+		pushed:   make(map[string]struct{}),
 	}
 }
 
@@ -60,8 +73,25 @@ func (b *builder) resolvePackageImage(ctx context.Context, lang sandbox.Language
 		return "", err
 	}
 
-	// 2. Skip push if registry already has this manifest.
+	// 2a. In-process cache: we've already pushed this tag during
+	// this worker's lifetime. The remote-HEAD check below has been
+	// observed to return false-negative against the local-dev
+	// registry; in-memory short-circuit makes per-run repush a
+	// non-issue once the first push has succeeded.
+	b.pushedMu.Lock()
+	_, alreadyPushed := b.pushed[tag]
+	b.pushedMu.Unlock()
+	if alreadyPushed {
+		return tag, nil
+	}
+
+	// 2b. Remote check (best-effort) — skip push if registry
+	// already has this manifest. Failures fall through to push
+	// + cache so repeated runs converge to no-push behaviour.
 	if has, _ := b.registryHas(ctx, tag); has {
+		b.pushedMu.Lock()
+		b.pushed[tag] = struct{}{}
+		b.pushedMu.Unlock()
 		return tag, nil
 	}
 
@@ -80,6 +110,10 @@ func (b *builder) resolvePackageImage(ctx context.Context, lang sandbox.Language
 	if err := drainPush(pushResp); err != nil {
 		return "", fmt.Errorf("sandbox/k3s: push %s: %w", tag, err)
 	}
+
+	b.pushedMu.Lock()
+	b.pushed[tag] = struct{}{}
+	b.pushedMu.Unlock()
 
 	slog.Info("sandbox/k3s: pushed package image", "tag", tag)
 	return tag, nil

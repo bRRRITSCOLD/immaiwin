@@ -215,7 +215,12 @@ func (p *Pool) replenish(key poolKey) {
 func (p *Pool) addToKey(key poolKey, name string) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.closed || len(p.warm[key]) >= p.maxWarm {
+	if p.closed {
+		slog.Info("sandbox/k3s pool: addToKey skipped — closed", "pod", name, "lang", key.lang)
+		return false
+	}
+	if len(p.warm[key]) >= p.maxWarm {
+		slog.Info("sandbox/k3s pool: addToKey skipped — slot full", "pod", name, "lang", key.lang, "image", key.imageTag, "slot_len", len(p.warm[key]))
 		return false
 	}
 	// New key — enforce maxKeys cap via FIFO eviction of the
@@ -237,6 +242,7 @@ func (p *Pool) addToKey(key poolKey, name string) bool {
 		p.keyOrder = append(p.keyOrder, key)
 	}
 	p.warm[key] = append(p.warm[key], name)
+	slog.Info("sandbox/k3s pool: warm slot updated", "pod", name, "lang", key.lang, "image", key.imageTag, "slot_len", len(p.warm[key]), "keys", len(p.warm))
 	return true
 }
 
@@ -267,11 +273,15 @@ func (p *Pool) createWarm(ctx context.Context, key poolKey) (string, error) {
 	pod := p.rt.buildPod(req, key.imageTag, false)
 	created, err := p.cli.CoreV1().Pods(p.rt.ns).Create(ctx, pod, metav1.CreateOptions{})
 	if err != nil {
+		slog.Warn("sandbox/k3s pool: create pod failed", "lang", key.lang, "image", key.imageTag, "err", err)
 		return "", err
 	}
+	slog.Info("sandbox/k3s pool: pod creating", "pod", created.Name, "lang", key.lang, "image", key.imageTag)
 	if werr := waitPodRunning(ctx, p.cli, p.rt.ns, created.Name, poolPodTimeout); werr != nil {
+		slog.Warn("sandbox/k3s pool: pod never reached Running", "pod", created.Name, "lang", key.lang, "image", key.imageTag, "err", werr)
 		deletePod(context.Background(), p.cli, p.rt.ns, created.Name)
 		return "", werr
 	}
+	slog.Info("sandbox/k3s pool: warm pod ready", "pod", created.Name, "lang", key.lang, "image", key.imageTag)
 	return created.Name, nil
 }
