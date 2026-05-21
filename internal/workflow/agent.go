@@ -1244,7 +1244,31 @@ func (e *WorkflowExecutor) buildAgentToolCatalog(agent Node, env *runEnv,
 				}))
 			}
 
-			out, err := e.runNode(ctx, targetNode, argInput, wfCtx, params)
+			// Branch: sub_workflow targets dispatch a nested workflow
+			// run instead of going through runNode (which has no case
+			// for sub_workflow). The dispatch helper handles tenant
+			// scoping + recursion + cycle guards; result is the
+			// sub-run's final step output, already JSON-stringified.
+			var out any
+			var err error
+			if targetNode.Type == NodeTypeSubWorkflow {
+				targetWfID, _ := targetNode.Data["workflow_id"].(string)
+				var subOut string
+				subOut, err = e.dispatchSubWorkflow(ctx, env.wf, targetWfID, argInput)
+				if err == nil {
+					// Decode the sub-run's JSON output back into `any`
+					// so the StepResult / step_done event carries the
+					// structured shape (not a JSON-encoded-as-string).
+					var decoded any
+					if jerr := json.Unmarshal([]byte(subOut), &decoded); jerr == nil {
+						out = decoded
+					} else {
+						out = subOut
+					}
+				}
+			} else {
+				out, err = e.runNode(ctx, targetNode, argInput, wfCtx, params)
+			}
 
 			// Record a StepResult for the tool-invoked node so the UI shows
 			// success/error on it (otherwise NodeDebugPanel renders "not executed").

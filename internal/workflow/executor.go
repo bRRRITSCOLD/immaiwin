@@ -179,6 +179,12 @@ type WorkflowExecutor struct {
 	Redis                 RedisClient
 	ConnResolver *ConnectionResolver
 	SandboxRT    sandbox.Runtime
+
+	// Workflows is the read-side workflow store. Used by sub_workflow
+	// tool nodes to look up the target workflow by ID and dispatch a
+	// nested run. nil disables sub_workflow tool calls (the agent's
+	// tool catalog skips them).
+	Workflows WorkflowStore
 	// AI agent dependencies (optional — agent nodes error if unset).
 	Memory   AgentMemory      // chat memory backend
 	RunRepo  WorkflowRunStore // for run persistence + agent traces

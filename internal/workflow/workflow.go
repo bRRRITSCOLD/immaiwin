@@ -17,6 +17,12 @@ const (
 	NodeTypeNotify        NodeType = "notify"
 	NodeTypeSandboxScript NodeType = "sandbox_script"
 	NodeTypeAIAgent       NodeType = "ai_agent"
+	// NodeTypeSubWorkflow is an agent tool target whose handler
+	// dispatches a sub-workflow run (identified by data.workflow_id)
+	// and returns its final output as the tool result. The node is
+	// only reachable through an agent's `tool` edge — BFS never
+	// visits it directly, same as other as_tool targets.
+	NodeTypeSubWorkflow NodeType = "sub_workflow"
 )
 
 // Edge source-handle values used by the executor.

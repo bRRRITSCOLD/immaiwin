@@ -55,6 +55,16 @@ func BuildWorkerExecutor(
 	} else {
 		slog.Warn("worker: run repo init failed (runs will not persist)", "err", rerr)
 	}
+	// Workflow read-side store — enables sub_workflow tool dispatch.
+	// Without it, sub_workflow targets fail with "WorkflowStore not
+	// configured" at handler-call time; the workflow itself still
+	// validates + saves.
+	var wfStore workflow.WorkflowStore
+	if wfRepo, werr := mongodb.NewWorkflowRepository(ctx, db); werr == nil {
+		wfStore = wfRepo
+	} else {
+		slog.Warn("worker: workflow repo init failed (sub_workflow disabled)", "err", werr)
+	}
 	skillRes := buildSkillResolver(ctx, cfg, db)
 	sandboxRT := buildSandboxRT(ctx, cfg)
 
@@ -82,6 +92,7 @@ func BuildWorkerExecutor(
 		Memory:              chatMem,
 		RunRepo:             runStore,
 		SkillRes:            skillRes,
+		Workflows:           wfStore,
 		ApprovalNotifier:    approvalNotifier,
 		ApprovalTokenSecret: []byte(cfg.Auth.JWTSecret),
 		ApprovalUIBaseURL:   cfg.Auth.UIBaseURL,
