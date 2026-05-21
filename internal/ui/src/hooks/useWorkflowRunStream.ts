@@ -283,6 +283,21 @@ export function useWorkflowRunStream(): WorkflowRunStream {
         }
         case 'step_pending': {
           const n = ensure()
+          // Only ONE active pause per run. Worker death + reclaim
+          // can leave a stale 'paused' status on a downstream node
+          // that won't be revisited until the new pause clears (e.g.
+          // worker died at http_request as_tool; reclaim re-pauses
+          // at the agent's BFS-level breakpoint; old http paused
+          // status lingers because no step_start ever overwrote
+          // it). Sweep all other nodes' paused state to keep the
+          // canvas honest: yellow pulses only on the current pause.
+          for (const nid of Object.keys(next)) {
+            if (nid === id) continue
+            const nn = next[nid]!
+            if (nn.status === 'paused') {
+              next[nid] = { ...nn, status: 'pending' }
+            }
+          }
           next[id] = { ...n, status: 'paused', nodeType: ev.node_type ?? n.nodeType }
           break
         }
