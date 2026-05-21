@@ -33,9 +33,16 @@ type Runtime struct {
 	registry     string
 
 	bldr          *builder // optional package builder (nil if Docker daemon unavailable)
+	pool          *Pool    // warm pod pool; nil if not configured
 	portAlloc     *sandbox.PortAllocator
 	debugMu       sync.Mutex
 	debugSessions map[string]*debugSessionEntry
+}
+
+// SetPool attaches a warm pod pool post-construction. Same pattern as the
+// docker backend — pool creation needs the Runtime so we wire it after New.
+func (r *Runtime) SetPool(p *Pool) {
+	r.pool = p
 }
 
 // debugSessionEntry holds runtime state for an active debug session.
