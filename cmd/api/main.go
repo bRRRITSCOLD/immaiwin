@@ -116,8 +116,8 @@ func main() {
 			rt.CleanupOrphans(ctx)
 
 			pool := docker.NewPool(rt.DockerClient(), cfg.Sandbox.PoolSize, cfg.Sandbox.Runtime)
-			pool.Warm(ctx, sandbox.LangJavaScript, sandbox.LangPython)
 			rt.SetPool(pool)
+			go pool.Warm(context.Background(), sandbox.LangJavaScript, sandbox.LangPython)
 
 			defer pool.Close(context.Background())
 			defer func() { _ = rt.Close() }()
@@ -143,8 +143,13 @@ func main() {
 			}
 			rt.CleanupOrphans(ctx)
 			pool := k3s.NewPool(rt, cfg.Sandbox.PoolSize)
-			pool.Warm(ctx, sandbox.LangJavaScript, sandbox.LangPython)
 			rt.SetPool(pool)
+			// Warm in the background — pod scheduling + image pull
+			// can take 60-90s per pod on a cold registry; blocking
+			// boot stops api from serving requests for minutes.
+			// Cold-start fallback handles the gap: requests use
+			// per-run pod-create until the pool fills.
+			go pool.Warm(context.Background(), sandbox.LangJavaScript, sandbox.LangPython)
 			defer pool.Close(context.Background())
 			defer func() { _ = rt.Close() }()
 			sandboxRT = rt
