@@ -476,13 +476,19 @@ export function useWorkflowRunStream(): WorkflowRunStream {
           // may never arrive (e.g. cancelled for_each body / http).
           // Without this it spins "Running" forever. Flip any
           // non-terminal node (and its loop iterations) to 'cancelled'.
+          //
+          // EXCEPT 'paused' — a debug breakpoint pause that ended via
+          // worker death / sweep / explicit cancel is still meaningful
+          // diagnostic info ("the run died at this breakpoint"). Wiping
+          // the yellow paused marker makes the canvas look like it lost
+          // its place. Preserve paused status so the operator can see
+          // where the run was halted.
           if (ev.status === 'cancelled' || ev.status === 'error') {
             for (const nid of Object.keys(next)) {
               const nn = next[nid]!
               const stuck =
                 nn.status === 'running' ||
-                nn.status === 'pending' ||
-                nn.status === 'paused'
+                nn.status === 'pending'
               let lsChanged = false
               const ls = nn.loopSteps?.map((s) => {
                 if (s.status === 'running' || s.status === 'pending') {
@@ -603,7 +609,10 @@ export function useWorkflowRunStream(): WorkflowRunStream {
       const next = { ...prev }
       for (const id of Object.keys(next)) {
         const n = next[id]!
-        if (n.status === 'running' || n.status === 'paused' || n.status === 'pending') {
+        // Preserve 'paused' (debug breakpoint state) for the same
+        // diagnostic reason as the run_done handler — wiping the
+        // yellow marker makes the canvas look like it lost its place.
+        if (n.status === 'running' || n.status === 'pending') {
           next[id] = { ...n, status: 'cancelled' }
         }
       }
