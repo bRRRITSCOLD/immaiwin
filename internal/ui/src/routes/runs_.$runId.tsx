@@ -108,7 +108,7 @@ interface WorkflowRun {
   finished_at?: string
   status: RunStatus
   trigger_input?: unknown
-  params?: Record<string, string>
+  config?: Record<string, string>
   steps?: StepResult[]
   agent_traces?: Record<string, TraceEvent[]>
   usage?: UsageTotal
@@ -534,10 +534,10 @@ function RunDetailPage() {
                 </div>
               )}
 
-              {data.run.params && Object.keys(data.run.params).length > 0 && (
+              {data.run.config && Object.keys(data.run.config).length > 0 && (
                 <div className="border rounded-md bg-card p-4 mb-6">
-                  <CollapsibleSection title="Params">
-                    <PrettyJSON value={data.run.params} />
+                  <CollapsibleSection title="Config">
+                    <PrettyJSON value={data.run.config} />
                   </CollapsibleSection>
                 </div>
               )}

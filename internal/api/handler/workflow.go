@@ -101,52 +101,52 @@ func UpsertWorkflow(store WorkflowStore) gin.HandlerFunc {
 			}
 		}
 
-		// Validate ParamsSchema (typed Params declaration) when set:
+		// Validate ConfigSchema (typed Config declaration) when set:
 		// every entry must have a name + a recognised type, enum types
 		// must declare at least one option, required entries must have
-		// a non-empty value in Params (default counts when explicit
-		// value missing). Empty schema = legacy free-form Params, no
+		// a non-empty value in Config (default counts when explicit
+		// value missing). Empty schema = legacy free-form Config, no
 		// validation.
-		if len(wf.ParamsSchema) > 0 {
+		if len(wf.ConfigSchema) > 0 {
 			validTypes := map[string]bool{"string": true, "number": true, "boolean": true, "enum": true}
 			seen := map[string]bool{}
-			for i, p := range wf.ParamsSchema {
+			for i, p := range wf.ConfigSchema {
 				if p.Name == "" {
-					c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("params_schema[%d]: name required", i)})
+					c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("config_schema[%d]: name required", i)})
 					return
 				}
 				if seen[p.Name] {
-					c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("params_schema: duplicate name %q", p.Name)})
+					c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("config_schema: duplicate name %q", p.Name)})
 					return
 				}
 				seen[p.Name] = true
 				if !validTypes[p.Type] {
-					c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("params_schema[%s]: type must be one of string|number|boolean|enum", p.Name)})
+					c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("config_schema[%s]: type must be one of string|number|boolean|enum", p.Name)})
 					return
 				}
 				if p.Type == "enum" && len(p.Enum) == 0 {
-					c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("params_schema[%s]: enum requires at least one option", p.Name)})
+					c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("config_schema[%s]: enum requires at least one option", p.Name)})
 					return
 				}
 				if p.Required {
-					val, has := wf.Params[p.Name]
+					val, has := wf.Config[p.Name]
 					if !has || val == "" {
 						if p.Default == "" {
-							c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("params[%s] is required by params_schema but missing", p.Name)})
+							c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("config[%s] is required by config_schema but missing", p.Name)})
 							return
 						}
 						// Backfill default so downstream nodes don't trip on
 						// the missing key.
-						if wf.Params == nil {
-							wf.Params = map[string]string{}
+						if wf.Config == nil {
+							wf.Config = map[string]string{}
 						}
-						wf.Params[p.Name] = p.Default
+						wf.Config[p.Name] = p.Default
 					}
 				}
-				// Enum value enforcement — if Params has the key, value must
+				// Enum value enforcement — if Config has the key, value must
 				// be one of the declared options.
 				if p.Type == "enum" {
-					if val, has := wf.Params[p.Name]; has && val != "" {
+					if val, has := wf.Config[p.Name]; has && val != "" {
 						match := false
 						for _, opt := range p.Enum {
 							if val == opt {
@@ -155,10 +155,131 @@ func UpsertWorkflow(store WorkflowStore) gin.HandlerFunc {
 							}
 						}
 						if !match {
-							c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("params[%s]=%q not in enum %v", p.Name, val, p.Enum)})
+							c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("config[%s]=%q not in enum %v", p.Name, val, p.Enum)})
 							return
 						}
 					}
+				}
+			}
+		}
+
+		// One return node per workflow — the dispatch helper picks
+		// the first one it finds, so multiple return nodes would
+		// produce non-deterministic semantics across BFS orderings.
+		// Refuse at save with a clear error.
+		var returnCount int
+		for _, n := range wf.Nodes {
+			if n.Type == workflow.NodeTypeReturn {
+				returnCount++
+			}
+		}
+		if returnCount > 1 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("workflow has %d return nodes; at most one allowed", returnCount)})
+			return
+		}
+
+		// Sub-workflow tenancy validation (defense-in-depth — the
+		// engine also refuses cross-tenant dispatch at run time in
+		// sub_workflow.go, but rejecting at save closes the
+		// existence-probing vector and gives immediate UX feedback).
+		// Empty workflow_id is allowed (unconfigured draft node).
+		// Self-reference is allowed; cycle detection is a run-time
+		// concern. Same error string for "not found" and
+		// "foreign tenant" so the response can't be used to probe
+		// for workflow ids belonging to other tenants.
+		if tenantID, ok := auth.TenantFromCtx(c.Request.Context()); ok {
+			for _, n := range wf.Nodes {
+				if n.Type != workflow.NodeTypeSubWorkflow {
+					continue
+				}
+				targetID, _ := n.Data["workflow_id"].(string)
+				targetID = strings.TrimSpace(targetID)
+				if targetID == "" || targetID == id {
+					continue
+				}
+				if _, gerr := store.GetByIDForTenant(c.Request.Context(), targetID, tenantID); gerr != nil {
+					c.JSON(http.StatusBadRequest, gin.H{
+						"error":   fmt.Sprintf("sub_workflow node %q references unknown or inaccessible workflow", n.ID),
+						"node_id": n.ID,
+					})
+					return
+				}
+			}
+		}
+
+		// Validate OutputSchemaJSON (parse-only — same rule as
+		// InputSchemaJSON: must be a JSON object).
+		if strings.TrimSpace(wf.OutputSchemaJSON) != "" {
+			var probe map[string]any
+			if jerr := json.Unmarshal([]byte(wf.OutputSchemaJSON), &probe); jerr != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("output_schema_json: not valid JSON: %s", jerr.Error())})
+				return
+			}
+		}
+
+		// Validate OutputSchema same way as InputSchema: name +
+		// type + enum-needs-options + no-dups.
+		if len(wf.OutputSchema) > 0 {
+			validTypes := map[string]bool{"string": true, "number": true, "boolean": true, "enum": true}
+			seenOut := map[string]bool{}
+			for i, p := range wf.OutputSchema {
+				if p.Name == "" {
+					c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("output_schema[%d]: name required", i)})
+					return
+				}
+				if seenOut[p.Name] {
+					c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("output_schema: duplicate name %q", p.Name)})
+					return
+				}
+				seenOut[p.Name] = true
+				if !validTypes[p.Type] {
+					c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("output_schema[%s]: type must be one of string|number|boolean|enum", p.Name)})
+					return
+				}
+				if p.Type == "enum" && len(p.Enum) == 0 {
+					c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("output_schema[%s]: enum requires at least one option", p.Name)})
+					return
+				}
+			}
+		}
+
+		// Validate InputSchemaJSON (raw JSON Schema). Parse-only —
+		// must be a JSON object. Deep schema validity (refs,
+		// keyword soundness) is the consumer's problem; we only
+		// guard against shipping invalid JSON that would crash
+		// downstream validators at dispatch time.
+		if strings.TrimSpace(wf.InputSchemaJSON) != "" {
+			var probe map[string]any
+			if jerr := json.Unmarshal([]byte(wf.InputSchemaJSON), &probe); jerr != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("input_schema_json: not valid JSON: %s", jerr.Error())})
+				return
+			}
+		}
+
+		// Validate InputSchema (typed RUN INPUT declaration). Same
+		// rules as ConfigSchema minus the value-check: input is
+		// per-run dynamic, so we can't validate any "current value"
+		// at save time — that gates to the engine at dispatch.
+		if len(wf.InputSchema) > 0 {
+			validTypes := map[string]bool{"string": true, "number": true, "boolean": true, "enum": true}
+			seenInput := map[string]bool{}
+			for i, p := range wf.InputSchema {
+				if p.Name == "" {
+					c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("input_schema[%d]: name required", i)})
+					return
+				}
+				if seenInput[p.Name] {
+					c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("input_schema: duplicate name %q", p.Name)})
+					return
+				}
+				seenInput[p.Name] = true
+				if !validTypes[p.Type] {
+					c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("input_schema[%s]: type must be one of string|number|boolean|enum", p.Name)})
+					return
+				}
+				if p.Type == "enum" && len(p.Enum) == 0 {
+					c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("input_schema[%s]: enum requires at least one option", p.Name)})
+					return
 				}
 			}
 		}
@@ -491,7 +612,7 @@ func RunWorkflow(store WorkflowStore, runStore workflow.WorkflowRunStore, wakeup
 			QueuedAt:     now,
 			// StartedAt stays nil until ClaimLease stamps it on first
 			// worker pickup — duration math then excludes queue time.
-			Params:       wf.Params,
+			Config: wf.Config,
 			TriggerInput: req.Input,
 		}
 		if _, cerr := runStore.Create(c.Request.Context(), rec); cerr != nil {

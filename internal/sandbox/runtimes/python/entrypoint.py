@@ -3,12 +3,12 @@
 Sandbox entrypoint for Python execution.
 
 Protocol:
-    stdin  → JSON { code, input, context, params }
+    stdin  → JSON { code, input, run_input, context, config }
     stdout → JSON output (value of `output` variable after execution)
     stderr → logs / errors
 
 The user's code runs in a restricted namespace. Available globals:
-    input, context, params, print (→ stderr)
+    input, run_input, context, config, print (→ stderr)
 
 Call `output(val)` to produce a result.
 """
@@ -30,8 +30,9 @@ def main():
 
     code = payload.get("code", "")
     input_data = payload.get("input")
+    run_input_data = payload.get("run_input")
     context = payload.get("context", {})
-    params = payload.get("params", {})
+    config = payload.get("config", {})
 
     # Redirect print to stderr so stdout stays clean for output JSON
     original_print = print
@@ -52,8 +53,9 @@ def main():
     # Build execution namespace
     namespace = {
         "input": input_data,
+        "run_input": run_input_data,
         "context": context,
-        "params": params,
+        "config": config,
         "output": output_fn,
         "print": sandbox_print,
         # Standard safe builtins

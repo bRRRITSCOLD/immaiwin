@@ -3,13 +3,13 @@
  * Sandbox entrypoint for JavaScript/TypeScript execution.
  *
  * Protocol:
- *   stdin  → JSON { code, input, context, params }
+ *   stdin  → JSON { code, input, run_input, context, config }
  *   stdout → JSON output (result of user code)
  *   stderr → logs / errors
  *
  * User code runs as ESM (.mjs) via dynamic `await import()` in BOTH run and
  * debug modes. Globals available in user code:
- *   input, context, params, output, console
+ *   input, run_input, context, config, output, console
  * Module loading: `const x = await import('pkg')`. CommonJS `require` is
  * intentionally not provided — ESM scope makes it impractical to expose,
  * and unifying on `await import` keeps run/debug behavior identical.
@@ -33,7 +33,7 @@ process.stdin.on('end', async () => {
     process.exit(1);
   }
 
-  const { code, input, context, params } = payload;
+  const { code, input, run_input, context, config } = payload;
 
   // Setup script: sets globals via globalThis, loaded via -r flag (CJS).
   // Used by both run and debug modes.
@@ -43,8 +43,9 @@ process.stdin.on('end', async () => {
   // stdout stays clean for the final JSON result.
   const setupScript = `'use strict';
 globalThis.input = ${JSON.stringify(input ?? null)};
+globalThis.run_input = ${JSON.stringify(run_input ?? null)};
 globalThis.context = ${JSON.stringify(context ?? {})};
-globalThis.params = ${JSON.stringify(params ?? {})};
+globalThis.config = ${JSON.stringify(config ?? {})};
 globalThis._outputValue = undefined;
 globalThis._outputSet = false;
 globalThis.output = (val) => { globalThis._outputValue = val; globalThis._outputSet = true; };
@@ -115,9 +116,10 @@ process.on('unhandledRejection', (reason) => {
   console.info  = (...args) => process.stderr.write(args.map(String).join(' ') + '\n');
   void origLog;
 
-  globalThis.input    = input ?? null;
-  globalThis.context  = context ?? {};
-  globalThis.params   = params ?? {};
+  globalThis.input     = input ?? null;
+  globalThis.run_input = run_input ?? null;
+  globalThis.context   = context ?? {};
+  globalThis.config   = config ?? {};
   globalThis._outputValue = undefined;
   globalThis._outputSet   = false;
   globalThis.output = (val) => { globalThis._outputValue = val; globalThis._outputSet = true; };

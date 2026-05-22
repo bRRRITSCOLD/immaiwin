@@ -369,7 +369,7 @@ func (s *AgentParallelYieldIntegrationSuite) TestAgent_ParallelToolUse_TwoGates_
 	wfID := fmt.Sprintf("wf-parallel-%d", suffix)
 	wfPayload := map[string]any{
 		"name":   "parallel tool yield",
-		"params": map[string]any{},
+		"config": map[string]any{},
 		"nodes": []map[string]any{
 			{
 				"id":       "trigger-1",

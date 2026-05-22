@@ -23,6 +23,12 @@ export interface StepResult {
   // otherwise show a wrong per-node count as the denominator).
   pending?: boolean
   loopTotal?: number
+  // Per-node timing — populated from the step_start / step_done event
+  // pair's `at` timestamps. Surfaced on NodeDebugPanel as a "Xms"
+  // chip next to the status label so the operator can see how long
+  // each step took without opening the run-detail page.
+  startedAt?: string
+  finishedAt?: string
 }
 
 export type RunResults = Record<string, StepResult[]>
@@ -182,6 +188,23 @@ function fullOutput(v: unknown): string {
   return JSON.stringify(v, null, 2) ?? 'null'
 }
 
+// formatDuration returns a compact human-friendly span between two
+// ISO timestamps. Returns null when either is missing or unparseable
+// so the UI can skip rendering the chip rather than show "0ms" /
+// "NaNms". Tail formatting: <1s = ms (no decimal), <60s = "1.2s",
+// >=60s = "1m23s".
+function formatDuration(startedAt?: string, finishedAt?: string): string | null {
+  if (!startedAt || !finishedAt) return null
+  const s = Date.parse(startedAt)
+  const f = Date.parse(finishedAt)
+  if (Number.isNaN(s) || Number.isNaN(f)) return null
+  const ms = Math.max(0, f - s)
+  if (ms < 1000) return `${ms}ms`
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`
+  const totalSec = Math.floor(ms / 1000)
+  return `${Math.floor(totalSec / 60)}m${totalSec % 60}s`
+}
+
 export function NodeDebugPanel({ id }: { id: string }) {
   const results = useContext(RunResultsContext)
   const { running } = useContext(RunStatusContext)
@@ -295,6 +318,11 @@ export function NodeDebugPanel({ id }: { id: string }) {
         <span className="text-xs text-muted-foreground flex-1">
           {label}
           {isMulti && ` · iter ${idx + 1}/${denom}`}
+          {formatDuration(step.startedAt, step.finishedAt) && (
+            <span className="ml-2 text-[10px] text-muted-foreground/70 tabular-nums">
+              {formatDuration(step.startedAt, step.finishedAt)}
+            </span>
+          )}
         </span>
         {isMulti && (
           <span

@@ -309,7 +309,7 @@ func (s *AgentToolErrorIntegrationSuite) putAgentToolWorkflow(client *http.Clien
 	wfID = fmt.Sprintf("wf-toolerr-%d", suffix)
 	wfPayload := map[string]any{
 		"name":   "tool error stop mode",
-		"params": map[string]any{},
+		"config": map[string]any{},
 		"nodes": []map[string]any{
 			{
 				"id":       "trigger-1",

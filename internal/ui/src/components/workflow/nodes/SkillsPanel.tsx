@@ -344,7 +344,7 @@ export function SkillsPanel({ nodeId, data }: Props) {
 
           <div>
             <p className="text-[10px] text-muted-foreground mb-1">
-              Skill config — author-bound knobs per skill. String values support <code className="text-[9px]">{'{{params.x}}'}</code>:
+              Skill config — author-bound knobs per skill. String values support <code className="text-[9px]">{'{{config.x}}'}</code>:
               <br />
               <code className="text-[9px]">{`{"weather-formatter": {"default_style": "friendly"}}`}</code>
             </p>

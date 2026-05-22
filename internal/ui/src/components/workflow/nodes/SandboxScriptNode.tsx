@@ -46,19 +46,19 @@ const accentColorMap: Record<SandboxLanguage, string> = {
 }
 
 const helloWorldTemplates: Record<SandboxLanguage, string> = {
-  javascript: `// input, context, params available
+  javascript: `// input, context, config available
 // packages: const cheerio = await import('cheerio')
 // console.log → stderr | output() → result
 output({ hello: "world", input })`,
-  python: `# input, context, params available
+  python: `# input, context, config available
 output({"hello": "world", "input": input})`,
-  golang: `// input, context, params available
+  golang: `// input, context, config available
 // fmt.Println → stderr | output() → result
 output(map[string]any{"hello": "world", "input": input})`,
-  rust: `// input, context, params available
+  rust: `// input, context, config available
 // eprintln! → stderr | output() → result
 output(json!({"hello": "world", "input": input}));`,
-  php: `// $input, $context, $params available
+  php: `// $input, $context, $config available
 // echo/print → stderr | output() → result
 output(["hello" => "world", "input" => $input]);`,
 }
@@ -159,7 +159,7 @@ export function SandboxScriptNode({ id, data, selected }: NodeProps) {
 
         <div className="px-3 py-2">
           <p className="text-[10px] text-muted-foreground mb-1">
-            Sandbox — <code className="text-[10px]">input</code> · <code className="text-[10px]">context</code> · <code className="text-[10px]">params</code> — isolated container
+            Sandbox — <code className="text-[10px]">input</code> · <code className="text-[10px]">context</code> · <code className="text-[10px]">config</code> — isolated container
           </p>
           <pre
             className="nodrag text-xs text-muted-foreground max-h-[72px] overflow-hidden leading-5 whitespace-pre-wrap cursor-pointer rounded bg-muted/30 px-2 py-1.5"

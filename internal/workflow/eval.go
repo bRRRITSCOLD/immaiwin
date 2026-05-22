@@ -13,7 +13,7 @@ import (
 // Runs of an eval go through the regular WorkflowExecutor (`RunResumable`)
 // so per-case execution shares the same trace persistence, cost rollup,
 // and per-workflow daily cap as ad-hoc runs. The eval layer adds: (1)
-// per-case input/params overrides, (2) assertion scoring against the
+// per-case input/config overrides, (2) assertion scoring against the
 // agent output, (3) aggregate pass-rate / cost / p95 latency.
 type Eval struct {
 	ID          string     `bson:"_id"         json:"id"`            // ULID
@@ -33,14 +33,14 @@ type Eval struct {
 
 // EvalCase is one seed input + a list of assertions that must hold
 // against the resulting workflow run's output. `Input` becomes the
-// trigger node's initial input; `Params` overrides workflow.Params for
+// trigger node's initial input; `Config` overrides workflow.Config for
 // this case (string-only since downstream `applyTemplate` only handles
 // strings).
 type EvalCase struct {
 	ID         string            `bson:"id"          json:"id"`
 	Name       string            `bson:"name"        json:"name"`
 	Input      any               `bson:"input,omitempty"  json:"input,omitempty"`
-	Params     map[string]string `bson:"params,omitempty" json:"params,omitempty"`
+	Config     map[string]string `bson:"config,omitempty" json:"config,omitempty"`
 	Assertions []Assertion       `bson:"assertions"  json:"assertions"`
 }
 

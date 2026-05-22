@@ -322,7 +322,7 @@ func (s *AgentYieldIntegrationSuite) TestAgent_AsToolGate_YieldsCleanlyAndResume
 	wfID := fmt.Sprintf("wf-agent-yield-%d", suffix)
 	wfPayload := map[string]any{
 		"name":   "agent yield smoke",
-		"params": map[string]any{},
+		"config": map[string]any{},
 		"nodes": []map[string]any{
 			{
 				"id":       "trigger-1",

@@ -4,7 +4,7 @@ set -e
 # Sandbox entrypoint for Rust execution.
 #
 # Protocol:
-#   stdin  → JSON { code, input, context, params }
+#   stdin  → JSON { code, input, run_input, context, config }
 #   stdout → JSON output (from output() call)
 #   stderr → logs / errors (eprintln!, cargo output)
 
@@ -12,9 +12,10 @@ set -e
 cat > /tmp/payload.json
 
 # Write data files for include_str!
-jq -c '.input // null' /tmp/payload.json > /tmp/input.json
-jq -c '.context // {}' /tmp/payload.json > /tmp/context.json
-jq -c '.params // {}' /tmp/payload.json > /tmp/params.json
+jq -c '.input // null'     /tmp/payload.json > /tmp/input.json
+jq -c '.run_input // null' /tmp/payload.json > /tmp/run_input.json
+jq -c '.context // {}'     /tmp/payload.json > /tmp/context.json
+jq -c '.config // {}'      /tmp/payload.json > /tmp/config.json
 
 # Generate main.rs — header
 cat > /sandbox/project/src/main.rs << 'HEADER'
@@ -32,15 +33,19 @@ fn main() {
         include_str!("/tmp/input.json").trim()
     ).unwrap_or(Value::Null);
 
+    let run_input: Value = serde_json::from_str(
+        include_str!("/tmp/run_input.json").trim()
+    ).unwrap_or(Value::Null);
+
     let context: Value = serde_json::from_str(
         include_str!("/tmp/context.json").trim()
     ).unwrap_or(Value::Object(Default::default()));
 
-    let params: Value = serde_json::from_str(
-        include_str!("/tmp/params.json").trim()
+    let config: Value = serde_json::from_str(
+        include_str!("/tmp/config.json").trim()
     ).unwrap_or(Value::Object(Default::default()));
 
-    let _ = (&input, &context, &params);
+    let _ = (&input, &run_input, &context, &config);
 
 HEADER
 

@@ -23,6 +23,13 @@ const (
 	// only reachable through an agent's `tool` edge — BFS never
 	// visits it directly, same as other as_tool targets.
 	NodeTypeSubWorkflow NodeType = "sub_workflow"
+	// NodeTypeReturn declares the workflow's return value when run
+	// as a sub_workflow tool (or surfaced from a manual run).
+	// `data.payload` is a JSON-shaped value with template
+	// substitution against `context` / `config` / `input`; the
+	// resolved value becomes the sub_workflow tool result. Workflows
+	// without a return node return null — fire-and-forget pattern.
+	NodeTypeReturn NodeType = "return"
 )
 
 // Edge source-handle values used by the executor.
@@ -77,13 +84,19 @@ type Edge struct {
 // Workflow is a named node-edge graph that describes a pipeline.
 // ID is a client-supplied string (e.g. UUID) to support idempotent PUT.
 //
-// Params holds workflow-level key-value constants accessible via
-// `{{params.key}}` interpolation in any string data field on a node.
+// Config holds workflow-level key-value constants accessible via
+// `{{config.key}}` interpolation in any string data field on a node.
 type Workflow struct {
 	ID        string            `bson:"_id,omitempty" json:"id"`
 	TenantID  string            `bson:"tenant_id"     json:"tenant_id"` // multi-tenant scoping
 	Name      string            `bson:"name"          json:"name"`
-	Params    map[string]string `bson:"params"        json:"params"`
+	// Config is the workflow's persistent configuration map —
+	// constants the workflow author bakes in (API base URLs,
+	// channel names, default formatting strings). Per-run dynamic
+	// input goes through Workflow.InputSchema + the operator's Run
+	// dialog, not here. Renamed from `Config` everywhere — existing
+	// Mongo docs need to be re-saved (pre-launch, so acceptable).
+	Config map[string]string `bson:"config"        json:"config"`
 	Nodes     []Node            `bson:"nodes"         json:"nodes"`
 	Edges     []Edge            `bson:"edges"         json:"edges"`
 	// CostLimits enforces per-workflow USD caps on agent LLM spend.
@@ -92,11 +105,39 @@ type Workflow struct {
 	// llm_call inside the agent loop (per-run + daily). Breaches stop
 	// the run with status=error and error="cost_exceeded: <axis>".
 	CostLimits *CostLimits `bson:"cost_limits,omitempty" json:"cost_limits,omitempty"`
-	// ParamsSchema is the optional typed declaration for Params. When
+	// ConfigSchema is the optional typed declaration for Config. When
 	// set, the UI renders typed inputs (select for enum, NumberField,
-	// Switch, etc.) and the API validates Params on save. Empty falls
+	// Switch, etc.) and the API validates Config on save. Empty falls
 	// back to the legacy untyped key/value editor — fully back-compat.
-	ParamsSchema []ParamEntry `bson:"params_schema,omitempty" json:"params_schema,omitempty"`
+	ConfigSchema []SchemaEntry `bson:"config_schema,omitempty" json:"config_schema,omitempty"`
+	// InputSchema is the optional typed declaration for the
+	// workflow's RUN INPUT — distinct from Config (which are
+	// persistent across runs). Same `SchemaEntry` shape as
+	// ConfigSchema so the editor + form-renderer can be shared.
+	// When set, sub_workflow tool nodes auto-derive their JSON
+	// Schema from this field instead of forcing each consumer
+	// to hand-write a schema; the canvas Run dialog renders
+	// typed inputs; the engine can validate input at dispatch
+	// (future phase). Empty = back-compat free-form input.
+	InputSchema []SchemaEntry `bson:"input_schema,omitempty" json:"input_schema,omitempty"`
+	// InputSchemaJSON is the optional raw-JSON-Schema escape hatch
+	// for nested / array / advanced input contracts that SchemaEntry's
+	// flat shape can't express. Stored as a string (Mongo doesn't
+	// have a native JSON type and we want to round-trip the
+	// authored form). When set, it WINS over InputSchema for engine
+	// validation and sub_workflow auto-derive; InputSchema still
+	// drives the typed Run dialog when present, so workflows can
+	// expose a friendly form OR a raw JSON box (or both — the form
+	// covers happy-path entry, raw is the contract for consumers).
+	InputSchemaJSON string `bson:"input_schema_json,omitempty" json:"input_schema_json,omitempty"`
+	// OutputSchema declares the typed return contract for the
+	// workflow. Validated when the workflow finishes; sub_workflow
+	// consumers surface this in agent tool descriptions so the LLM
+	// knows what it'll get back. Same shape priority as InputSchema:
+	// OutputSchemaJSON wins, OutputSchema (typed flat) is the
+	// simpler editor surface. Empty = no contract enforcement.
+	OutputSchema     []SchemaEntry `bson:"output_schema,omitempty"      json:"output_schema,omitempty"`
+	OutputSchemaJSON string       `bson:"output_schema_json,omitempty" json:"output_schema_json,omitempty"`
 	// ApprovalChannel routes pending_approval events out-of-band when
 	// the gate fires (Stage 2 of OOB approvals). Nil = no channel; the
 	// run still pauses and is resolvable from /runs/:id, but no email
@@ -148,11 +189,11 @@ func (w *Workflow) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// ParamEntry is the typed declaration for one workflow Params key.
+// SchemaEntry is the typed declaration for one workflow Config key.
 // Mirrors the skill manifest's `config[]` shape so author UX stays
 // consistent across skill-author and workflow-author surfaces; kept as
 // its own type to avoid cross-package import for a frozen subset.
-type ParamEntry struct {
+type SchemaEntry struct {
 	Name        string   `bson:"name"                  json:"name"`
 	Type        string   `bson:"type"                  json:"type"` // "string" | "number" | "boolean" | "enum"
 	Description string   `bson:"description,omitempty" json:"description,omitempty"`

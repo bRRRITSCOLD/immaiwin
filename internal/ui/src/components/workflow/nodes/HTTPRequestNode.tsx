@@ -480,7 +480,7 @@ export function HTTPRequestNode({ id, data, selected }: NodeProps) {
                     <Input
                       id={field.name}
                       className="nodrag h-7 text-xs"
-                      placeholder="{{params.api_token}}"
+                      placeholder="{{config.api_token}}"
                       value={field.state.value}
                       onChange={(e) => field.handleChange(e.target.value)}
                     />

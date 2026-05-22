@@ -4,7 +4,7 @@
   "category": "AI",
   "workflow": {
     "name": "AI Weather Agent — WebSocket trigger",
-    "params": {
+    "config": {
       "redis_channel": "weather.alerts",
       "weather_format": "%l:+%C,+%t,+humidity+%h,+wind+%w",
       "weather_style": "friendly"
@@ -41,7 +41,7 @@
           "system_prompt": "You are a weather-reporting agent. Procedure:\n1. Call get_weather(city) to fetch current text weather.\n2. Call weather_formatter__format_weather({city, raw}) where raw is the get_weather output.\n3. Call publish_weather({city, summary, temp_f, formatted_by:'weather-formatter'}) where summary is the message field from step 2.\n4. Reply with a short confirmation.",
           "user_input": "Fetch, format, and publish the current weather for {{input.json.city}}.",
           "skills": [{ "slug_id": "weather-formatter", "range": "^0.1.0" }],
-          "skill_config": { "weather-formatter": { "default_style": "{{params.weather_style}}", "temp_unit": "F" } },
+          "skill_config": { "weather-formatter": { "default_style": "{{config.weather_style}}", "temp_unit": "F" } },
           "handles": [
             { "id": "tool", "side": "right", "offset": 25, "paletteType": "tool" },
             { "id": "in-left", "side": "left", "offset": 50, "paletteType": "receive" }
@@ -55,7 +55,7 @@
         "data": {
           "name": "get_weather",
           "method": "GET",
-          "url": "https://wttr.in/{{input.city}}?format={{params.weather_format}}&u",
+          "url": "https://wttr.in/{{input.city}}?format={{config.weather_format}}&u",
           "headers": { "Accept": "text/plain" },
           "follow_redirects": true,
           "max_redirects": 10,
@@ -86,7 +86,7 @@
         "data": {
           "name": "publish_weather",
           "operation": "publish",
-          "channel": "{{params.redis_channel}}",
+          "channel": "{{config.redis_channel}}",
           "as_tool": {
             "enabled": true,
             "name": "publish_weather",

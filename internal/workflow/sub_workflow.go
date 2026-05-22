@@ -123,13 +123,53 @@ func (e *WorkflowExecutor) dispatchSubWorkflow(
 	if err != nil {
 		return "", fmt.Errorf("sub_workflow %s: %w", targetWfID, err)
 	}
-	if len(results) == 0 {
-		return "{}", nil
+
+	// Sub-run failure-promotion: RunWithEvents returns (results, nil)
+	// even when an inner step recorded a terminal error (BFS keeps
+	// going to drain the queue, then the run-status promotion in
+	// RunFromCheckpoint would flip the run to error). For a
+	// sub-dispatch we are NOT going through RunFromCheckpoint — we're
+	// directly handing the result back to the calling agent as a
+	// tool_result. Without this scan, a sub-workflow whose inner
+	// nodes all errored would still hand the calling agent a clean
+	// "null" tool result, masking the failure and letting the parent
+	// run land success. Walk the steps with the same predicate
+	// RunFromCheckpoint uses (skip Continued + ViaAgentTool) — first
+	// real error becomes the tool error.
+	for _, s := range results {
+		if s.Error == "" || s.Continued || s.ViaAgentTool {
+			continue
+		}
+		return "", fmt.Errorf("sub_workflow %s: step %s errored: %s", targetWfID, s.NodeID, s.Error)
 	}
-	final := results[len(results)-1].Output
-	encoded, err := json.Marshal(final)
+
+	// Walk results for the workflow's return-node step. ONE return
+	// node per workflow is enforced at save time, so the first hit
+	// is authoritative. Workflows without a return node yield null
+	// — explicit "no return contract" signal (n8n returns last-step
+	// implicitly; we picked explicit-only to avoid the BFS-order
+	// footgun on branchy graphs).
+	var returnOutput any
+	for _, r := range results {
+		if r.NodeType == NodeTypeReturn {
+			returnOutput = r.Output
+			break
+		}
+	}
+	if returnOutput == nil {
+		return "null", nil
+	}
+
+	// Validate against OutputSchema before handing back when one is
+	// declared. Same wrap-with-ErrOutputValidation pattern as input
+	// validation so consumers can detect schema mismatches.
+	if verr := validateRunOutput(&subWf, returnOutput); verr != nil {
+		return "", fmt.Errorf("sub_workflow %s: %w", targetWfID, verr)
+	}
+
+	encoded, err := json.Marshal(returnOutput)
 	if err != nil {
-		return fmt.Sprintf("%v", final), nil
+		return fmt.Sprintf("%v", returnOutput), nil
 	}
 	return string(encoded), nil
 }

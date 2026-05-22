@@ -123,10 +123,11 @@ func (r *Runtime) Run(ctx context.Context, req sandbox.RunRequest) (*sandbox.Run
 	}
 
 	payload, err := json.Marshal(map[string]any{
-		"code":    req.Code,
-		"input":   req.Input,
-		"context": req.Context,
-		"params":  req.Params,
+		"code":      req.Code,
+		"input":     req.Input,
+		"run_input": req.RunInput,
+		"context":   req.Context,
+		"config": req.Config,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("sandbox/k3s: marshal payload: %w", err)
@@ -206,10 +207,11 @@ func (r *Runtime) StreamRun(ctx context.Context, req sandbox.RunRequest) (<-chan
 	}
 
 	payload, err := json.Marshal(map[string]any{
-		"code":    req.Code,
-		"input":   req.Input,
-		"context": req.Context,
-		"params":  req.Params,
+		"code":      req.Code,
+		"input":     req.Input,
+		"run_input": req.RunInput,
+		"context":   req.Context,
+		"config": req.Config,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("sandbox/k3s: marshal payload: %w", err)

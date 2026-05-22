@@ -197,7 +197,7 @@ func (s *WorkflowMongoRedisNodeIntegrationSuite) putRequestNodeWorkflow(client *
 	wfID := fmt.Sprintf("wf-%s-%d", strings.ReplaceAll(nodeType, "_", "-"), suffix)
 	payload := map[string]any{
 		"name":   "node test wf",
-		"params": map[string]any{},
+		"config": map[string]any{},
 		"nodes": []map[string]any{
 			{
 				"id":       "trigger-1",
@@ -432,7 +432,7 @@ func (s *WorkflowMongoRedisNodeIntegrationSuite) TestMongoNode_NoConnection_Refu
 	wfID := fmt.Sprintf("wf-mongo-noconn-%d", suffix)
 	payload := map[string]any{
 		"name":   "no-conn-mongo",
-		"params": map[string]any{},
+		"config": map[string]any{},
 		"nodes": []map[string]any{
 			{"id": "trigger-1", "type": "trigger", "position": map[string]any{"x": 0, "y": 0},
 				"data": map[string]any{"trigger_type": "manual"}},
@@ -474,7 +474,7 @@ func (s *WorkflowMongoRedisNodeIntegrationSuite) TestRedisNode_NoConnection_Refu
 	wfID := fmt.Sprintf("wf-redis-noconn-%d", suffix)
 	payload := map[string]any{
 		"name":   "no-conn-redis",
-		"params": map[string]any{},
+		"config": map[string]any{},
 		"nodes": []map[string]any{
 			{"id": "trigger-1", "type": "trigger", "position": map[string]any{"x": 0, "y": 0},
 				"data": map[string]any{"trigger_type": "manual"}},

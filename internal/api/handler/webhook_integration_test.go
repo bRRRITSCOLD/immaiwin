@@ -192,7 +192,7 @@ func (s *WebhookIntegrationSuite) putWebhookWorkflow(client *http.Client, wfID, 
 	}
 	payload := map[string]any{
 		"name":   "webhook test wf",
-		"params": map[string]any{},
+		"config": map[string]any{},
 		"nodes": []map[string]any{
 			{
 				"id":       "trigger-1",

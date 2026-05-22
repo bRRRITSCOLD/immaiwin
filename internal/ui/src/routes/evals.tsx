@@ -379,7 +379,7 @@ function EvalsPage() {
 
               <div>
                 <p className="text-xs text-muted-foreground mb-1">
-                  Eval definition (JSON). Schema: <code className="text-[10px]">{`{ name, workflow_id, cases: [{ id, name, input, params, assertions: [{ type, value, path?, target? }] }] }`}</code>
+                  Eval definition (JSON). Schema: <code className="text-[10px]">{`{ name, workflow_id, cases: [{ id, name, input, config, assertions: [{ type, value, path?, target? }] }] }`}</code>
                 </p>
                 <Textarea
                   className="font-mono text-xs min-h-[300px]"

@@ -158,10 +158,11 @@ func (r *Runtime) Run(ctx context.Context, req sandbox.RunRequest) (*sandbox.Run
 	}
 
 	payload := map[string]any{
-		"code":    req.Code,
-		"input":   req.Input,
-		"context": req.Context,
-		"params":  req.Params,
+		"code":      req.Code,
+		"input":     req.Input,
+		"run_input": req.RunInput,
+		"context":   req.Context,
+		"config": req.Config,
 	}
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
@@ -319,10 +320,11 @@ func (r *Runtime) StreamRun(ctx context.Context, req sandbox.RunRequest) (<-chan
 	}
 
 	payload := map[string]any{
-		"code":    req.Code,
-		"input":   req.Input,
-		"context": req.Context,
-		"params":  req.Params,
+		"code":      req.Code,
+		"input":     req.Input,
+		"run_input": req.RunInput,
+		"context":   req.Context,
+		"config": req.Config,
 	}
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
@@ -493,10 +495,11 @@ func (r *Runtime) StartDebug(ctx context.Context, req sandbox.DebugRequest) (*sa
 	}
 
 	payload := map[string]any{
-		"code":    req.Code,
-		"input":   req.Input,
-		"context": req.Context,
-		"params":  req.Params,
+		"code":      req.Code,
+		"input":     req.Input,
+		"run_input": req.RunInput,
+		"context":   req.Context,
+		"config": req.Config,
 	}
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {

@@ -124,7 +124,7 @@ func (r *WorkflowRepository) Upsert(ctx context.Context, wf workflow.Workflow) (
 	setFields := bson.M{
 		"tenant_id":  wf.TenantID,
 		"name":       wf.Name,
-		"params":     wf.Params,
+		"config":     wf.Config,
 		"nodes":      wf.Nodes,
 		"edges":      wf.Edges,
 		"updated_at": wf.UpdatedAt,
@@ -161,12 +161,34 @@ func (r *WorkflowRepository) Upsert(ctx context.Context, wf workflow.Workflow) (
 	} else {
 		unsetFields["cost_limits"] = ""
 	}
-	// ParamsSchema persists too. Empty slice → $unset so legacy docs
+	// ConfigSchema persists too. Empty slice → $unset so legacy docs
 	// don't accumulate empty arrays after a clear.
-	if len(wf.ParamsSchema) > 0 {
-		setFields["params_schema"] = wf.ParamsSchema
+	if len(wf.ConfigSchema) > 0 {
+		setFields["config_schema"] = wf.ConfigSchema
 	} else {
-		unsetFields["params_schema"] = ""
+		unsetFields["config_schema"] = ""
+	}
+	// InputSchema mirrors ConfigSchema persistence: set when present,
+	// unset when empty so a clear actually clears.
+	if len(wf.InputSchema) > 0 {
+		setFields["input_schema"] = wf.InputSchema
+	} else {
+		unsetFields["input_schema"] = ""
+	}
+	if wf.InputSchemaJSON != "" {
+		setFields["input_schema_json"] = wf.InputSchemaJSON
+	} else {
+		unsetFields["input_schema_json"] = ""
+	}
+	if len(wf.OutputSchema) > 0 {
+		setFields["output_schema"] = wf.OutputSchema
+	} else {
+		unsetFields["output_schema"] = ""
+	}
+	if wf.OutputSchemaJSON != "" {
+		setFields["output_schema_json"] = wf.OutputSchemaJSON
+	} else {
+		unsetFields["output_schema_json"] = ""
 	}
 	// ApprovalChannel — same nil-vs-set treatment as cost_limits. Empty
 	// channel cleared from existing docs so the dispatcher can't resurrect
@@ -232,7 +254,7 @@ func (r *WorkflowRepository) SetEnabled(ctx context.Context, id string, enabled 
 }
 
 // SetName rewrites just the display name of a workflow, leaving
-// nodes / edges / params / version untouched. Used by the rename
+// nodes / edges / config / version untouched. Used by the rename
 // affordance in the workflow sidebar so a focused rename doesn't
 // round-trip the full graph (and doesn't bump the schema version
 // the way Upsert would). Returns ErrNoDocuments when the workflow

@@ -122,6 +122,7 @@ baked into the engine instead of bolted on after.
 - **Agent eval / replay harness** — fixture-based regression suite, CI-failable on agent-behaviour drift
 - **Tool synthesis** — agent authors and registers a new sandbox-tool mid-run when it identifies a capability gap (versioned, sandboxed, reviewable)
 - **Shell-command custom-image nodes** — run a single shell command instead of user code
+- **Handler-function sandbox runtimes** — rewrite the per-language entrypoints (JS / Python / Go / Rust / PHP) so user scripts export a `handler(input, ctx)` function instead of running top-level statements. Runtime imports the user module, invokes the handler, treats the return value as node output, and treats a thrown exception / non-nil error as the node error (no more stdout-parsing or sentinel framing). Benefits: clean input/output contract, structured errors with stack traces, easier to layer middleware (timeouts, tracing, ctx cancellation, secrets injection) inside the runtime without touching user code. Migration is a breaking change to the `sandbox_script` node — needs a versioned schema field so old graphs keep working.
 
 ---
 

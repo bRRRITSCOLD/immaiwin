@@ -166,6 +166,14 @@ type StepContext struct {
 // JS transforms receive this as the "context" global.
 type runCtx map[string]StepContext
 
+// runInputCtxKey is the reserved runCtx key the engine uses to
+// stash the workflow's initial run input. The template resolver
+// looks this up when it sees `{{run_input.X}}` so authors can
+// reach the workflow's entrypoint payload from any node depth
+// without naming the trigger. Double-underscored to dodge
+// realistic user step names (which can't start with `_`).
+const runInputCtxKey = "__run_input__"
+
 // WorkflowExecutor runs a Workflow graph node by node.
 type WorkflowExecutor struct {
 	HTTPClient *http.Client
@@ -1106,7 +1114,7 @@ func (e *WorkflowExecutor) RunResumable(ctx context.Context, wf Workflow, opts R
 				StartedAt:    &now,
 				FinishedAt:   &now,
 				Status:       RunStatusError,
-				Params:       wf.Params,
+				Config: wf.Config,
 				TriggerInput: opts.Input,
 				Error:        ce.Error(),
 			}
@@ -1146,7 +1154,7 @@ func (e *WorkflowExecutor) RunResumable(ctx context.Context, wf Workflow, opts R
 			// at dispatch and ClaimLease fills it on first claim.
 			StartedAt: &now,
 			Status:    RunStatusRunning,
-			Params:    wf.Params,
+			Config: wf.Config,
 		}
 		if opts.Input != nil {
 			runRec.TriggerInput = opts.Input
@@ -1395,6 +1403,23 @@ func (e *WorkflowExecutor) RunWithEvents(ctx context.Context, wf Workflow, stopA
 		triggerOutput = initialInput[0]
 	}
 
+	// Stash the workflow-level initial input on wfCtx under a
+	// reserved key so the template resolver's `run_input.X`
+	// namespace can access it from any node, regardless of how
+	// deep that node is or what its immediate predecessor
+	// produced. Existing `input.X` (predecessor output) semantics
+	// unchanged.
+
+	// Workflow-level run-input validation. Workflows that declare an
+	// InputSchema or InputSchemaJSON gate dispatch on the input
+	// matching that contract. Empty / unset = legacy free-form pass-
+	// through. Callers detect via errors.Is(err, ErrInputValidation)
+	// and pick a trigger-specific fail policy (HTTP 400 / sub_workflow
+	// tool error / WS frame drop / RMQ nack / Redis-sub drop).
+	if vErr := validateRunInput(&wf, triggerOutput); vErr != nil {
+		return nil, vErr
+	}
+
 	var queue []queueItem
 	for _, n := range wf.Nodes {
 		if n.Type == NodeTypeTrigger {
@@ -1405,9 +1430,13 @@ func (e *WorkflowExecutor) RunWithEvents(ctx context.Context, wf Workflow, stopA
 	visited := make(map[string]bool)
 	var results []StepResult
 	wfCtx := make(runCtx)
-	params := wf.Params
-	if params == nil {
-		params = map[string]string{}
+	// Reserved key — exposes the workflow-level initial input to
+	// the template resolver's `run_input.X` namespace from any
+	// node. Underscored name so authored step names can't collide.
+	wfCtx[runInputCtxKey] = StepContext{Output: triggerOutput, Input: triggerOutput}
+	config := wf.Config
+	if config == nil {
+		config = map[string]string{}
 	}
 
 	// Stash run env so agent loop (and any future node type that needs
@@ -1818,10 +1847,10 @@ func (e *WorkflowExecutor) RunWithEvents(ctx context.Context, wf Workflow, stopA
 		}))
 
 		if node.Type == NodeTypeForEach {
-			output, extraResults, err = e.runForEach(ctx, node, item.input, adj, byID, wfCtx, params)
+			output, extraResults, err = e.runForEach(ctx, node, item.input, adj, byID, wfCtx, config)
 			results = append(results, extraResults...)
 		} else {
-			output, err = e.runNode(ctx, node, item.input, wfCtx, params)
+			output, err = e.runNode(ctx, node, item.input, wfCtx, config)
 		}
 
 		// Yield catch: an `as_tool` target's pre-exec gate inside an
@@ -1986,7 +2015,7 @@ func (e *WorkflowExecutor) runForEach(
 	adj map[string][]adjEntry,
 	byID map[string]Node,
 	wfCtx runCtx,
-	params map[string]string,
+	config map[string]string,
 ) (any, []StepResult, error) {
 	// By default for_each iterates its raw input. An optional `items`
 	// selector lets it iterate a field of the input instead — e.g. a
@@ -2111,7 +2140,7 @@ func (e *WorkflowExecutor) runForEach(
 
 		fatal := false
 		for _, startID := range itemTargetIDs {
-			chainResults, lastOut := e.runBodyChain(loopCtx, startID, item, adj, byID, iterCtx, params)
+			chainResults, lastOut := e.runBodyChain(loopCtx, startID, item, adj, byID, iterCtx, config)
 			allResults = append(allResults, chainResults...)
 			if len(chainResults) > 0 && chainResults[len(chainResults)-1].Error == "" {
 				outputs = append(outputs, lastOut)
@@ -2159,7 +2188,7 @@ func (e *WorkflowExecutor) runBodyChain(
 	adj map[string][]adjEntry,
 	byID map[string]Node,
 	wfCtx runCtx,
-	params map[string]string,
+	config map[string]string,
 ) ([]StepResult, any) {
 	env, _ := envFromCtx(ctx)
 	var results []StepResult
@@ -2205,7 +2234,7 @@ func (e *WorkflowExecutor) runBodyChain(
 			}))
 		}
 
-		output, err := e.runNode(ctx, node, cur.input, wfCtx, params)
+		output, err := e.runNode(ctx, node, cur.input, wfCtx, config)
 
 		// Populate context for named body nodes
 		if name, _ := node.Data["name"].(string); name != "" {
@@ -2268,16 +2297,16 @@ func (e *WorkflowExecutor) runBodyChain(
 }
 
 // runNode dispatches execution to the appropriate handler for node.Type.
-// Params are resolved in all string data fields before dispatch (except "script").
-func (e *WorkflowExecutor) runNode(ctx context.Context, node Node, input any, wfCtx runCtx, params map[string]string) (any, error) {
-	data := applyParamsToData(node.Data, params)
+// Config are resolved in all string data fields before dispatch (except "script").
+func (e *WorkflowExecutor) runNode(ctx context.Context, node Node, input any, wfCtx runCtx, config map[string]string) (any, error) {
+	data := applyConfigToData(node.Data, config)
 	switch node.Type {
 	case NodeTypeTrigger:
 		return input, nil // pass-through; initialInput flows via the queue item
 	case NodeTypeHTTPRequest:
 		return e.runHTTPRequest(ctx, data, input, wfCtx)
 	case NodeTypeSandboxScript:
-		return e.runSandboxScript(ctx, data, input, wfCtx, params)
+		return e.runSandboxScript(ctx, data, input, wfCtx, config)
 	case NodeTypeForEach:
 		return nil, fmt.Errorf("for_each dispatched via runNode — use runForEach instead")
 	case NodeTypeMongoRequest:
@@ -2287,10 +2316,68 @@ func (e *WorkflowExecutor) runNode(ctx context.Context, node Node, input any, wf
 	case NodeTypeNotify:
 		return runNotify(data, input)
 	case NodeTypeAIAgent:
-		return e.runAIAgent(ctx, node, data, input, wfCtx, params)
+		return e.runAIAgent(ctx, node, data, input, wfCtx, config)
+	case NodeTypeReturn:
+		return runReturn(data, input, wfCtx)
 	default:
 		return nil, fmt.Errorf("unknown node type: %s", node.Type)
 	}
+}
+
+// runReturn resolves the return node's `payload` field with the
+// existing template substitution machinery and emits the resolved
+// value as the node's Output. The dispatch helper for sub_workflow
+// scans results for the return node's StepResult and lifts that
+// Output as the workflow's return value. Author writes:
+//
+//	payload: { "user": "{{context.find.output[0]}}", ... }
+//
+// Resolved value can be any JSON-typed shape: object, array,
+// scalar, null. Missing template references resolve via the
+// existing resolveTemplateValue / applyTemplate semantics. nil /
+// absent payload returns the upstream input unchanged — passthrough
+// when the author wants "whatever flowed into this node".
+func runReturn(data map[string]any, input any, wfCtx runCtx) (any, error) {
+	raw, has := data["payload"]
+	if !has || raw == nil {
+		return input, nil
+	}
+	return resolveTemplateDeep(raw, input, wfCtx), nil
+}
+
+// resolveTemplateDeep walks an arbitrary JSON-typed value and
+// template-resolves every string it finds. Lone `{{token}}`
+// strings preserve their underlying type via resolveTemplateValue
+// (so `{{context.find.output}}` → slice/object, not stringified);
+// every other string runs through applyTemplate for embedded-token
+// substitution. Maps and slices recurse, normalised through
+// mapAny / sliceAny so BSON-decoded values (bson.D / bson.M /
+// bson.A) walk the same path as native JSON-decoded values —
+// without this, payloads loaded from Mongo silently pass through
+// unchanged because the type switch only saw map[string]any / []any.
+// Numeric / boolean / nil leaves pass through unchanged.
+func resolveTemplateDeep(v any, input any, wfCtx runCtx) any {
+	if s, ok := v.(string); ok {
+		if resolved, ok := resolveTemplateValue(s, input, wfCtx); ok {
+			return resolved
+		}
+		return applyTemplate(s, input, wfCtx)
+	}
+	if m, ok := mapAny(v); ok {
+		out := make(map[string]any, len(m))
+		for k, vv := range m {
+			out[k] = resolveTemplateDeep(vv, input, wfCtx)
+		}
+		return out
+	}
+	if a, ok := sliceAny(v); ok {
+		out := make([]any, len(a))
+		for i, vv := range a {
+			out[i] = resolveTemplateDeep(vv, input, wfCtx)
+		}
+		return out
+	}
+	return v
 }
 
 // runHTTPRequest performs an arbitrary HTTP request with full Go http.Client
@@ -2706,9 +2793,19 @@ func numberData(data map[string]any, key string) (float64, bool) {
 
 // wfCtxToJS converts runCtx to map[string]any with lowercase keys so sandbox scripts
 // access context.stepName.input / .output / .item (not .Input / .Output / .Item).
+//
+// The reserved `__run_input__` entry is NOT exposed inside the
+// `context` map — sandbox scripts get a top-level `run_input` global
+// instead, parallel to the existing `input` / `config` globals. The
+// engine wires that via the RunRequest.RunInput field; this helper
+// just hides the internal key so `Object.keys(context)` doesn't
+// surface implementation noise.
 func wfCtxToJS(wfCtx runCtx) map[string]any {
 	js := make(map[string]any, len(wfCtx))
 	for name, sc := range wfCtx {
+		if name == runInputCtxKey {
+			continue
+		}
 		entry := map[string]any{
 			"input":  sc.Input,
 			"output": sc.Output,
@@ -2721,21 +2818,21 @@ func wfCtxToJS(wfCtx runCtx) map[string]any {
 	return js
 }
 
-// applyParamsToData resolves {{params.key}} placeholders in all string data fields.
-// The "script" key is skipped — sandbox scripts access params via the params global instead.
-func applyParamsToData(data map[string]any, params map[string]string) map[string]any {
-	if len(params) == 0 {
+// applyConfigToData resolves {{config.key}} placeholders in all string data fields.
+// The "script" key is skipped — sandbox scripts access config via the `config` global instead.
+func applyConfigToData(data map[string]any, config map[string]string) map[string]any {
+	if len(config) == 0 {
 		return data
 	}
 	resolved := make(map[string]any, len(data))
 	for k, v := range data {
 		if k == "script" {
-			resolved[k] = v // scripts use params global, not template substitution
+			resolved[k] = v // scripts use the `config` global, not template substitution
 			continue
 		}
 		if s, ok := v.(string); ok {
-			for pk, pv := range params {
-				s = strings.ReplaceAll(s, "{{params."+pk+"}}", pv)
+			for pk, pv := range config {
+				s = strings.ReplaceAll(s, "{{config."+pk+"}}", pv)
 			}
 			resolved[k] = s
 		} else {
@@ -4116,22 +4213,53 @@ func templateResolvePath(expr string, input any, wfCtx runCtx) (any, bool) {
 	switch parts[0] {
 	case "input":
 		return walk(input, parts[1:])
+	case "run_input":
+		// Workflow-level initial input — always the value passed
+		// to e.RunWithEvents (the operator's Run-dialog input,
+		// webhook body, RMQ message, etc.), no matter how deep in
+		// the graph the template lives. `input.X` is still the
+		// caller's immediate-predecessor output (for_each body
+		// iteration item, http response, etc.); use `run_input.X`
+		// when you want the workflow's entrypoint payload
+		// reliably from any node.
+		sc, ok := wfCtx[runInputCtxKey]
+		if !ok {
+			return nil, false
+		}
+		rest := parts[1:]
+		if len(rest) == 0 {
+			return sc.Output, true
+		}
+		return walk(sc.Output, rest)
 	case "context":
-		// {{context.<name>.<kind>.<…>}} — kind ∈ {input, output, item}
-		if len(parts) < 4 {
+		// {{context.<name>.<kind>[.<…>]}} — kind ∈ {input, output, item}.
+		// Trailing path is optional; absent means "the whole <kind>"
+		// (used by return-node payloads that want to pipe an entire
+		// named-step output object/slice through to the caller).
+		if len(parts) < 3 {
 			return nil, false
 		}
 		sc, ok := wfCtx[parts[1]]
 		if !ok {
 			return nil, false
 		}
+		rest := parts[3:]
 		switch parts[2] {
 		case "input":
-			return walk(sc.Input, parts[3:])
+			if len(rest) == 0 {
+				return sc.Input, true
+			}
+			return walk(sc.Input, rest)
 		case "output":
-			return walk(sc.Output, parts[3:])
+			if len(rest) == 0 {
+				return sc.Output, true
+			}
+			return walk(sc.Output, rest)
 		case "item":
-			return walk(sc.Item, parts[3:])
+			if len(rest) == 0 {
+				return sc.Item, true
+			}
+			return walk(sc.Item, rest)
 		}
 	}
 	return nil, false
@@ -4147,7 +4275,7 @@ func templateResolvePath(expr string, input any, wfCtx runCtx) (any, bool) {
 //	data.mem_limit  float64 MB (default 128)
 //	data.cpu_limit  float64 cores (default 0.5)
 //	data.network    bool    allow outbound network (default false)
-func (e *WorkflowExecutor) runSandboxScript(ctx context.Context, data map[string]any, input any, wfCtx runCtx, params map[string]string) (any, error) {
+func (e *WorkflowExecutor) runSandboxScript(ctx context.Context, data map[string]any, input any, wfCtx runCtx, config map[string]string) (any, error) {
 	if e.SandboxRT == nil {
 		return nil, fmt.Errorf("sandbox_script: sandbox manager not configured")
 	}
@@ -4186,12 +4314,22 @@ func (e *WorkflowExecutor) runSandboxScript(ctx context.Context, data map[string
 		}
 	}
 
+	// Lift the reserved __run_input__ entry off wfCtx (engine-side
+	// stash for the template engine) into a dedicated RunInput field
+	// so the sandbox surfaces it as a top-level `run_input` global,
+	// parallel to `input` and `config`. Symmetric to the template
+	// engine's `{{run_input.X}}` namespace.
+	var runInputForSandbox any
+	if sc, ok := wfCtx[runInputCtxKey]; ok {
+		runInputForSandbox = sc.Output
+	}
 	result, err := e.SandboxRT.Run(ctx, sandbox.RunRequest{
 		Language: sandbox.Language(lang),
 		Code:     script,
 		Input:    input,
+		RunInput: runInputForSandbox,
 		Context:  wfCtxToJS(wfCtx),
-		Params:   params,
+		Config: config,
 		Timeout:  timeout,
 		MemLimit: memLimit,
 		CPULimit: cpuLimit,

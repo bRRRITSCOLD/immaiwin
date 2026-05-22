@@ -1,10 +1,10 @@
 {
   "name": "Cron Heartbeat",
-  "description": "Scheduled trigger (every 5 minutes by default) that publishes a heartbeat ping to a Redis channel. Demonstrates: cron syntax, Redis publish, params templating.",
+  "description": "Scheduled trigger (every 5 minutes by default) that publishes a heartbeat ping to a Redis channel. Demonstrates: cron syntax, Redis publish, config templating.",
   "category": "Schedules",
   "workflow": {
     "name": "Cron Heartbeat",
-    "params": {
+    "config": {
       "redis_channel": "heartbeat.tick"
     },
     "nodes": [
@@ -34,7 +34,7 @@
         "data": {
           "name": "publish_heartbeat",
           "operation": "publish",
-          "channel": "{{params.redis_channel}}",
+          "channel": "{{config.redis_channel}}",
           "payload": "{\"ts\":\"{{now}}\",\"source\":\"cron-heartbeat\"}",
           "handles": [
             { "id": "success", "side": "right", "offset": 35, "paletteType": "success" },

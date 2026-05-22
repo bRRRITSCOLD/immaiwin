@@ -25,8 +25,13 @@ import { RedisRequestNode } from './nodes/RedisRequestNode'
 import { NotifyNode } from './nodes/NotifyNode'
 import { SandboxScriptNode } from './nodes/SandboxScriptNode'
 import { AIAgentNode } from './nodes/AIAgentNode'
+import { SubWorkflowNode } from './nodes/SubWorkflowNode'
+import { ReturnNode } from './nodes/ReturnNode'
 import { useWorkflowStore, type Workflow } from './useWorkflowStore'
-import { WorkflowParamsPanel } from './WorkflowParamsPanel'
+import { WorkflowConfigPanel } from './WorkflowConfigPanel'
+import { WorkflowInputSchemaPanel } from './WorkflowInputSchemaPanel'
+import { WorkflowOutputSchemaPanel } from './WorkflowOutputSchemaPanel'
+import { RunInputDialog } from './RunInputDialog'
 import { WorkflowCostLimitsPanel } from './WorkflowCostLimitsPanel'
 import { WorkflowApprovalChannelPanel } from './WorkflowApprovalChannelPanel'
 import { WorkflowHelpLegend } from './WorkflowHelpLegend'
@@ -42,6 +47,8 @@ const nodeTypes: NodeTypes = {
   notify: NotifyNode,
   sandbox_script: SandboxScriptNode,
   ai_agent: AIAgentNode,
+  sub_workflow: SubWorkflowNode,
+  return: ReturnNode,
 }
 
 const edgeTypes: EdgeTypes = {
@@ -84,6 +91,20 @@ const defaultNodeData: Record<string, Record<string, unknown>> = {
     require_approval: false,
     output_schema: '',
     skills: [],
+  },
+  sub_workflow: {
+    name: '',
+    workflow_id: '',
+    as_tool: {
+      enabled: true,
+      name: 'call_sub_workflow',
+      description: 'Dispatch the configured sub-workflow with the given input.',
+      input_schema: { type: 'object', properties: {} },
+    },
+  },
+  return: {
+    name: '',
+    payload: null,
   },
 }
 
@@ -265,7 +286,7 @@ function applyEdgeStyle(
 
 interface Props {
   workflow: Workflow
-  onSave(nodes: Node[], edges: Edge[], params: Record<string, string>): void
+  onSave(nodes: Node[], edges: Edge[], config: Record<string, string>): void
   onRun(stopAt?: string | string[], input?: unknown): void
   onCancel?: () => void
   onContinue?: () => void
@@ -382,15 +403,40 @@ interface EdgeMenuState {
 }
 
 function WorkflowCanvasInner({ workflow, onSave, onRun, onCancel, onContinue, onClearRun, lastRun, runRunning, agentRuns, pausedRunID, pendingApprovalRunID, hasLivePause, runError, streamStale, onApproveTool, onSetBreakpoints }: Props) {
-  const { updateActiveGraph, updateActiveCostLimits, updateActiveParamsSchema, updateActiveApprovalChannel, selectedEdgeType, setSelectedEdgeType, attachingFrom, setAttachingFrom } = useWorkflowStore()
+  const { updateActiveGraph, updateActiveCostLimits, updateActiveConfigSchema, updateActiveInputSchema, updateActiveInputSchemaJSON, updateActiveOutputSchema, updateActiveOutputSchemaJSON, updateActiveApprovalChannel, selectedEdgeType, setSelectedEdgeType, attachingFrom, setAttachingFrom } = useWorkflowStore()
   const { screenToFlowPosition } = useReactFlow()
   const [nodes, setNodes, onNodesChange] = useNodesState(workflow.nodes)
   const [edges, setEdges, onEdgesChange] = useEdgesState(workflow.edges)
-  const [params, setParams] = useState<Record<string, string>>(workflow.params ?? {})
+  const [config, setConfig] = useState<Record<string, string>>(workflow.config ?? {})
   const reactFlowWrapper = useRef<HTMLDivElement>(null)
   const [debugMode, setDebugMode] = useState(false)
   const [breakpointIds, setBreakpointIds] = useState<Set<string>>(new Set())
   const [edgeMenu, setEdgeMenu] = useState<EdgeMenuState | null>(null)
+  // Pre-flight input dialog. Workflows declaring input_schema /
+  // input_schema_json need operator-supplied input before
+  // dispatch — running with empty payload would fail engine
+  // validation. State holds the pending dispatch shape so the
+  // dialog's Submit can finish the click that opened it.
+  const [inputDialog, setInputDialog] = useState<{
+    open: boolean
+    title: string
+    stopAt?: string | string[]
+  }>({ open: false, title: 'Run' })
+  const hasInputSchema =
+    (workflow.input_schema && workflow.input_schema.length > 0) ||
+    !!(workflow.input_schema_json && workflow.input_schema_json.trim())
+  // dispatchRun = central wrapper. Called by Run / Debug click
+  // handlers. If workflow declares an input schema, opens the
+  // dialog and stashes stopAt for the submit handler. Otherwise
+  // fires onRun straight through.
+  function dispatchRun(opts: { stopAt?: string | string[]; title: string }) {
+    updateActiveGraph(nodes, edges, config)
+    if (hasInputSchema) {
+      setInputDialog({ open: true, title: opts.title, stopAt: opts.stopAt })
+      return
+    }
+    onRun(opts.stopAt)
+  }
 
   // Escape clears edge palette + edge context menu
   useEffect(() => {
@@ -590,8 +636,8 @@ function WorkflowCanvasInner({ workflow, onSave, onRun, onCancel, onContinue, on
   }, [breakpointIds, runRunning, pausedRunID, hasLivePause, onSetBreakpoints])
 
   function handleSave() {
-    updateActiveGraph(nodes, edges, params)
-    onSave(nodes, edges, params)
+    updateActiveGraph(nodes, edges, config)
+    onSave(nodes, edges, config)
   }
 
   function toggleDebugMode() {
@@ -612,13 +658,31 @@ function WorkflowCanvasInner({ workflow, onSave, onRun, onCancel, onContinue, on
       <div className="w-full h-full flex flex-col">
       <div ref={reactFlowWrapper} className={`flex-1 relative ${selectedEdgeType ? 'cursor-crosshair' : ''}`}>
         <div className="absolute top-3 left-3 z-10 flex flex-col gap-2">
-          <WorkflowParamsPanel
-            params={params}
-            onChange={setParams}
+          <WorkflowConfigPanel
+            config={config}
+            onChange={setConfig}
             onSave={handleSave}
-            schema={workflow.params_schema}
-            onSchemaChange={(s) => updateActiveParamsSchema(s)}
+            schema={workflow.config_schema}
+            onSchemaChange={(s) => updateActiveConfigSchema(s)}
           />
+          <WorkflowInputSchemaPanel
+            schema={workflow.input_schema}
+            onSchemaChange={(s) => updateActiveInputSchema(s)}
+            rawSchema={workflow.input_schema_json}
+            onRawSchemaChange={(raw) => updateActiveInputSchemaJSON(raw)}
+          />
+          {/* Output schema only meaningful when the workflow declares
+              a return node — otherwise sub_workflow consumers receive
+              null regardless of schema. Reactive show / hide keeps
+              the toolbar tight for fire-and-forget workflows. */}
+          {nodes.some((n) => n.type === 'return') && (
+            <WorkflowOutputSchemaPanel
+              schema={workflow.output_schema}
+              onSchemaChange={(s) => updateActiveOutputSchema(s)}
+              rawSchema={workflow.output_schema_json}
+              onRawSchemaChange={(raw) => updateActiveOutputSchemaJSON(raw)}
+            />
+          )}
           {/* Cost limits only matter when an AI Agent node exists — caps
               gate LLM token spend, no agent = nothing to gate. Hide the
               panel reactively as the user adds/removes ai_agent nodes so
@@ -803,7 +867,10 @@ function WorkflowCanvasInner({ workflow, onSave, onRun, onCancel, onContinue, on
           {!runRunning && pausedRunID && (
             <>
               <button
-                onClick={() => { updateActiveGraph(nodes, edges, params); onRun() }}
+                onClick={() => { updateActiveGraph(nodes, edges, config); onRun() }}
+                /* Continue keeps no-input dispatch — the paused run
+                   already has its initial input from the original
+                   dispatch; Continue just releases the breakpoint. */
                 className="flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium text-white bg-green-600 hover:bg-green-700 transition-colors"
                 title={`Resume paused run ${pausedRunID.slice(0, 8)}…`}
               >
@@ -821,9 +888,11 @@ function WorkflowCanvasInner({ workflow, onSave, onRun, onCancel, onContinue, on
           {debugMode && !runRunning && !pausedRunID && (
             <button
               onClick={() => {
-                updateActiveGraph(nodes, edges, params)
                 const ids = Array.from(breakpointIds)
-                onRun(ids.length > 0 ? ids : undefined)
+                dispatchRun({
+                  stopAt: ids.length > 0 ? ids : undefined,
+                  title: breakpointIds.size > 0 ? 'Debug ↓' : 'Debug',
+                })
               }}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-green-600 hover:bg-green-700 text-white text-xs font-medium transition-colors"
               title={breakpointIds.size > 0 ? 'Run to first breakpoint' : 'Debug run'}
@@ -833,7 +902,7 @@ function WorkflowCanvasInner({ workflow, onSave, onRun, onCancel, onContinue, on
           )}
           {!debugMode && !runRunning && !pausedRunID && (
             <button
-              onClick={() => { updateActiveGraph(nodes, edges, params); onRun() }}
+              onClick={() => dispatchRun({ title: 'Run' })}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-green-600 hover:bg-green-700 text-white text-xs font-medium transition-colors"
               title="Run workflow"
             >
@@ -899,6 +968,14 @@ function WorkflowCanvasInner({ workflow, onSave, onRun, onCancel, onContinue, on
         )}
       </div>
       </div>
+      <RunInputDialog
+        open={inputDialog.open}
+        onOpenChange={(o) => setInputDialog((s) => ({ ...s, open: o }))}
+        title={inputDialog.title}
+        schema={workflow.input_schema}
+        rawSchema={workflow.input_schema_json}
+        onSubmit={(input) => onRun(inputDialog.stopAt, input)}
+      />
     </RunResultsContext.Provider>
     </ToolApprovalContext.Provider>
     </AgentRunContext.Provider>

@@ -14,13 +14,20 @@ import (
 )
 
 // isInfraToolError reports whether a tool-handler error originates
-// from sandbox infrastructure (k3s pod attach, docker daemon, image
-// pull, etc.) rather than from user-space tool logic. The agent loop
-// treats infra failures as terminal regardless of `stop_on_tool_error`
-// because the LLM has no plausible recovery path — retrying / pivoting
-// won't bring the sandbox back. Detection by string prefix is brittle
-// but matches every internal/sandbox emit-site (`fmt.Errorf("sandbox/<engine>: …")`)
-// + needs no API change to the sandbox package.
+// from a source the LLM cannot plausibly recover from. The agent loop
+// treats these as terminal regardless of the tool target's `on_error`
+// policy — retrying / pivoting won't help.
+//
+// Covered:
+//   - sandbox infrastructure (k3s pod attach, docker daemon, image pull,
+//     debug adapter sockets) — `sandbox/<engine>:` emit-site prefix.
+//   - sub_workflow structural refusals (cycle / depth / cross-tenant /
+//     misconfigured store / empty target). Recognised by the literal
+//     `sub_workflow:` prefix; inner-step errors use `sub_workflow <id>:`
+//     (space, not colon) and stay user-recoverable.
+//
+// Detection by string prefix is brittle but matches every emit-site +
+// needs no API change.
 func isInfraToolError(err error) bool {
 	if err == nil {
 		return false
@@ -29,7 +36,8 @@ func isInfraToolError(err error) bool {
 	return strings.Contains(msg, "sandbox/k3s:") ||
 		strings.Contains(msg, "sandbox/docker:") ||
 		strings.Contains(msg, "sandbox/dap:") ||
-		strings.Contains(msg, "sandbox/cdp:")
+		strings.Contains(msg, "sandbox/cdp:") ||
+		strings.Contains(msg, "sub_workflow:")
 }
 
 // Agent run defaults — overridable via node data fields.
@@ -85,7 +93,7 @@ func normaliseOutputSchema(raw string) (json.RawMessage, error) {
 //   - Built-in code_execute tool (when SandboxRT available)
 //   - Skills (P1.11; not yet wired here)
 func (e *WorkflowExecutor) runAIAgent(ctx context.Context, node Node, data map[string]any,
-	input any, wfCtx runCtx, params map[string]string) (any, error) {
+	input any, wfCtx runCtx, config map[string]string) (any, error) {
 
 	if e.ConnResolver == nil {
 		return nil, fmt.Errorf("ai_agent: ConnResolver not configured")
@@ -136,7 +144,7 @@ func (e *WorkflowExecutor) runAIAgent(ctx context.Context, node Node, data map[s
 	}
 
 	// 4. Tool catalog (also populates env.skillSystemFragments if skills opted in)
-	catalog, err := e.buildAgentToolCatalog(node, env, wfCtx, params, input)
+	catalog, err := e.buildAgentToolCatalog(node, env, wfCtx, config, input)
 	if err != nil {
 		return nil, fmt.Errorf("ai_agent: build tool catalog: %w", err)
 	}
@@ -1122,7 +1130,7 @@ func (e *WorkflowExecutor) runAIAgent(ctx context.Context, node Node, data map[s
 // rejects duplicates with a logged warn). Built-ins win over skill tools
 // win over node tools — that's by design so reserved names stay reserved.
 func (e *WorkflowExecutor) buildAgentToolCatalog(agent Node, env *runEnv,
-	wfCtx runCtx, params map[string]string, input any) (*ToolCatalog, error) {
+	wfCtx runCtx, config map[string]string, input any) (*ToolCatalog, error) {
 
 	cat := NewToolCatalog()
 
@@ -1136,7 +1144,7 @@ func (e *WorkflowExecutor) buildAgentToolCatalog(agent Node, env *runEnv,
 	// 2. Skill-supplied tools (P1.11). Reads data.skills as []SkillReq,
 	// resolves to a lockfile via SkillRes, then registers each tool with the
 	// agent using a `<sanitized-slug>__<tool_id>` prefix to avoid collisions.
-	skillFragments, err := e.appendSkillTools(agent, cat, params, wfCtx, input)
+	skillFragments, err := e.appendSkillTools(agent, cat, config, wfCtx, input)
 	if err != nil {
 		return nil, err
 	}
@@ -1267,7 +1275,7 @@ func (e *WorkflowExecutor) buildAgentToolCatalog(agent Node, env *runEnv,
 					}
 				}
 			} else {
-				out, err = e.runNode(ctx, targetNode, argInput, wfCtx, params)
+				out, err = e.runNode(ctx, targetNode, argInput, wfCtx, config)
 			}
 
 			// Record a StepResult for the tool-invoked node so the UI shows
