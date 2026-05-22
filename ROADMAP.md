@@ -21,7 +21,7 @@ baked into the engine instead of bolted on after.
 - CI gate (vet / lint / `test -race` / typecheck) on every push + PR, branch protection on `main`
 
 ### Workflow engine
-- Visual canvas (React Flow) with 8 node types — `trigger`, `http_request`, `sandbox_script`, `ai_agent`, `for_each`, `mongo_request`, `redis_request`, `notify`
+- Visual canvas (React Flow) with 10 node types — `trigger`, `http_request`, `sandbox_script`, `ai_agent`, `for_each`, `mongo_request`, `redis_request`, `notify`, `sub_workflow`, `return`
 - Live run streaming over WebSocket — trace timeline, per-node status, cost badges
 - Webhook trigger (HMAC-SHA-256 signed)
 - Cron, Manual, RabbitMQ, Redis-subscribe, **WebSocket** triggers (all migrated to durable lease workers). The WebSocket trigger is provider-agnostic — operator-supplied bearer/header/query auth, exponential reconnect with ping/pong heartbeat, `event_path` dot-extract on each frame
@@ -34,6 +34,11 @@ baked into the engine instead of bolted on after.
 - Durable execution: lease workers, checkpoint-per-step resume, boot-time stuck-run sweep, no-orphans on api restart
 - **Workflow enable/disable toggle** — `PATCH /api/v1/workflows/:id/enabled` flips a first-class state; disabled workflows drop from every trigger worker's sync-tick active set (cron / RabbitMQ / Redis-subscribe) while staying fully editable + manually runnable. Backfilled on boot so existing rows default to enabled.
 - **Workflow rename** — `PATCH /api/v1/workflows/:id/name` rewrites the display name without round-tripping the whole graph. Inline double-click / pencil-button edit in the sidebar; audit-logged.
+- **Sub-workflow as an agent tool** — `sub_workflow` node bound to another workflow id, dispatched by the AI agent via `as_tool`. Tenant-scoped (cross-tenant dispatch refused at save AND run); cycle detection via ctx-stashed ancestor chain; depth cap (`maxSubWorkflowDepth = 5`) prevents runaway recursion. Structural refusals (cycle / tenant / depth) terminate the agent loop regardless of the tool target's `on_error` policy — LLM cannot recover, so retry would only burn tokens.
+- **`return` node + workflow OutputSchema** — explicit single-payload contract for sub-workflow consumers (Temporal/Airflow-style return). Payload templates resolve via the standard template engine (`{{context.X}}`, `{{input.X}}`, `{{run_input.X}}`) including nested maps/arrays + BSON-decoded run-state. At most one return node per workflow (enforced at save). No return node = `null` output (explicit "no contract" signal, not implicit last-step).
+- **Workflow `input_schema` + pre-flight Run dialog** — workflows declare the shape of their run input via typed `SchemaEntry[]` (string / number / boolean / enum) OR raw JSON Schema (escape hatch for nested objects + arrays). Engine validates on every dispatch (manual, trigger, sub_workflow) and surfaces `ErrInputValidation`. The canvas Run button opens a typed form OR raw-JSON editor seeded by recursing the schema's `properties` / `items` and honoring `default` annotations.
+- **`{{run_input.X}}` template namespace + sandbox global** — the workflow's initial trigger payload is reachable from nodes at any depth in the BFS, independent of predecessor edges. Distinct from `{{input.X}}` (predecessor output). Top-level `run_input` global is also exposed in all 5 sandbox runtimes, parallel to existing `input` / `config`.
+- **`params` → `config` rename, end-to-end** — engine struct field, BSON tag, sandbox payload, all 5 lang entrypoints (JS / Python / Go / Rust / PHP), bundled skill source, UI types + visible labels, bundled workflow templates. Single name across the stack; pre-launch so no back-compat shim.
 
 ### AI agent
 - ReAct loop with Anthropic, OpenAI, Ollama providers behind a single `Provider` interface
@@ -63,17 +68,19 @@ baked into the engine instead of bolted on after.
 - Per-node package list (`data.packages`) for installable runtimes
 - Streaming sandbox WS endpoint (`/api/v1/sandbox/run`) with stdout / stderr / output frames
 - Interactive debug — DAP for Python, CDP for JavaScript
+- **Container pool warm starts** — boot-time async warm + per-Acquire liveness check + 24h `activeDeadline` on warm pods + tight post-attach termination poll (10ms init / 50ms cap). Pool key is `(lang, image-tag, network, mem, cpu)`, so package-using runs hit the warm pool too.
+- **Image-layer caching for `packages`** — docker `BuildOrReuse` (sha256-tagged image, reused on next run) + k3s variant that pushes the built image to the configured registry so containerd can pull. Pushed-tag cache prevents redundant pushes across the pool.
 
 ---
 
 ## Up next (short-term)
 
 ### Composability
-- **Sub-workflow as a tool** — agent calls another workflow by id, with recursion-depth + cycle guards. The highest-value composability lever still unbuilt.
+- **Multi-agent workflows** — agent-to-agent handoff (next pick after sub-workflow + return + I/O schemas shipped)
 - **Output-schema enforcement** on agent results (the provider `tool_choice: "required"` trick on existing `output_schema` field)
 - **Parallel agent inside `for_each`** — opt-in, bounded parallelism (default sequential to protect token budgets)
-- **Multi-agent workflows** — agent-to-agent handoff
 - **Transform node** — drop-in node in front of any tool to reshape its output before it hits the agent context (token-saving)
+- **`ReturnNode` payload autofill from `output_schema_json`** — symmetry with the run-input pre-flight dialog (stub from schema, honor `default`, recurse nested)
 
 ### Engine
 - **Per-iter agent checkpoint** — worker death mid-ReAct resumes at the same iteration instead of restarting the loop
@@ -88,8 +95,6 @@ baked into the engine instead of bolted on after.
 - **Per-tenant cost cap** (per-run + per-day already exist)
 
 ### Sandbox + infra
-- **Container pool warm starts** — *partial: docker + k3s default-language pools shipped*. Boot-time async warm + per-Acquire liveness check + 24h activeDeadline on warm pods + tightened post-attach termination poll (10ms init / 50ms cap). Still unbuilt: per-(image, packages-hash) pool sharding so package-using runs also skip cold start.
-- **Image-layer caching for `packages`** — *partial: docker `BuildOrReuse` exists (sha256-tagged image, reused on next run)*. Still unbuilt: k3s variant that pushes the built image to the configured registry so k3s containerd can pull it; pool integration with the package-image tag as the pool key.
 - **Multi-node Kubernetes validation** — exercise the k3s backend on real multi-node clusters; verify HPA, pod priority, ResourceQuotas, anti-affinity behave as expected
 
 ### Standard integrations + connectors
