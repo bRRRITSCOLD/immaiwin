@@ -1360,7 +1360,7 @@ func (e *WorkflowExecutor) buildAgentToolCatalog(agent Node, env *runEnv,
 			// above so debug surfaces aren't lossy.
 			agentResult := out
 			if edgeOutputTransform != nil {
-				var tmpl any = edgeOutputTransform
+				tmpl := edgeOutputTransform
 				// Canvas may persist the transform as a JSON-encoded
 				// string when the textarea hasn't been re-parsed; tolerate
 				// it by best-effort decoding. A non-string transform is
