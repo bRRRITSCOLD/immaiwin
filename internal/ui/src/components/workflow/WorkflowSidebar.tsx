@@ -1,4 +1,4 @@
-import { Globe, Play, Container, Database, Bell, RefreshCw, Radio, ChevronDown, ChevronUp, CheckCircle2, XCircle, Circle, Plus, Pencil, Trash2, Plug, Download, Bot, Wrench, Copy, Power, PowerOff, Workflow as WorkflowIcon, CornerDownLeft } from 'lucide-react'
+import { Globe, Play, Container, Database, Bell, RefreshCw, Radio, ChevronDown, ChevronUp, CheckCircle2, XCircle, Circle, Plus, Pencil, Trash2, Plug, Download, Bot, Wrench, Copy, Power, PowerOff, Workflow as WorkflowIcon, CornerDownLeft, Shuffle } from 'lucide-react'
 import { useState } from 'react'
 import { toast } from 'sonner'
 import { Separator } from '~/components/ui/separator'
@@ -395,6 +395,12 @@ export function WorkflowSidebar({ onSelect, onReload }: Props) {
             icon={<CornerDownLeft className="h-3.5 w-3.5 text-emerald-400" />}
             label="Return"
             nodeType="return"
+            onDragStart={onDragStart}
+          />
+          <PaletteItem
+            icon={<Shuffle className="h-3.5 w-3.5 text-violet-400" />}
+            label="Transform"
+            nodeType="transform"
             onDragStart={onDragStart}
           />
         </div>}

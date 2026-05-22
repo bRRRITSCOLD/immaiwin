@@ -495,11 +495,26 @@ func (e *WorkflowExecutor) runAIAgent(ctx context.Context, node Node, data map[s
 			}
 		}
 		if resp == nil {
+			// Output-schema enforcement (provider-side):
+			// When the agent declares an `output_schema`, force the model
+			// to emit a tool call on every iter by setting tool_choice to
+			// "any" (Anthropic) / "required" (OpenAI). Stops free-text
+			// final answers before the wire instead of catching them
+			// post-call. The free-text rejection-retry below stays as a
+			// defensive backstop for providers (e.g. ollama) that don't
+			// honor tool_choice. Once finalAnswerCalled flips, the loop
+			// returns immediately on the same iter — no further Chat call
+			// happens with the "any" constraint active.
+			toolChoice := ""
+			if outputSchemaRaw != "" && !finalAnswerCalled {
+				toolChoice = "any"
+			}
 			req := llm.ChatRequest{
 				Model:       model,
 				System:      systemPrompt,
 				Messages:    messages,
 				Tools:       catalog.Defs(),
+				ToolChoice:  toolChoice,
 				MaxTokens:   maxTokens,
 				Temperature: temperature,
 			}

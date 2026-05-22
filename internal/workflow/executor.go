@@ -2319,6 +2319,8 @@ func (e *WorkflowExecutor) runNode(ctx context.Context, node Node, input any, wf
 		return e.runAIAgent(ctx, node, data, input, wfCtx, config)
 	case NodeTypeReturn:
 		return runReturn(data, input, wfCtx)
+	case NodeTypeTransform:
+		return runTransform(data, input, wfCtx)
 	default:
 		return nil, fmt.Errorf("unknown node type: %s", node.Type)
 	}
@@ -2338,6 +2340,20 @@ func (e *WorkflowExecutor) runNode(ctx context.Context, node Node, input any, wf
 // absent payload returns the upstream input unchanged — passthrough
 // when the author wants "whatever flowed into this node".
 func runReturn(data map[string]any, input any, wfCtx runCtx) (any, error) {
+	raw, has := data["payload"]
+	if !has || raw == nil {
+		return input, nil
+	}
+	return resolveTemplateDeep(raw, input, wfCtx), nil
+}
+
+// runTransform reshapes input into the template-resolved value of
+// `data.payload`. Identical mechanics to runReturn, separate type so
+// the save-time one-return-per-workflow check doesn't flag transform
+// nodes. Missing / nil payload passes the input through unchanged so
+// an unconfigured node is a no-op rather than a hard error during
+// canvas editing.
+func runTransform(data map[string]any, input any, wfCtx runCtx) (any, error) {
 	raw, has := data["payload"]
 	if !has || raw == nil {
 		return input, nil

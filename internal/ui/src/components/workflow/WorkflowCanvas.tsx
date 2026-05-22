@@ -27,6 +27,7 @@ import { SandboxScriptNode } from './nodes/SandboxScriptNode'
 import { AIAgentNode } from './nodes/AIAgentNode'
 import { SubWorkflowNode } from './nodes/SubWorkflowNode'
 import { ReturnNode } from './nodes/ReturnNode'
+import { TransformNode } from './nodes/TransformNode'
 import { useWorkflowStore, type Workflow } from './useWorkflowStore'
 import { WorkflowConfigPanel } from './WorkflowConfigPanel'
 import { WorkflowInputSchemaPanel } from './WorkflowInputSchemaPanel'
@@ -49,6 +50,7 @@ const nodeTypes: NodeTypes = {
   ai_agent: AIAgentNode,
   sub_workflow: SubWorkflowNode,
   return: ReturnNode,
+  transform: TransformNode,
 }
 
 const edgeTypes: EdgeTypes = {
