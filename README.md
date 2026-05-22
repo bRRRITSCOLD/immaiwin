@@ -153,7 +153,7 @@ The long game: add AI agents that can write and execute code as part of their re
 
 Canvas-based editor powered by React Flow. Drag nodes, connect edges, run entire workflows with one click.
 
-**8 node types:**
+**10 node types:**
 
 | Node | Purpose |
 |------|---------|
@@ -165,6 +165,8 @@ Canvas-based editor powered by React Flow. Drag nodes, connect edges, run entire
 | `mongo_request` | Generic MongoDB ops: `find`, `find_one_and_update`, `find_one_and_replace`, `insert_one`, `insert_many`, `update_many`, `delete_one`, `delete_many`, `aggregate`, `count_documents`, `distinct`, `cursor_fetch` (server-side cursor pagination) |
 | `redis_request` | Generic Redis ops: `publish`, strings (`get`/`set`/`del`/`incr`/`decr`/`expire`/`ttl`/`exists`/`keys`/`mget`/`mset`), hashes (`hget`/`hset`/`hgetall`/`hdel`), lists (`lpush`/`rpush`/`lpop`/`rpop`/`lrange`/`llen`), sets (`sadd`/`srem`/`smembers`/`sismember`), sorted sets (`zadd`/`zrem`/`zrange`/`zscore`/`zincrby`), streams producer (`xadd`/`xrange`/`xlen`). Subscribe-side will become a trigger node. |
 | `notify` | Send notifications |
+| `sub_workflow` | Agent-dispatched call to another workflow by id. Tenant-scoped, cycle + depth guarded; consumes the target's typed return value (validated against `output_schema`). Unlocks workflow composition + agent-of-agents patterns. |
+| `return` | Explicit single-payload contract for sub-workflow consumers. Payload templates resolve via `{{context.X}}`, `{{input.X}}`, `{{run_input.X}}`. At most one per workflow. |
 
 Every node supports named steps — downstream nodes access upstream results via `context.stepName.output`.
 
@@ -243,7 +245,7 @@ Every sandbox container runs with defense-in-depth:
 | **No network** | `--network=none` by default, opt-in per node |
 | **Resource limits** | CPU 0.5 cores, 128MB RAM, 256 PIDs, 30s timeout |
 | **Read-only code** | User script mounted, no host filesystem access |
-| **No secrets** | Only explicit params injected, never host env |
+| **No secrets** | Only explicit `config` entries injected, never host env |
 
 This is what makes AI agent integration safe — an agent can write and execute arbitrary code, but it runs in a sandbox that can't access the host, can't make network calls (unless explicitly allowed), and gets killed after 30 seconds.
 
@@ -583,7 +585,7 @@ Supported types: `mongodb`, `redis`, `rabbitmq`, `anthropic`, `openai`, `ollama`
 
 ### Shipped (recent)
 - [x] Multi-language sandbox (JS / Python / Go / Rust / PHP), Docker + k3s + gVisor backends, DAP/CDP interactive debug
-- [x] Visual canvas with 8 node types (`trigger`, `http_request`, `sandbox_script`, `ai_agent`, `for_each`, `mongo_request`, `redis_request`, `notify`)
+- [x] Visual canvas with 10 node types (`trigger`, `http_request`, `sandbox_script`, `ai_agent`, `for_each`, `mongo_request`, `redis_request`, `notify`, `sub_workflow`, `return`)
 - [x] AI agent (Anthropic / OpenAI / Ollama) — ReAct loop, edge-bound tool nodes, built-in `code_execute`, chat memory, JSON-Schema arg validation, skills system
 - [x] Durable execution — lease workers + checkpoint resume + boot sweep (every trigger type runs on the lease plane)
 - [x] Universal `on_error: stop|continue` (dual-edge) on every fallible node + the for_each, with approval-rejection security invariant
