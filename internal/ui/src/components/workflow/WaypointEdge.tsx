@@ -209,6 +209,33 @@ export function WaypointEdge(props: EdgeProps) {
           </EdgeLabelRenderer>
         )
       })()}
+      {/* output-transform indicator — shows when this edge has a
+          tool-output transform configured. Visual only; editing
+          still goes through the right-click menu. */}
+      {data?.output_transform != null && (
+        <EdgeLabelRenderer>
+          <div
+            className="nodrag nopan"
+            title="Tool output transform active — right-click edge to edit"
+            style={{
+              position: 'absolute',
+              transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY + 14}px)`,
+              fontSize: 9,
+              color: '#a78bfa',
+              background: 'hsl(var(--background))',
+              padding: '1px 6px',
+              borderRadius: 4,
+              border: '1px solid #7c3aed',
+              pointerEvents: 'none',
+              zIndex: 1,
+              fontFamily: 'monospace',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            ⇆ transform
+          </div>
+        </EdgeLabelRenderer>
+      )}
       {/* waypoint circles — only visible when edge selected */}
       {selected && waypoints.length > 0 && (
         <EdgeLabelRenderer>
