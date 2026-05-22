@@ -77,3 +77,7 @@ go.work.sum
 */**.log
 
 .smoke
+# Stray screenshot paste files at repo root — never commit.
+/image.png
+/image*.png
+/Screenshot*.png

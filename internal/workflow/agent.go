@@ -1191,6 +1191,16 @@ func (e *WorkflowExecutor) buildAgentToolCatalog(agent Node, env *runEnv,
 		// Snapshot so the closure doesn't capture loop-mutated vars.
 		targetNode := target
 		toolName := def.Name
+		// Edge-level output transform: when this tool edge declares
+		// `data.output_transform`, the agent receives a template-
+		// resolved reshape of the tool's output rather than the raw
+		// result. The raw output stays on the StepResult + step_done
+		// event so the canvas debug panel still shows what the tool
+		// actually produced; only the tool_result fed back to the LLM
+		// is reshaped. Lets authors trim token-heavy payloads (mongo
+		// finds, http bodies) per-consumer without wrapping the tool
+		// in a sub-workflow.
+		edgeOutputTransform := et.data["output_transform"]
 		handler := func(ctx context.Context, args json.RawMessage) (string, error) {
 			// Decode args into any so they become the target node's input.
 			var argInput any
@@ -1293,13 +1303,42 @@ func (e *WorkflowExecutor) buildAgentToolCatalog(agent Node, env *runEnv,
 				out, err = e.runNode(ctx, targetNode, argInput, wfCtx, config)
 			}
 
+			// Apply edge-level output transform (if any) up-front so
+			// both the StepResult / step_done event and the LLM-facing
+			// tool_result can carry it. Raw `out` stays on .Output;
+			// the reshape lands on .TransformedOutput so debug
+			// surfaces show both panes without losing the original.
+			var transformedOut any
+			if err == nil && edgeOutputTransform != nil {
+				tmpl := edgeOutputTransform
+				// Canvas may persist the transform as a JSON-encoded
+				// string when the textarea hasn't been re-parsed; tolerate
+				// it by best-effort decoding. A non-string transform is
+				// already an object/scalar and walks resolveTemplateDeep
+				// directly.
+				if s, isStr := tmpl.(string); isStr {
+					trimmed := strings.TrimSpace(s)
+					if trimmed == "" {
+						tmpl = nil
+					} else {
+						var parsed any
+						if jerr := json.Unmarshal([]byte(trimmed), &parsed); jerr == nil {
+							tmpl = parsed
+						}
+					}
+				}
+				if tmpl != nil {
+					transformedOut = resolveTemplateDeep(tmpl, out, wfCtx)
+				}
+			}
+
 			// Record a StepResult for the tool-invoked node so the UI shows
 			// success/error on it (otherwise NodeDebugPanel renders "not executed").
 			// ViaAgentTool=true keeps this Error from being scanned by the
 			// run-status promotion logic — the agent itself owns the abort
 			// decision (`stop_on_tool_error` or sandbox-infra classification).
 			if env, ok := envFromCtx(ctx); ok && env.toolSteps != nil {
-				sr := StepResult{NodeID: targetNode.ID, NodeType: targetNode.Type, Output: out, ViaAgentTool: true}
+				sr := StepResult{NodeID: targetNode.ID, NodeType: targetNode.Type, Output: out, TransformedOutput: transformedOut, ViaAgentTool: true}
 				if err != nil {
 					sr.Error = err.Error()
 					// Mark Continued only when the target's policy is
@@ -1320,10 +1359,11 @@ func (e *WorkflowExecutor) buildAgentToolCatalog(agent Node, env *runEnv,
 			// Mirror step_done so the canvas flips to success/error live.
 			if env, ok := envFromCtx(ctx); ok && env.events != nil {
 				done := RunEvent{
-					Type:     EventStepDone,
-					NodeID:   targetNode.ID,
-					NodeType: targetNode.Type,
-					Output:   out,
+					Type:              EventStepDone,
+					NodeID:            targetNode.ID,
+					NodeType:          targetNode.Type,
+					Output:            out,
+					TransformedOutput: transformedOut,
 				}
 				if err != nil {
 					done.Error = err.Error()
@@ -1344,7 +1384,11 @@ func (e *WorkflowExecutor) buildAgentToolCatalog(agent Node, env *runEnv,
 			if err != nil {
 				return "", err
 			}
-			b, _ := json.Marshal(out)
+			agentResult := out
+			if transformedOut != nil {
+				agentResult = transformedOut
+			}
+			b, _ := json.Marshal(agentResult)
 			return string(b), nil
 		}
 		if err := cat.Add(def, handler); err != nil {

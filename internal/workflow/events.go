@@ -60,6 +60,12 @@ type RunEvent struct {
 	Result     string    `json:"result,omitempty"`
 	IsError    bool      `json:"is_error,omitempty"`
 	Output     any       `json:"output,omitempty"`
+	// TransformedOutput mirrors StepResult.TransformedOutput on
+	// step_done events for ViaAgentTool tool calls — the LLM-facing
+	// reshape of Output when the tool edge declared an
+	// `output_transform`. Lets the live canvas debug panel show both
+	// the raw tool result and what the agent actually observed.
+	TransformedOutput any `json:"transformed_output,omitempty"`
 	Error      string    `json:"error,omitempty"`
 	Usage      *Usage    `json:"usage,omitempty"`
 	// Provider + Model populated on `agent_llm` events so the live UI +
