@@ -937,10 +937,14 @@ func forEachIterFromCtx(ctx context.Context) int {
 	return i
 }
 
-// adjEntry is one outgoing edge from a node.
+// adjEntry is one outgoing edge from a node. `data` carries the
+// edge's raw data map so per-edge knobs (output_transform on agent
+// tool edges, etc.) reach the dispatch site without re-indexing the
+// workflow's edge slice.
 type adjEntry struct {
 	targetID     string
 	sourceHandle string
+	data         map[string]any
 }
 
 // Run executes a workflow starting from all trigger nodes using BFS.
@@ -1385,6 +1389,7 @@ func (e *WorkflowExecutor) RunWithEvents(ctx context.Context, wf Workflow, stopA
 		adj[edge.Source] = append(adj[edge.Source], adjEntry{
 			targetID:     edge.Target,
 			sourceHandle: h,
+			data:         edge.Data,
 		})
 	}
 

@@ -1191,6 +1191,16 @@ func (e *WorkflowExecutor) buildAgentToolCatalog(agent Node, env *runEnv,
 		// Snapshot so the closure doesn't capture loop-mutated vars.
 		targetNode := target
 		toolName := def.Name
+		// Edge-level output transform: when this tool edge declares
+		// `data.output_transform`, the agent receives a template-
+		// resolved reshape of the tool's output rather than the raw
+		// result. The raw output stays on the StepResult + step_done
+		// event so the canvas debug panel still shows what the tool
+		// actually produced; only the tool_result fed back to the LLM
+		// is reshaped. Lets authors trim token-heavy payloads (mongo
+		// finds, http bodies) per-consumer without wrapping the tool
+		// in a sub-workflow.
+		edgeOutputTransform := et.data["output_transform"]
 		handler := func(ctx context.Context, args json.RawMessage) (string, error) {
 			// Decode args into any so they become the target node's input.
 			var argInput any
@@ -1344,7 +1354,34 @@ func (e *WorkflowExecutor) buildAgentToolCatalog(agent Node, env *runEnv,
 			if err != nil {
 				return "", err
 			}
-			b, _ := json.Marshal(out)
+			// Apply edge-level output transform (if any) to compute
+			// what the agent actually sees as the tool_result. Raw
+			// `out` already landed on the StepResult / step_done
+			// above so debug surfaces aren't lossy.
+			agentResult := out
+			if edgeOutputTransform != nil {
+				var tmpl any = edgeOutputTransform
+				// Canvas may persist the transform as a JSON-encoded
+				// string when the textarea hasn't been re-parsed; tolerate
+				// it by best-effort decoding. A non-string transform is
+				// already an object/scalar and walks resolveTemplateDeep
+				// directly.
+				if s, isStr := tmpl.(string); isStr {
+					trimmed := strings.TrimSpace(s)
+					if trimmed == "" {
+						tmpl = nil
+					} else {
+						var parsed any
+						if jerr := json.Unmarshal([]byte(trimmed), &parsed); jerr == nil {
+							tmpl = parsed
+						}
+					}
+				}
+				if tmpl != nil {
+					agentResult = resolveTemplateDeep(tmpl, out, wfCtx)
+				}
+			}
+			b, _ := json.Marshal(agentResult)
 			return string(b), nil
 		}
 		if err := cat.Add(def, handler); err != nil {
