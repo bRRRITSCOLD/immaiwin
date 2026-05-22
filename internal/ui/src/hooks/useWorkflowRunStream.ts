@@ -36,6 +36,11 @@ export interface RunEvent {
   result?: string
   is_error?: boolean
   output?: unknown
+  // transformed_output mirrors StepResult.TransformedOutput on
+  // step_done events — the LLM-facing reshape when the agent tool
+  // edge declared an output_transform. Surfaced in NodeDebugPanel
+  // as a second pane alongside the raw output.
+  transformed_output?: unknown
   error?: string
   usage?: {
     input_tokens: number
@@ -59,6 +64,10 @@ export interface NodeRunState {
   nodeType?: string
   status: 'pending' | 'running' | 'done' | 'error' | 'paused' | 'cancelled'
   output?: unknown
+  // transformed_output set on step_done when the tool edge declared
+  // an output_transform — the LLM-facing reshape. Surfaced as a
+  // second pane in NodeDebugPanel alongside the raw output.
+  transformed_output?: unknown
   error?: string
   // Timing — derived from event timestamps. startedAt set on the
   // first step_start (resets per for_each iteration via the loopStep
@@ -327,6 +336,7 @@ export function useWorkflowRunStream(): WorkflowRunStream {
             ...n,
             status: s,
             output: ev.output,
+            transformed_output: ev.transformed_output,
             error: ev.error,
             nodeType: ev.node_type ?? n.nodeType,
             loopTotal: ev.loop_total ?? n.loopTotal,

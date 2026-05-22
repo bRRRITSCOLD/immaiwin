@@ -149,6 +149,13 @@ type StepResult struct {
 	// Default false → legacy strict behaviour (any non-tool error
 	// promotes the run to error).
 	Continued bool `bson:"continued,omitempty" json:"continued,omitempty"`
+	// TransformedOutput is the LLM-facing reshape of Output when the
+	// agent's tool edge declared `data.output_transform`. Only set on
+	// ViaAgentTool=true steps where a transform fired. The canvas
+	// debug panel renders this as a second "Sent to agent" pane so
+	// authors can compare the raw tool result against what the LLM
+	// actually observed. Empty when no transform applies.
+	TransformedOutput any `bson:"transformed_output,omitempty" json:"transformed_output,omitempty"`
 }
 
 // StepContext holds the input, output, and (for for_each) current item of a named step.

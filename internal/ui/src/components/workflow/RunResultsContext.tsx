@@ -4,6 +4,11 @@ export interface StepResult {
   node_id: string
   node_type: string
   output?: unknown
+  // transformed_output is the LLM-facing reshape of `output` when
+  // the tool edge declared `output_transform`. Only set on
+  // agent-tool steps; rendered as a second "Sent to agent (transformed)"
+  // pane so authors can compare raw vs trimmed.
+  transformed_output?: unknown
   error?: string
   // Live-run lifecycle status. Optional so post-run snapshots (which
   // never set it) keep rendering as "success/error" via the error field.
@@ -359,9 +364,36 @@ export function NodeDebugPanel({ id }: { id: string }) {
         <span className="text-sm text-muted-foreground/50">{expanded ? '▴' : '▾'}</span>
       </button>
       {expanded && (
-        <pre className="nodrag nowheel px-3 pb-2 text-[10px] leading-4 max-h-[160px] overflow-y-auto overflow-x-hidden text-muted-foreground whitespace-pre-wrap break-all w-0 min-w-full">
-          {hasError ? step.error : formatOutput(step.output)}
-        </pre>
+        <>
+          {step.transformed_output !== undefined && step.transformed_output !== null && !hasError && (
+            <div className="nodrag px-3 pt-1 text-[10px] text-violet-400/80 italic">
+              raw tool output ↓
+            </div>
+          )}
+          <pre className="nodrag nowheel px-3 pb-2 text-[10px] leading-4 max-h-[160px] overflow-y-auto overflow-x-hidden text-muted-foreground whitespace-pre-wrap break-all w-0 min-w-full">
+            {hasError ? step.error : formatOutput(step.output)}
+          </pre>
+          {step.transformed_output !== undefined && step.transformed_output !== null && !hasError && (
+            <>
+              <div className="nodrag px-3 pt-1 text-[10px] text-violet-400/80 italic flex items-center justify-between">
+                <span>sent to agent (after output_transform) ↓</span>
+                <span
+                  className="text-base text-muted-foreground/50 hover:text-foreground px-0.5 leading-none cursor-pointer"
+                  title="Copy transformed output"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    navigator.clipboard.writeText(fullOutput(step.transformed_output))
+                  }}
+                >
+                  ⎘
+                </span>
+              </div>
+              <pre className="nodrag nowheel px-3 pb-2 text-[10px] leading-4 max-h-[160px] overflow-y-auto overflow-x-hidden text-violet-300/90 whitespace-pre-wrap break-all w-0 min-w-full border-l-2 border-violet-500/60">
+                {formatOutput(step.transformed_output)}
+              </pre>
+            </>
+          )}
+        </>
       )}
     </div>
   )

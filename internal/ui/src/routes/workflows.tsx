@@ -84,6 +84,7 @@ function WorkflowsPage() {
             node_id: n.nodeId,
             node_type: n.nodeType ?? '',
             output: n.output,
+            transformed_output: n.transformed_output,
             error: n.error,
             status,
             startedAt: n.startedAt,
