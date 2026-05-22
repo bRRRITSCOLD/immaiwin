@@ -71,10 +71,13 @@ export function ToolEdgeTransformDialog({ open, onOpenChange, initialTransform, 
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-2xl">
         <DialogHeader>
-          <DialogTitle>Tool output transform</DialogTitle>
+          <DialogTitle>Tool output transform (tool → agent)</DialogTitle>
           <DialogDescription>
-            Reshape the tool's output before the agent receives it as tool_result. JSON, template-resolved at runtime
-            against the tool's raw output as <code>{`{{input.<field>}}`}</code>, plus the workflow's <code>{`{{context.X}}`}</code> /{' '}
+            Reshapes the <strong>tool's response</strong> before the agent receives it as tool_result.
+            (Not the tool's input — the input shape lives in the tool's <code>as_tool.input_schema</code>.)
+            <br />
+            JSON, template-resolved at runtime against the tool's raw output as{' '}
+            <code>{`{{input.<field>}}`}</code>, plus the workflow's <code>{`{{context.X}}`}</code> /{' '}
             <code>{`{{config.X}}`}</code> / <code>{`{{run_input.X}}`}</code>. Empty = raw output passes through (no transform).
           </DialogDescription>
         </DialogHeader>

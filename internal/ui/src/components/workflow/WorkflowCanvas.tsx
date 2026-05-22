@@ -996,7 +996,7 @@ function WorkflowCanvasInner({ workflow, onSave, onRun, onCancel, onContinue, on
                     className="w-full text-left px-3 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground transition-colors"
                     onClick={handleEditTransform}
                   >
-                    {hasTransform ? 'Edit Output Transform' : 'Add Output Transform'}
+                    {hasTransform ? 'Edit tool-output transform (tool → agent)' : 'Add tool-output transform (tool → agent)'}
                   </button>
                 )}
                 <button

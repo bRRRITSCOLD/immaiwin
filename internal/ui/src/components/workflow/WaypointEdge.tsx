@@ -210,13 +210,15 @@ export function WaypointEdge(props: EdgeProps) {
         )
       })()}
       {/* output-transform indicator — shows when this edge has a
-          tool-output transform configured. Visual only; editing
-          still goes through the right-click menu. */}
+          tool-output transform configured. Direction is reverse of
+          the edge arrow: agent → tool is the dispatch path, but the
+          transform fires on the RETURN path (tool → agent). Visual
+          only; editing still goes through the right-click menu. */}
       {data?.output_transform != null && (
         <EdgeLabelRenderer>
           <div
             className="nodrag nopan"
-            title="Tool output transform active — right-click edge to edit"
+            title="Output transform: reshapes the tool's response before the LLM sees it as tool_result. Tool input shape is defined separately by the tool's as_tool.input_schema. Right-click edge to edit."
             style={{
               position: 'absolute',
               transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY + 14}px)`,
@@ -232,7 +234,7 @@ export function WaypointEdge(props: EdgeProps) {
               whiteSpace: 'nowrap',
             }}
           >
-            ⇆ transform
+            ← tool output trim
           </div>
         </EdgeLabelRenderer>
       )}
