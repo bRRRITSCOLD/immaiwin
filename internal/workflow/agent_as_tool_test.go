@@ -51,8 +51,11 @@ func (s *AgentAsToolSuite) TestWithAgentAncestor_Appends_PreservesPriorChain() {
 // see each other's appends and the cycle check would false-positive.
 func (s *AgentAsToolSuite) TestAgentAncestors_ReturnsCopy_NotSharedSlice() {
 	ctx := withAgentAncestor(context.Background(), "agent-a")
-	got := agentAncestors(ctx)
-	got = append(got, "leaked") // mutate the caller's copy
+	first := agentAncestors(ctx)
+	// Mutate position 0 — if agentAncestors returned the ctx's
+	// underlying slice directly, this write would corrupt the chain
+	// for every subsequent reader.
+	first[0] = "leaked"
 	s.NotContains(agentAncestors(ctx), "leaked",
 		"agentAncestors must return a defensive copy so caller mutations don't bleed into ctx")
 }
