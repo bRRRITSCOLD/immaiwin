@@ -40,7 +40,8 @@ baked into the engine instead of bolted on after.
 - **`{{run_input.X}}` template namespace + sandbox global** — the workflow's initial trigger payload is reachable from nodes at any depth in the BFS, independent of predecessor edges. Distinct from `{{input.X}}` (predecessor output). Top-level `run_input` global is also exposed in all 5 sandbox runtimes, parallel to existing `input` / `config`.
 - **`params` → `config` rename, end-to-end** — engine struct field, BSON tag, sandbox payload, all 5 lang entrypoints (JS / Python / Go / Rust / PHP), bundled skill source, UI types + visible labels, bundled workflow templates. Single name across the stack; pre-launch so no back-compat shim.
 - **`transform` node** — mid-graph payload reshape via the same template engine as `return`. Trim or rename fields from upstream output (mongo find / http body / agent answer) before feeding into a downstream agent or sandbox; cuts token spend without spinning up a sandbox container. Pure-template (no expression language, no array map — for projection use `for_each`, for arbitrary computation use `sandbox_script`).
-- **Per-tool-edge output transform** — right-click an agent's `tool` edge → set `data.output_transform` as a JSON template. Engine applies the template to the tool's raw output before handing back to the LLM as tool_result; the StepResult + step_done event keep the RAW output so the canvas debug panel isn't lossy. Use case: trim a token-heavy tool result on the consumer side without wrapping the tool in a sub-workflow.
+- **Per-tool-edge output transform** — right-click an agent's `tool` edge → set `data.output_transform` as a JSON template. Engine applies the template to the tool's raw output before handing back to the LLM as tool_result; the StepResult + step_done event keep the RAW output so the canvas debug panel isn't lossy. Use case: trim a token-heavy tool result on the consumer side without wrapping the tool in a sub-workflow. NodeDebugPanel renders both panes side-by-side: raw tool output + LLM-facing reshape.
+- **Agent-as-tool (Multi-agent A)** — `ai_agent` nodes opt-in as agent tools via the standard `as_tool.enabled` toggle (same panel mongo / http / sandbox nodes use). Parent agent dispatches a child agent directly through its `tool` edge — child runs its own ReAct loop with the parent's tool args as initial input and returns its final answer as tool_result. Ancestor-chain ctx guard refuses agent cycles (parent → child → parent) + caps nesting depth at 5; structural refusals route through `isInfraToolError` (`ai_agent:` prefix) so they always terminate the parent loop regardless of `on_error: continue`. No sub_workflow wrapper needed for the common "delegate to a specialist" pattern.
 
 ### AI agent
 - ReAct loop with Anthropic, OpenAI, Ollama providers behind a single `Provider` interface
@@ -79,7 +80,7 @@ baked into the engine instead of bolted on after.
 ## Up next (short-term)
 
 ### Composability
-- **Multi-agent workflows (A → C)** — A: `ai_agent` node toggleable as_tool so a parent agent can call a child agent without a sub_workflow wrapper. C: orchestrator pattern (coordinator + parallel fan-out primitive over specialist sub-agents). C depends on A.
+- **Multi-agent workflows (C)** — orchestrator pattern: coordinator agent + parallel fan-out primitive over specialist sub-agents (now that A is shipped). Depends on bounded-parallelism semantics shared with the for_each work below.
 - **Parallel agent inside `for_each`** — opt-in, bounded parallelism (default sequential to protect token budgets)
 - **`ReturnNode` payload autofill from `output_schema_json`** — symmetry with the run-input pre-flight dialog (stub from schema, honor `default`, recurse nested)
 

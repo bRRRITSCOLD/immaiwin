@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -37,7 +38,50 @@ func isInfraToolError(err error) bool {
 		strings.Contains(msg, "sandbox/docker:") ||
 		strings.Contains(msg, "sandbox/dap:") ||
 		strings.Contains(msg, "sandbox/cdp:") ||
-		strings.Contains(msg, "sub_workflow:")
+		strings.Contains(msg, "sub_workflow:") ||
+		strings.Contains(msg, "ai_agent:")
+}
+
+// --- Agent-as-tool nesting guards ---
+//
+// Mirrors the sub_workflow ancestor chain, but scoped to ai_agent
+// node IDs within a single run so a parent agent calling a child
+// agent (and so on) cannot loop back on itself or blow the stack.
+// Distinct from sub_workflow's ancestors — those track caller
+// workflow IDs across sub-runs; this tracks caller agent node IDs
+// within one BFS / one run.
+
+// maxAgentNestingDepth caps how deep agent-as-tool calls can chain.
+// 5 matches sub_workflow's cap — generous for legitimate orchestrator
+// patterns, tight enough that a runaway loop can't burn unbounded
+// tokens. Hit the cap → child dispatch refused, parent sees the
+// refusal as a tool error and the agent loop aborts (the structural
+// "ai_agent:" prefix routes through isInfraToolError above).
+const maxAgentNestingDepth = 5
+
+type agentAncestorsKey struct{}
+
+// agentAncestors returns the current chain of ai_agent node IDs
+// (oldest caller first). Defensive copy so append on the returned
+// slice doesn't corrupt the ctx value.
+func agentAncestors(ctx context.Context) []string {
+	v, ok := ctx.Value(agentAncestorsKey{}).([]string)
+	if !ok || len(v) == 0 {
+		return nil
+	}
+	out := make([]string, len(v))
+	copy(out, v)
+	return out
+}
+
+// withAgentAncestor appends the calling agent node ID to the chain.
+// The returned ctx is what the nested agent's runAIAgent sees.
+func withAgentAncestor(ctx context.Context, agentNodeID string) context.Context {
+	ancestors := agentAncestors(ctx)
+	next := make([]string, 0, len(ancestors)+1)
+	next = append(next, ancestors...)
+	next = append(next, agentNodeID)
+	return context.WithValue(ctx, agentAncestorsKey{}, next)
 }
 
 // Agent run defaults — overridable via node data fields.
@@ -102,6 +146,21 @@ func (e *WorkflowExecutor) runAIAgent(ctx context.Context, node Node, data map[s
 	env, ok := envFromCtx(ctx)
 	if !ok {
 		return nil, fmt.Errorf("ai_agent: run env missing from context")
+	}
+
+	// Agent-as-tool nesting guards. Top-level agent runs (BFS-driven)
+	// land here with an empty ancestor chain — pass. Nested runs
+	// (dispatched as a tool by another agent) carry the chain; refuse
+	// a cycle (self in ancestors) or depth-cap breach before any
+	// provider work happens. Errors use the `ai_agent:` prefix so
+	// isInfraToolError promotes them to a terminal agent abort
+	// regardless of the consumer's `on_error` policy.
+	ancestors := agentAncestors(ctx)
+	if slices.Contains(ancestors, node.ID) {
+		return nil, fmt.Errorf("ai_agent: agent-cycle detected — %s already in call chain %v", node.ID, ancestors)
+	}
+	if len(ancestors) >= maxAgentNestingDepth {
+		return nil, fmt.Errorf("ai_agent: agent-nesting depth %d exceeded (max %d)", len(ancestors), maxAgentNestingDepth)
 	}
 
 	// 1. Resolve LLM provider
@@ -1277,14 +1336,14 @@ func (e *WorkflowExecutor) buildAgentToolCatalog(agent Node, env *runEnv,
 				}))
 			}
 
-			// Branch: sub_workflow targets dispatch a nested workflow
-			// run instead of going through runNode (which has no case
-			// for sub_workflow). The dispatch helper handles tenant
-			// scoping + recursion + cycle guards; result is the
-			// sub-run's final step output, already JSON-stringified.
+			// Branch by target type:
+			//   sub_workflow → dispatchSubWorkflow (tenant + cycle + depth)
+			//   ai_agent     → runNode with ancestor-chain ctx wrap (cycle + depth)
+			//   default      → runNode (regular tool target)
 			var out any
 			var err error
-			if targetNode.Type == NodeTypeSubWorkflow {
+			switch targetNode.Type {
+			case NodeTypeSubWorkflow:
 				targetWfID, _ := targetNode.Data["workflow_id"].(string)
 				var subOut string
 				subOut, err = e.dispatchSubWorkflow(ctx, env.wf, targetWfID, argInput)
@@ -1299,7 +1358,15 @@ func (e *WorkflowExecutor) buildAgentToolCatalog(agent Node, env *runEnv,
 						out = subOut
 					}
 				}
-			} else {
+			case NodeTypeAIAgent:
+				// Agent-as-tool: child agent runs its own ReAct loop
+				// with `argInput` as the user input. Wrap ctx with the
+				// parent agent's node ID so the child detects a cycle
+				// (it'd see this ID in its ancestors) or hits the depth
+				// cap. runAIAgent reads agentAncestors at entry.
+				childCtx := withAgentAncestor(ctx, agent.ID)
+				out, err = e.runNode(childCtx, targetNode, argInput, wfCtx, config)
+			default:
 				out, err = e.runNode(ctx, targetNode, argInput, wfCtx, config)
 			}
 
