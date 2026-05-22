@@ -272,7 +272,7 @@ func (s *LeaseUnificationIntegrationSuite) authedClient(emailAddr string) *http.
 func (s *LeaseUnificationIntegrationSuite) putGatedHTTPWorkflow(client *http.Client, id, name, echoURL string) {
 	payload := map[string]any{
 		"name":   name,
-		"params": map[string]any{},
+		"config": map[string]any{},
 		"nodes": []map[string]any{
 			{
 				"id":       "trigger-1",
@@ -449,7 +449,7 @@ func (s *LeaseUnificationIntegrationSuite) TestPerToolReject_AgentReturnsErrorRu
 
 	wfPayload := map[string]any{
 		"name":   "agent-reject",
-		"params": map[string]any{},
+		"config": map[string]any{},
 		"nodes": []map[string]any{
 			{
 				"id":       "trigger-1",
@@ -577,7 +577,7 @@ func (s *LeaseUnificationIntegrationSuite) TestWorkerResume_AfterAbandonedAttemp
 
 	wfPayload := map[string]any{
 		"name":   "agent-resume",
-		"params": map[string]any{},
+		"config": map[string]any{},
 		"nodes": []map[string]any{
 			{
 				"id":       "trigger-1",
@@ -715,7 +715,7 @@ func (s *LeaseUnificationIntegrationSuite) TestDispatch_RunStatusQueued_Promoted
 	// window is short but observable.
 	payload := map[string]any{
 		"name":   "queued-promotion",
-		"params": map[string]any{},
+		"config": map[string]any{},
 		"nodes": []map[string]any{
 			{"id": "trigger-1", "type": "trigger",
 				"position": map[string]any{"x": 0, "y": 0},
@@ -791,7 +791,7 @@ func (s *LeaseUnificationIntegrationSuite) TestWorkerResume_FromCheckpointedQueu
 	wfID := fmt.Sprintf("wf-ckpt-%d", suffix)
 	wfPayload := map[string]any{
 		"name":   "two-http-checkpoint-resume",
-		"params": map[string]any{},
+		"config": map[string]any{},
 		"nodes": []map[string]any{
 			{"id": "trigger-1", "type": "trigger", "position": map[string]any{"x": 0, "y": 0},
 				"data": map[string]any{"trigger_type": "manual"}},

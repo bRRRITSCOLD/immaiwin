@@ -375,7 +375,7 @@ func processDelivery(
 		TenantID:     wf.TenantID,
 		QueuedAt:     now,
 		Status:       workflow.RunStatusQueued,
-		Params:       wf.Params,
+		Config: wf.Config,
 		TriggerInput: body,
 	}
 	if _, cerr := runRepo.Create(ctx, rec); cerr != nil {

@@ -1,4 +1,4 @@
-import { Globe, Play, Container, Database, Bell, RefreshCw, Radio, ChevronDown, ChevronUp, CheckCircle2, XCircle, Circle, Plus, Pencil, Trash2, Plug, Download, Bot, Wrench, Copy, Power, PowerOff } from 'lucide-react'
+import { Globe, Play, Container, Database, Bell, RefreshCw, Radio, ChevronDown, ChevronUp, CheckCircle2, XCircle, Circle, Plus, Pencil, Trash2, Plug, Download, Bot, Wrench, Copy, Power, PowerOff, Workflow as WorkflowIcon, CornerDownLeft } from 'lucide-react'
 import { useState } from 'react'
 import { toast } from 'sonner'
 import { Separator } from '~/components/ui/separator'
@@ -383,6 +383,18 @@ export function WorkflowSidebar({ onSelect, onReload }: Props) {
             icon={<Bot className="h-3.5 w-3.5 text-purple-400" />}
             label="AI Agent"
             nodeType="ai_agent"
+            onDragStart={onDragStart}
+          />
+          <PaletteItem
+            icon={<WorkflowIcon className="h-3.5 w-3.5 text-fuchsia-400" />}
+            label="Sub-workflow"
+            nodeType="sub_workflow"
+            onDragStart={onDragStart}
+          />
+          <PaletteItem
+            icon={<CornerDownLeft className="h-3.5 w-3.5 text-emerald-400" />}
+            label="Return"
+            nodeType="return"
             onDragStart={onDragStart}
           />
         </div>}

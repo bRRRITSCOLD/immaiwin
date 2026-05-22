@@ -74,7 +74,7 @@ func (r *Runtime) StartDebug(ctx context.Context, req sandbox.DebugRequest) (*sa
 		"code":    debugReq.Code,
 		"input":   debugReq.Input,
 		"context": debugReq.Context,
-		"params":  debugReq.Params,
+		"config":  debugReq.Config,
 	})
 	if err != nil {
 		deletePod(context.Background(), r.clientset, r.ns, created.Name)

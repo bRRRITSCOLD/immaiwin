@@ -23,7 +23,7 @@ import (
 // No-op when SkillRes is nil OR data.skills is unset/empty. A failure to
 // resolve any individual skill aborts the whole catalog build; we'd rather
 // the agent run fail loudly than load a partial tool set.
-func (e *WorkflowExecutor) appendSkillTools(agent Node, cat *ToolCatalog, params map[string]string, wfCtx runCtx, input any) ([]string, error) {
+func (e *WorkflowExecutor) appendSkillTools(agent Node, cat *ToolCatalog, config map[string]string, wfCtx runCtx, input any) ([]string, error) {
 	if e.SkillRes == nil {
 		return nil, nil
 	}
@@ -83,11 +83,11 @@ func (e *WorkflowExecutor) appendSkillTools(agent Node, cat *ToolCatalog, params
 
 		// Resolve author-bound config. Required entries hard-fail when the
 		// agent didn't bind a value; defaults apply when set on the
-		// manifest. Returns sandbox-ready params with the namespaced key
-		// `<sanitized_slug>__<name>`. String bindings get `{{params.X}}`
+		// manifest. Returns sandbox-ready config with the namespaced key
+		// `<sanitized_slug>__<name>`. String bindings get `{{config.X}}`
 		// and `{{input.X}}` substitution so an author can plug workflow
-		// params directly into config without copying values.
-		configValues, err := resolveSkillConfig(manifest, configBindings, params, wfCtx, input)
+		// config directly into config without copying values.
+		configValues, err := resolveSkillConfig(manifest, configBindings, config, wfCtx, input)
 		if err != nil {
 			_ = bundle.Close()
 			return nil, fmt.Errorf("ai_agent: resolve config for %s@%s: %w", lock.SlugID, lock.Version, err)
@@ -107,13 +107,13 @@ func (e *WorkflowExecutor) appendSkillTools(agent Node, cat *ToolCatalog, params
 		}
 		_ = bundle.Close()
 
-		// Merge secrets + config into a single sandbox params map. Both
+		// Merge secrets + config into a single sandbox config map. Both
 		// are author-bound and carry the same trust scope; namespacing on
 		// the config side prevents collisions between skills.
-		params := mergeSkillParams(secretValues, configValues)
+		config := mergeSkillConfig(secretValues, configValues)
 
 		for _, tool := range manifest.Tools {
-			if err := registerSkillTool(cat, manifest, tool, toolSources[tool.ID], params, e.SandboxRT); err != nil {
+			if err := registerSkillTool(cat, manifest, tool, toolSources[tool.ID], config, e.SandboxRT); err != nil {
 				slog.Warn("ai_agent: skill tool registration failed",
 					"skill", manifest.ID, "tool", tool.ID, "err", err)
 				continue
@@ -130,10 +130,10 @@ func (e *WorkflowExecutor) appendSkillTools(agent Node, cat *ToolCatalog, params
 	return fragments, nil
 }
 
-// mergeSkillParams returns a fresh map[string]string combining the secret
+// mergeSkillConfig returns a fresh map[string]string combining the secret
 // and config maps. Inputs are not mutated. Config values use namespaced
 // keys (set by resolveSkillConfig); secrets use their raw declared names.
-func mergeSkillParams(secrets, config map[string]string) map[string]string {
+func mergeSkillConfig(secrets, config map[string]string) map[string]string {
 	out := make(map[string]string, len(secrets)+len(config))
 	for k, v := range secrets {
 		out[k] = v
@@ -182,21 +182,21 @@ func readSkillConfigBindings(v any) map[string]map[string]any {
 }
 
 // resolveSkillConfig walks the skill's declared `config[]` and produces a
-// sandbox-ready params map with the namespaced key
+// sandbox-ready config map with the namespaced key
 // `<sanitized_slug>__<name>`.
 //
 // Resolution order: agent binding → manifest default → ErrSkillNotFound-
 // equivalent error when required and neither was set.
-func resolveSkillConfig(manifest skills.Manifest, allBindings map[string]map[string]any, params map[string]string, wfCtx runCtx, input any) (map[string]string, error) {
+func resolveSkillConfig(manifest skills.Manifest, allBindings map[string]map[string]any, config map[string]string, wfCtx runCtx, input any) (map[string]string, error) {
 	if len(manifest.Config) == 0 {
 		return nil, nil
 	}
 	out := make(map[string]string, len(manifest.Config))
 	bindings := allBindings[manifest.ID] // nil-safe (zero-value lookup)
 
-	// Normalise hyphens + slashes to underscores so the sandbox `params`
+	// Normalise hyphens + slashes to underscores so the sandbox `config`
 	// key is a valid Python identifier and easy to grep for in skill source
-	// code (`params["weather_formatter__default_style"]`). Tool names keep
+	// code (`config["weather_formatter__default_style"]`). Tool names keep
 	// hyphens — those are LLM-facing where the original slug shape is fine.
 	normID := strings.ReplaceAll(strings.ReplaceAll(manifest.ID, "/", "_"), "-", "_")
 	prefix := sanitizeToolName(normID)
@@ -218,10 +218,10 @@ func resolveSkillConfig(manifest skills.Manifest, allBindings map[string]map[str
 			continue
 		}
 		// String values get param/template substitution so authors can
-		// reference workflow params (e.g. "{{params.weather_style}}").
+		// reference workflow config (e.g. "{{config.weather_style}}").
 		// Non-string types pass through.
 		if s, ok := raw.(string); ok {
-			s = substituteParams(s, params)
+			s = substituteConfig(s, config)
 			s = applyTemplate(s, input, wfCtx)
 			raw = s
 		}
@@ -234,17 +234,17 @@ func resolveSkillConfig(manifest skills.Manifest, allBindings map[string]map[str
 		slog.Info("ai_agent: resolved skill config",
 			"skill", manifest.ID, "name", cfg.Name,
 			"raw_value", raw, "stringified", stringified, "key", key,
-			"params_count", len(params))
+			"config_count", len(config))
 	}
 	return out, nil
 }
 
-// substituteParams replaces every `{{params.X}}` placeholder in s with the
+// substituteConfig replaces every `{{config.X}}` placeholder in s with the
 // matching workflow param value. Mirrors `applyParamsToData` but operates
 // on a single string so we can compose with applyTemplate.
-func substituteParams(s string, params map[string]string) string {
-	for k, v := range params {
-		s = strings.ReplaceAll(s, "{{params."+k+"}}", v)
+func substituteConfig(s string, config map[string]string) string {
+	for k, v := range config {
+		s = strings.ReplaceAll(s, "{{config."+k+"}}", v)
 	}
 	return s
 }
@@ -376,8 +376,8 @@ func readSkillRequests(v any) ([]skills.SkillReq, bool) {
 // to keep the LLM-facing namespace flat while avoiding cross-skill
 // collisions. Handler runs the bundled source in the sandbox runtime,
 // passing the LLM-supplied args as the script's `input` global. Secrets
-// from the skill's manifest are injected as sandbox `params[secretName]`
-// entries; the script reads them by name (`params["weather_api_key"]`).
+// from the skill's manifest are injected as sandbox `config[secretName]`
+// entries; the script reads them by name (`config["weather_api_key"]`).
 func registerSkillTool(cat *ToolCatalog, manifest skills.Manifest, tool skills.Tool, source string, secrets map[string]string, rt sandbox.Runtime) error {
 	if rt == nil {
 		return fmt.Errorf("sandbox runtime not configured (skill tools require it)")
@@ -417,7 +417,7 @@ func registerSkillTool(cat *ToolCatalog, manifest skills.Manifest, tool skills.T
 		}
 
 		// Copy secrets into a fresh map per invocation so concurrent tool
-		// calls can't see each other's params. The map is small (~handful
+		// calls can't see each other's config. The map is small (~handful
 		// of secrets at most), so the copy cost is negligible.
 		var paramCopy map[string]string
 		if len(secrets) > 0 {
@@ -431,7 +431,7 @@ func registerSkillTool(cat *ToolCatalog, manifest skills.Manifest, tool skills.T
 			Language: language,
 			Code:     source,
 			Input:    argInput,
-			Params:   paramCopy,
+			Config:   paramCopy,
 			Network:  network,
 			Timeout:  timeout,
 		}

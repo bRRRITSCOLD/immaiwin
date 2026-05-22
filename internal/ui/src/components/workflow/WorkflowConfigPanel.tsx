@@ -5,63 +5,63 @@ import { Input } from '~/components/ui/input'
 import { NumberField } from '~/components/ui/number-field'
 import { Switch } from '~/components/ui/switch'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '~/components/ui/select'
-import type { ParamEntry } from './useWorkflowStore'
+import type { SchemaEntry } from './useWorkflowStore'
 
 interface Props {
-  params: Record<string, string>
-  onChange(params: Record<string, string>): void
-  // Persists the workflow doc (params + params_schema ride along on the
+  config: Record<string, string>
+  onChange(config: Record<string, string>): void
+  // Persists the workflow doc (config + config_schema ride along on the
   // existing PUT payload). Same handler the toolbar Save button uses.
   onSave(): void
   // Optional typed declaration. When undefined we synthesise a schema
   // from existing param keys (all string, none required) so legacy
   // workflows render with the same unified UI without losing values.
-  schema?: ParamEntry[]
-  onSchemaChange(schema: ParamEntry[]): void
+  schema?: SchemaEntry[]
+  onSchemaChange(schema: SchemaEntry[]): void
 }
 
 // effectiveSchema returns the schema we render against. When the
 // workflow has no explicit schema, we derive one from the existing
-// params keys (all string) so legacy workflows still get the unified
+// config keys (all string) so legacy workflows still get the unified
 // per-row layout without forcing the author to re-declare everything.
-// Caller treats the returned schema as authoritative for which params
-// exist and in what order; the underlying `params` dict is the value
+// Caller treats the returned schema as authoritative for which config
+// exist and in what order; the underlying `config` dict is the value
 // store keyed by entry.name.
-function effectiveSchema(schema: ParamEntry[] | undefined, params: Record<string, string>): ParamEntry[] {
+function effectiveSchema(schema: SchemaEntry[] | undefined, config: Record<string, string>): SchemaEntry[] {
   if (schema && schema.length > 0) return schema
-  const out: ParamEntry[] = []
-  for (const k of Object.keys(params)) {
+  const out: SchemaEntry[] = []
+  for (const k of Object.keys(config)) {
     out.push({ name: k, type: 'string' })
   }
   return out
 }
 
-export function WorkflowParamsPanel({ params, onChange, onSave, schema, onSchemaChange }: Props) {
+export function WorkflowConfigPanel({ config, onChange, onSave, schema, onSchemaChange }: Props) {
   const [open, setOpen] = useState(false)
   const [expandedSettings, setExpandedSettings] = useState<Record<number, boolean>>({})
 
-  // The visible schema. Either the persisted params_schema, or a synth
-  // one derived from existing params keys. Persistence-wise we only
+  // The visible schema. Either the persisted config_schema, or a synth
+  // one derived from existing config keys. Persistence-wise we only
   // call onSchemaChange when the author actually edits a schema field;
-  // a workflow that never touched schema fields keeps params_schema
+  // a workflow that never touched schema fields keeps config_schema
   // empty/undefined and the legacy free-form back-end shape.
   const visibleSchema = useMemo(
-    () => effectiveSchema(schema, params),
-    [schema, params],
+    () => effectiveSchema(schema, config),
+    [schema, config],
   )
   const hasExplicitSchema = !!schema && schema.length > 0
 
   // Mutate schema (always promotes to explicit). Caller passes a
   // function that returns the next schema given the current visible one.
-  function updateSchema(mutate: (cur: ParamEntry[]) => ParamEntry[]) {
+  function updateSchema(mutate: (cur: SchemaEntry[]) => SchemaEntry[]) {
     onSchemaChange(mutate(visibleSchema))
   }
 
   function setEntryValue(name: string, value: string) {
-    onChange({ ...params, [name]: value })
+    onChange({ ...config, [name]: value })
   }
 
-  function setEntry(idx: number, patch: Partial<ParamEntry>) {
+  function setEntry(idx: number, patch: Partial<SchemaEntry>) {
     const prev = visibleSchema[idx]!
     updateSchema((cur) => {
       const next = [...cur]
@@ -73,12 +73,12 @@ export function WorkflowParamsPanel({ params, onChange, onSave, schema, onSchema
     if (patch.name !== undefined && patch.name !== prev.name) {
       const oldName = prev.name
       const newName = patch.name
-      if (oldName in params) {
-        const nextParams: Record<string, string> = {}
-        for (const [k, v] of Object.entries(params)) {
-          nextParams[k === oldName ? newName : k] = v
+      if (oldName in config) {
+        const nextConfig: Record<string, string> = {}
+        for (const [k, v] of Object.entries(config)) {
+          nextConfig[k === oldName ? newName : k] = v
         }
-        onChange(nextParams)
+        onChange(nextConfig)
       }
     }
   }
@@ -87,17 +87,17 @@ export function WorkflowParamsPanel({ params, onChange, onSave, schema, onSchema
     const removed = visibleSchema[idx]
     updateSchema((cur) => cur.filter((_, i) => i !== idx))
     if (removed) {
-      const nextParams = { ...params }
-      delete nextParams[removed.name]
-      onChange(nextParams)
+      const nextConfig = { ...config }
+      delete nextConfig[removed.name]
+      onChange(nextConfig)
     }
   }
 
   function addEntry() {
-    let name = 'param'
+    let name = 'config_key'
     let i = 1
     const used = new Set(visibleSchema.map((p) => p.name))
-    while (used.has(name)) name = `param${i++}`
+    while (used.has(name)) name = `config_key${i++}`
     updateSchema((cur) => [...cur, { name, type: 'string' }])
   }
 
@@ -115,7 +115,7 @@ export function WorkflowParamsPanel({ params, onChange, onSave, schema, onSchema
         onClick={() => setOpen((v) => !v)}
       >
         <span>
-          Parameters ({visibleSchema.length})
+          Configuration ({visibleSchema.length})
           {hasExplicitSchema && <span className="ml-1.5 text-[9px] text-muted-foreground">typed</span>}
         </span>
         {open ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
@@ -124,15 +124,15 @@ export function WorkflowParamsPanel({ params, onChange, onSave, schema, onSchema
       {open && (
         <div className="border-t px-3 py-2 space-y-2">
           <p className="text-[10px] text-muted-foreground">
-            Fields: <code className="text-[10px]">{'{{params.key}}'}</code> · JS: <code className="text-[10px]">params.key</code>
+            Fields: <code className="text-[10px]">{'{{config.key}}'}</code> · JS: <code className="text-[10px]">config.key</code>
           </p>
 
           {visibleSchema.length === 0 && (
-            <p className="text-[10px] text-muted-foreground italic">No parameters yet</p>
+            <p className="text-[10px] text-muted-foreground italic">No configuration yet</p>
           )}
 
           {visibleSchema.map((entry, idx) => {
-            const value = params[entry.name] ?? ''
+            const value = config[entry.name] ?? ''
             const settingsOpen = !!expandedSettings[idx]
             return (
               <div key={idx} className="rounded border border-border/40 bg-muted/10 p-1.5 space-y-1.5">
@@ -154,14 +154,14 @@ export function WorkflowParamsPanel({ params, onChange, onSave, schema, onSchema
                   <button
                     className={`shrink-0 h-7 w-6 flex items-center justify-center transition-colors ${settingsOpen ? 'text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
                     onClick={() => toggleSettings(idx)}
-                    title="Per-parameter settings"
+                    title="Per-field settings"
                   >
                     <Settings2 className="h-3.5 w-3.5" />
                   </button>
                   <button
                     className="shrink-0 h-7 w-6 flex items-center justify-center text-muted-foreground hover:text-destructive transition-colors"
                     onClick={() => removeEntry(idx)}
-                    title="Remove parameter"
+                    title="Remove field"
                   >
                     <Trash2 className="h-3.5 w-3.5" />
                   </button>
@@ -172,7 +172,7 @@ export function WorkflowParamsPanel({ params, onChange, onSave, schema, onSchema
                   <span className="text-[9px] text-red-500">required</span>
                 )}
 
-                {/* Per-parameter settings — description, default, required,
+                {/* Per-field settings — description, default, required,
                     enum opts. Span full row width (no indent) so the
                     inputs feel like a continuation of the row rather
                     than a side note pushed to one column. */}
@@ -180,7 +180,7 @@ export function WorkflowParamsPanel({ params, onChange, onSave, schema, onSchema
                   <div className="border-t border-border/40 pt-1.5 space-y-1.5">
                     <Select
                       value={entry.type}
-                      onValueChange={(v) => setEntry(idx, { type: v as ParamEntry['type'] })}
+                      onValueChange={(v) => setEntry(idx, { type: v as SchemaEntry['type'] })}
                     >
                       <SelectTrigger className="h-7 text-[11px] w-full">
                         <SelectValue />
@@ -230,7 +230,7 @@ export function WorkflowParamsPanel({ params, onChange, onSave, schema, onSchema
             onClick={addEntry}
           >
             <Plus className="h-3 w-3" />
-            Add parameter
+            Add field
           </button>
 
           <Button
@@ -240,7 +240,7 @@ export function WorkflowParamsPanel({ params, onChange, onSave, schema, onSchema
             onClick={onSave}
           >
             <Save className="h-3 w-3 mr-1" />
-            Save parameters
+            Save configuration
           </Button>
         </div>
       )}
@@ -295,7 +295,7 @@ function ValueWidget({
   value,
   setValue,
 }: {
-  entry: ParamEntry
+  entry: SchemaEntry
   value: string
   setValue(v: string): void
 }) {

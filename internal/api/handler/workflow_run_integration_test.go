@@ -298,7 +298,7 @@ func (s *WorkflowRunIntegrationSuite) authedClient(emailAddr string) *http.Clien
 func (s *WorkflowRunIntegrationSuite) putWorkflow(client *http.Client, id, name string) {
 	payload := map[string]any{
 		"name":   name,
-		"params": map[string]any{},
+		"config": map[string]any{},
 		"nodes": []map[string]any{
 			{
 				"id":       "trigger-1",
@@ -398,7 +398,7 @@ func (s *WorkflowRunIntegrationSuite) TestRun_Unauth_401() {
 func (s *WorkflowRunIntegrationSuite) putApprovalWorkflow(client *http.Client, id, name string) {
 	payload := map[string]any{
 		"name":   name,
-		"params": map[string]any{},
+		"config": map[string]any{},
 		"nodes": []map[string]any{
 			{
 				"id":       "trigger-1",
@@ -699,7 +699,7 @@ func (r *recordingEmailSender) snapshot() []email.Message {
 func (s *WorkflowRunIntegrationSuite) putApprovalGatedWorkflowWithChannel(client *http.Client, id string, channel map[string]any) {
 	payload := map[string]any{
 		"name":             "approval channel smoke",
-		"params":           map[string]any{},
+		"config":           map[string]any{},
 		"approval_channel": channel,
 		"nodes": []map[string]any{
 			{

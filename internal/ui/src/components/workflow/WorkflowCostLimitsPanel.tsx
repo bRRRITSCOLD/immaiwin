@@ -8,7 +8,7 @@
 // Save lives on the existing toolbar Save button — we mutate the active
 // workflow doc via `updateActiveCostLimits`, then the workflows.tsx
 // `handleSave` PUTs the whole workflow (cost_limits ride along via the
-// `{ ...wf, nodes, edges, params }` spread).
+// `{ ...wf, nodes, edges, config }` spread).
 
 import { useState } from 'react'
 import { ChevronDown, ChevronUp, DollarSign, Save } from 'lucide-react'

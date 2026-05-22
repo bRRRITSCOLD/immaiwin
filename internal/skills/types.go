@@ -54,7 +54,7 @@ type Manifest struct {
 	// agent load time when the agent's `data.skill_config[<slug>][<name>]`
 	// binding is missing — same precedent as secrets.
 	//
-	// Values flow into the sandbox as `params["<sanitized_slug>__<name>"]`
+	// Values flow into the sandbox as `config["<sanitized_slug>__<name>"]`
 	// to avoid collisions when multiple skills define same-named config.
 	Config []ConfigDef `yaml:"config" json:"config,omitempty" bson:"config,omitempty"`
 
@@ -151,7 +151,7 @@ type StorageCapability struct {
 
 // SecretRequest declares a secret the skill needs at run time. The tenant
 // must supply a Connection of the matching `Type` whose ID maps to `Name`;
-// the resolved secret value is injected as a sandbox `params[Name]` entry.
+// the resolved secret value is injected as a sandbox `config[Name]` entry.
 type SecretRequest struct {
 	Name        string `yaml:"name"        json:"name"        bson:"name"`
 	Type        string `yaml:"type"        json:"type"        bson:"type"`
@@ -165,11 +165,11 @@ type SecretRequest struct {
 //
 // Type semantics (P1, deliberately small):
 //   - "string"  → free-form text; constrained by `Enum` when set.
-//   - "number"  → JSON number; coerced to a stringified value in sandbox params.
-//   - "boolean" → JSON true/false; coerced to "true"/"false" in sandbox params.
+//   - "number"  → JSON number; coerced to a stringified value in sandbox config.
+//   - "boolean" → JSON true/false; coerced to "true"/"false" in sandbox config.
 //
-// All values land in the sandbox `params` map as strings (matching the
-// existing `params: map[string]string` shape). Author scripts coerce as
+// All values land in the sandbox `config` map as strings (matching the
+// existing `config: map[string]string` shape). Author scripts coerce as
 // needed.
 type ConfigDef struct {
 	Name        string   `yaml:"name"        json:"name"        bson:"name"`

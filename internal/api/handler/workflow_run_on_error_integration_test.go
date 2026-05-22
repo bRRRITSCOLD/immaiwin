@@ -216,7 +216,7 @@ func (s *OnErrorPolicyIntegrationSuite) putHTTPWorkflow(client *http.Client, slu
 	}
 	wfPayload := map[string]any{
 		"name":   "on_error " + policy,
-		"params": map[string]any{},
+		"config": map[string]any{},
 		"nodes": []map[string]any{
 			{"id": "trigger-1", "type": "trigger", "position": map[string]any{"x": 0, "y": 0},
 				"data": map[string]any{"trigger_type": "manual"}},
@@ -247,7 +247,7 @@ func (s *OnErrorPolicyIntegrationSuite) putHTTPWorkflowWithErrorEdge(client *htt
 	wfID := fmt.Sprintf("wf-onerror-rescue-%d", suffix)
 	wfPayload := map[string]any{
 		"name":   "on_error continue with rescue branch",
-		"params": map[string]any{},
+		"config": map[string]any{},
 		"nodes": []map[string]any{
 			{"id": "trigger-1", "type": "trigger", "position": map[string]any{"x": 0, "y": 0},
 				"data": map[string]any{"trigger_type": "manual"}},
@@ -413,7 +413,7 @@ func (s *OnErrorPolicyIntegrationSuite) putHTTPWorkflowWithBothEdges(client *htt
 	wfID := fmt.Sprintf("wf-onerror-dual-%d", suffix)
 	wfPayload := map[string]any{
 		"name":   "on_error continue with both edges wired",
-		"params": map[string]any{},
+		"config": map[string]any{},
 		"nodes": []map[string]any{
 			{"id": "trigger-1", "type": "trigger", "position": map[string]any{"x": 0, "y": 0},
 				"data": map[string]any{"trigger_type": "manual"}},
@@ -538,7 +538,7 @@ func (s *OnErrorPolicyIntegrationSuite) putApprovalGateWorkflow(client *http.Cli
 	}
 	wfPayload := map[string]any{
 		"name":   "on_error gate " + policy,
-		"params": map[string]any{},
+		"config": map[string]any{},
 		"nodes": []map[string]any{
 			{"id": "trigger-1", "type": "trigger", "position": map[string]any{"x": 0, "y": 0},
 				"data": map[string]any{"trigger_type": "manual"}},
@@ -681,7 +681,7 @@ func (s *OnErrorPolicyIntegrationSuite) putForEachItemsWorkflow(client *http.Cli
 	wfID := fmt.Sprintf("wf-onerror-foreach-%d", suffix)
 	wfPayload := map[string]any{
 		"name":   "on_error continue inside for_each body",
-		"params": map[string]any{},
+		"config": map[string]any{},
 		"nodes": []map[string]any{
 			{"id": "trigger-1", "type": "trigger", "position": map[string]any{"x": 0, "y": 0},
 				"data": map[string]any{"trigger_type": "manual"}},
@@ -812,7 +812,7 @@ func (s *OnErrorPolicyIntegrationSuite) putForEachAbortWorkflow(client *http.Cli
 	}
 	wfPayload := map[string]any{
 		"name":   "for_each loop-abort policy",
-		"params": map[string]any{},
+		"config": map[string]any{},
 		"nodes": []map[string]any{
 			{"id": "trigger-1", "type": "trigger", "position": map[string]any{"x": 0, "y": 0},
 				"data": map[string]any{"trigger_type": "manual"}},
@@ -907,7 +907,7 @@ func (s *OnErrorPolicyIntegrationSuite) putForEachErrorEdgeWorkflow(client *http
 	wfID := fmt.Sprintf("wf-onerror-foreach-erredge-%d", suffix)
 	wfPayload := map[string]any{
 		"name":   "for_each error edge fires on loop-abort",
-		"params": map[string]any{},
+		"config": map[string]any{},
 		"nodes": []map[string]any{
 			{"id": "trigger-1", "type": "trigger", "position": map[string]any{"x": 0, "y": 0},
 				"data": map[string]any{"trigger_type": "manual"}},
@@ -989,7 +989,7 @@ func (s *OnErrorPolicyIntegrationSuite) putForEachDualEdgeBodyWorkflow(client *h
 	wfID := fmt.Sprintf("wf-onerror-foreach-dual-%d", suffix)
 	wfPayload := map[string]any{
 		"name":   "for_each body continue fires both edges",
-		"params": map[string]any{},
+		"config": map[string]any{},
 		"nodes": []map[string]any{
 			{"id": "trigger-1", "type": "trigger", "position": map[string]any{"x": 0, "y": 0},
 				"data": map[string]any{"trigger_type": "manual"}},
@@ -1083,7 +1083,7 @@ func (s *OnErrorPolicyIntegrationSuite) putForEachContinueNodeEdgesWorkflow(clie
 	wfID := fmt.Sprintf("wf-onerror-foreach-contedges-%d", suffix)
 	wfPayload := map[string]any{
 		"name":   "for_each continue node dual-edge",
-		"params": map[string]any{},
+		"config": map[string]any{},
 		"nodes": []map[string]any{
 			{"id": "trigger-1", "type": "trigger", "position": map[string]any{"x": 0, "y": 0},
 				"data": map[string]any{"trigger_type": "manual"}},

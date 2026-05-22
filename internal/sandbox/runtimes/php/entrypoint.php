@@ -4,11 +4,11 @@
  * Sandbox entrypoint for PHP execution.
  *
  * Protocol:
- *   stdin  → JSON { code, input, context, params }
+ *   stdin  → JSON { code, input, run_input, context, config }
  *   stdout → JSON output (from output() call)
  *   stderr → logs / errors
  *
- * User code runs with $input, $context, $params available.
+ * User code runs with $input, $run_input, $context, $config available.
  * Call output($val) to produce a result.
  * echo/print → stderr (stdout reserved for JSON output).
  */
@@ -21,10 +21,11 @@ if ($payload === null && json_last_error() !== JSON_ERROR_NONE) {
     exit(1);
 }
 
-$code    = $payload['code'] ?? '';
-$input   = $payload['input'] ?? null;
-$context = $payload['context'] ?? [];
-$params  = $payload['params'] ?? [];
+$code      = $payload['code'] ?? '';
+$input     = $payload['input'] ?? null;
+$run_input = $payload['run_input'] ?? null;
+$context   = $payload['context'] ?? [];
+$config    = $payload['config'] ?? [];
 
 // output() — sole output mechanism
 $_output_value = null;

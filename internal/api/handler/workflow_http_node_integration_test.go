@@ -198,7 +198,7 @@ func (s *WorkflowHTTPNodeIntegrationSuite) putHTTPWorkflow(client *http.Client, 
 	wfID := fmt.Sprintf("wf-http-%d", suffix)
 	payload := map[string]any{
 		"name":   "http-node test wf",
-		"params": map[string]any{},
+		"config": map[string]any{},
 		"nodes": []map[string]any{
 			{
 				"id":       "trigger-1",

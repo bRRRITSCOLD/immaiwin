@@ -277,7 +277,7 @@ func (s *WorkflowCRUDIntegrationSuite) TestWorkflowCRUD_Lifecycle_RoundTripsAllO
 	wfID := fmt.Sprintf("wf-crud-%d", suffix)
 	payload := map[string]any{
 		"name":   "Smoke wf",
-		"params": map[string]any{},
+		"config": map[string]any{},
 		"nodes": []map[string]any{
 			{
 				"id":       "trigger-1",
@@ -331,7 +331,7 @@ func (s *WorkflowCRUDIntegrationSuite) TestWorkflows_ForeignTenant_AreInvisibleA
 	wfID := fmt.Sprintf("wf-iso-%d", suffix)
 	payload := map[string]any{
 		"name":   "alice's private wf",
-		"params": map[string]any{},
+		"config": map[string]any{},
 		"nodes":  []any{},
 		"edges":  []any{},
 	}
@@ -347,7 +347,7 @@ func (s *WorkflowCRUDIntegrationSuite) TestWorkflows_ForeignTenant_AreInvisibleA
 	// foreign-tenant takeover (UpsertWorkflow returns 403 in that case).
 	status, _ = s.putWorkflow(bob, wfID, map[string]any{
 		"name":   "bob takeover attempt",
-		"params": map[string]any{},
+		"config": map[string]any{},
 		"nodes":  []any{},
 		"edges":  []any{},
 	})
@@ -370,7 +370,7 @@ func (s *WorkflowCRUDIntegrationSuite) TestWorkflowVersion_RepeatedSaves_Increme
 	wfID := fmt.Sprintf("wf-version-%d", suffix)
 	payload := map[string]any{
 		"name":   "version test",
-		"params": map[string]any{},
+		"config": map[string]any{},
 		"nodes":  []any{},
 		"edges":  []any{},
 		// Client tries to inject version=999; server should ignore.
@@ -402,7 +402,7 @@ func (s *WorkflowCRUDIntegrationSuite) TestWorkflowDuplicate_OwnTenant_CreatesIn
 	srcID := fmt.Sprintf("wf-dup-src-%d", suffix)
 	payload := map[string]any{
 		"name":   "Original",
-		"params": map[string]any{"foo": "bar"},
+		"config": map[string]any{"foo": "bar"},
 		"nodes": []map[string]any{
 			{
 				"id":       "trigger-1",
@@ -426,9 +426,9 @@ func (s *WorkflowCRUDIntegrationSuite) TestWorkflowDuplicate_OwnTenant_CreatesIn
 	s.Equal(float64(1), dup["version"], "fresh duplicate should start at version 1")
 	s.Equal(tenantID, dup["tenant_id"])
 
-	// Source's params + nodes survived unchanged through the copy.
-	dupParams, _ := dup["params"].(map[string]any)
-	s.Equal("bar", dupParams["foo"])
+	// Source's config + nodes survived unchanged through the copy.
+	dupConfig, _ := dup["config"].(map[string]any)
+	s.Equal("bar", dupConfig["foo"])
 	dupNodes, _ := dup["nodes"].([]any)
 	s.Len(dupNodes, 1)
 
@@ -471,7 +471,7 @@ func (s *WorkflowCRUDIntegrationSuite) TestWorkflowDuplicate_ForeignTenant_Retur
 	srcID := fmt.Sprintf("wf-dup-iso-%d", suffix)
 	payload := map[string]any{
 		"name":   "alice secret",
-		"params": map[string]any{},
+		"config": map[string]any{},
 		"nodes":  []any{},
 		"edges":  []any{},
 	}
@@ -541,7 +541,7 @@ func (s *WorkflowCRUDIntegrationSuite) TestWorkflowUpsert_MissingNodeConnection_
 			wfID := fmt.Sprintf("wf-missing-%d", time.Now().UnixNano())
 			status, body := s.putWorkflow(client, wfID, map[string]any{
 				"name":   "no-conn",
-				"params": map[string]any{},
+				"config": map[string]any{},
 				"nodes":  []map[string]any{tc.node},
 				"edges":  []map[string]any{},
 			})
@@ -562,7 +562,7 @@ func (s *WorkflowCRUDIntegrationSuite) TestWorkflowUpsert_NodeWithConnection_Acc
 	wfID := fmt.Sprintf("wf-conn-ok-%d", time.Now().UnixNano())
 	status, _ := s.putWorkflow(client, wfID, map[string]any{
 		"name":   "with-conn",
-		"params": map[string]any{},
+		"config": map[string]any{},
 		"nodes": []map[string]any{
 			{"id": "trigger-1", "type": "trigger", "position": map[string]any{"x": 0, "y": 0},
 				"data": map[string]any{"trigger_type": "manual"}},
@@ -606,7 +606,7 @@ func (s *WorkflowCRUDIntegrationSuite) TestWorkflow_EnabledToggle_PatchRoundTrip
 	wfID := fmt.Sprintf("wf-toggle-%d", time.Now().UnixNano())
 	status, _ := s.putWorkflow(client, wfID, map[string]any{
 		"name":   "toggle-test",
-		"params": map[string]any{},
+		"config": map[string]any{},
 		"nodes":  []map[string]any{},
 		"edges":  []map[string]any{},
 	})
@@ -654,7 +654,7 @@ func (s *WorkflowCRUDIntegrationSuite) TestWorkflow_EnabledToggle_CrossTenant_Re
 
 	wfID := fmt.Sprintf("wf-toggle-iso-%d", suffix)
 	status, _ := s.putWorkflow(alice, wfID, map[string]any{
-		"name": "alice's wf", "params": map[string]any{},
+		"name": "alice's wf", "config": map[string]any{},
 		"nodes": []map[string]any{}, "edges": []map[string]any{},
 	})
 	s.Require().Equal(http.StatusOK, status)
@@ -689,7 +689,7 @@ func (s *WorkflowCRUDIntegrationSuite) TestWorkflow_Rename_PatchRoundTrips() {
 	wfID := fmt.Sprintf("wf-rename-%d", time.Now().UnixNano())
 	status, _ := s.putWorkflow(client, wfID, map[string]any{
 		"name":   "original-name",
-		"params": map[string]any{},
+		"config": map[string]any{},
 		"nodes":  []map[string]any{},
 		"edges":  []map[string]any{},
 	})
@@ -735,7 +735,7 @@ func (s *WorkflowCRUDIntegrationSuite) TestWorkflow_Rename_CrossTenant_Returns40
 
 	wfID := fmt.Sprintf("wf-rename-iso-%d", suffix)
 	status, _ := s.putWorkflow(alice, wfID, map[string]any{
-		"name": "alice's wf", "params": map[string]any{},
+		"name": "alice's wf", "config": map[string]any{},
 		"nodes": []map[string]any{}, "edges": []map[string]any{},
 	})
 	s.Require().Equal(http.StatusOK, status)
@@ -796,7 +796,7 @@ func (s *WorkflowCRUDIntegrationSuite) TestWorkflowTemplate_Fork_NextSaveStillRe
 	// against a direct API client bypassing the canvas guard).
 	resaveCode, resaveBody := s.putWorkflow(alice, wfID, map[string]any{
 		"name":   body["name"],
-		"params": body["params"],
+		"config": body["config"],
 		"nodes":  body["nodes"],
 		"edges":  body["edges"],
 	})

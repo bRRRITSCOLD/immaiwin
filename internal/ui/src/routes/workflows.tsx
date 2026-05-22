@@ -86,6 +86,8 @@ function WorkflowsPage() {
             output: n.output,
             error: n.error,
             status,
+            startedAt: n.startedAt,
+            finishedAt: n.finishedAt,
           },
         ]
       }
@@ -182,6 +184,13 @@ function WorkflowsPage() {
   // owns the redirect; routes own their data fetch — but only
   // once auth is known.
   const meLoaded = useAuthStore((s) => s.me !== undefined && s.me !== null)
+  // Active tenant — fetched workflows are scoped to it server-side, so
+  // a tenant switch must trigger a refetch. Without this dep, the
+  // `load` effect runs once on meLoaded and never again; the workflow
+  // list goes stale (shows the previous tenant's workflows after
+  // switch). Re-running clears the store + refills with the new
+  // tenant's data.
+  const activeTenantID = useAuthStore((s) => s.me?.tenant_id ?? null)
   const load = useCallback(async () => {
     try {
       const [wfs, conns] = await Promise.all([
@@ -199,8 +208,14 @@ function WorkflowsPage() {
 
   useEffect(() => {
     if (!meLoaded) return
+    // Wipe the previous tenant's store entries BEFORE the refetch so
+    // a hard tenant switch doesn't briefly render stale workflows
+    // from the prior tenant while the new request is in flight.
+    setWorkflows([])
+    setConnections([])
+    setActive(null)
     load()
-  }, [meLoaded, load])
+  }, [meLoaded, activeTenantID, load, setWorkflows, setConnections, setActive])
 
   // Restore from URL on load, or auto-select first
   useEffect(() => {
@@ -214,7 +229,7 @@ function WorkflowsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workflows])
 
-  async function handleSave(nodes: Node[], edges: Edge[], params: Record<string, string>) {
+  async function handleSave(nodes: Node[], edges: Edge[], config: Record<string, string>) {
     const wf = activeWorkflow()
     if (!wf) return
     // Pre-save validation: nodes that the picker marks `requireExplicit`
@@ -228,7 +243,7 @@ function WorkflowsPage() {
       return
     }
     try {
-      await api.put(`/api/v1/workflows/${wf.id}`, { ...wf, nodes, edges, params })
+      await api.put(`/api/v1/workflows/${wf.id}`, { ...wf, nodes, edges, config })
       toast.success('Workflow saved')
     } catch (err) {
       toast.error(err instanceof ApiError ? `Save failed: ${err.message}` : 'Network error saving workflow')

@@ -12,21 +12,22 @@ import (
 //
 // Protocol:
 //
-//	stdin  → JSON { code, input, context, params }
+//	stdin  → JSON { code, input, run_input, context, config }
 //	stdout → JSON output (from output() call)
 //	stderr → logs / errors
 //
 // User code runs inside main(). Available:
 //
-//	input (any), context (map[string]any), params (map[string]string)
+//	input (any), run_input (any), context (map[string]any), config (map[string]string)
 //	output(val any) — call to produce result
 //	fmt.Println → stderr (stdout reserved for JSON output)
 
 type Payload struct {
-	Code    string            `json:"code"`
-	Input   json.RawMessage   `json:"input"`
-	Context json.RawMessage   `json:"context"`
-	Params  map[string]string `json:"params"`
+	Code     string            `json:"code"`
+	Input    json.RawMessage   `json:"input"`
+	RunInput json.RawMessage   `json:"run_input"`
+	Context  json.RawMessage   `json:"context"`
+	Config   map[string]string `json:"config"`
 }
 
 func main() {
@@ -40,13 +41,17 @@ func main() {
 	if inputJSON == "" {
 		inputJSON = "null"
 	}
+	runInputJSON := string(p.RunInput)
+	if runInputJSON == "" {
+		runInputJSON = "null"
+	}
 	contextJSON := string(p.Context)
 	if contextJSON == "" {
 		contextJSON = "{}"
 	}
-	paramsBytes, _ := json.Marshal(p.Params)
-	if p.Params == nil {
-		paramsBytes = []byte("{}")
+	configBytes, _ := json.Marshal(p.Config)
+	if p.Config == nil {
+		configBytes = []byte("{}")
 	}
 
 	tmpDir, err := os.MkdirTemp("", "sandbox-*")
@@ -58,12 +63,14 @@ func main() {
 
 	// Write data files so user code reads them (avoids string escaping issues)
 	inputPath := filepath.Join(tmpDir, "input.json")
+	runInputPath := filepath.Join(tmpDir, "run_input.json")
 	contextPath := filepath.Join(tmpDir, "context.json")
-	paramsPath := filepath.Join(tmpDir, "params.json")
+	configPath := filepath.Join(tmpDir, "config.json")
 
 	_ = os.WriteFile(inputPath, []byte(inputJSON), 0644)
+	_ = os.WriteFile(runInputPath, []byte(runInputJSON), 0644)
 	_ = os.WriteFile(contextPath, []byte(contextJSON), 0644)
-	_ = os.WriteFile(paramsPath, paramsBytes, 0644)
+	_ = os.WriteFile(configPath, configBytes, 0644)
 
 	// Write go.mod for the user program
 	goMod := "module sandbox\ngo 1.22\n"
@@ -114,17 +121,22 @@ func main() {
 	inputBytes, _ := os.ReadFile(` + quote(inputPath) + `)
 	json.Unmarshal(inputBytes, &input)
 
+	var run_input any
+	runInputBytes, _ := os.ReadFile(` + quote(runInputPath) + `)
+	json.Unmarshal(runInputBytes, &run_input)
+	_ = run_input
+
 	context := map[string]any{}
 	contextBytes, _ := os.ReadFile(` + quote(contextPath) + `)
 	json.Unmarshal(contextBytes, &context)
 
-	params := map[string]string{}
-	paramsBytes, _ := os.ReadFile(` + quote(paramsPath) + `)
-	json.Unmarshal(paramsBytes, &params)
+	config := map[string]string{}
+	configBytes, _ := os.ReadFile(` + quote(configPath) + `)
+	json.Unmarshal(configBytes, &config)
 
 	_ = input
 	_ = context
-	_ = params
+	_ = config
 
 ` + p.Code + `
 

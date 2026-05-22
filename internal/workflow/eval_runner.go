@@ -111,20 +111,20 @@ func (r *EvalRunner) runOneCase(ctx context.Context, wf Workflow, c EvalCase) Ev
 	res := EvalCaseResult{CaseID: c.ID, CaseName: c.Name}
 	start := time.Now()
 
-	// Param overrides — clone the workflow per case so the executor's
-	// caller doesn't mutate shared state. Case params override workflow
-	// params on key collision. Struct copy is sufficient because Nodes
+	// Config overrides — clone the workflow per case so the executor's
+	// caller doesn't mutate shared state. Case config override workflow
+	// config on key collision. Struct copy is sufficient because Nodes
 	// + Edges are slices and we don't mutate their contents downstream.
 	caseWF := wf
-	if len(c.Params) > 0 {
-		merged := make(map[string]string, len(wf.Params)+len(c.Params))
-		for k, v := range wf.Params {
+	if len(c.Config) > 0 {
+		merged := make(map[string]string, len(wf.Config)+len(c.Config))
+		for k, v := range wf.Config {
 			merged[k] = v
 		}
-		for k, v := range c.Params {
+		for k, v := range c.Config {
 			merged[k] = v
 		}
-		caseWF.Params = merged
+		caseWF.Config = merged
 	}
 
 	outcome, err := r.Executor.RunResumable(ctx, caseWF, RunOpts{

@@ -24,10 +24,12 @@ export function WorkflowHelpLegend() {
             <p className="text-muted-foreground font-semibold uppercase tracking-wide mb-1">Fields (use &#123;&#123;…&#125;&#125;)</p>
             <table className="w-full border-separate" style={{ borderSpacing: '0 2px' }}>
               <tbody>
+                <Row code="{{input.field}}" desc="immediate predecessor's output" />
+                <Row code="{{run_input.field}}" desc="workflow's initial run input (any depth)" />
                 <Row code="{{context.stepName.input.field}}" desc="named step's input" />
                 <Row code="{{context.stepName.output.field}}" desc="named step's output" />
                 <Row code="{{context.stepName.item.field}}" desc="for_each current element (body only)" dimDesc />
-                <Row code="{{params.key}}" desc="workflow parameter" />
+                <Row code="{{config.key}}" desc="workflow config" />
               </tbody>
             </table>
           </section>
@@ -36,10 +38,12 @@ export function WorkflowHelpLegend() {
             <p className="text-muted-foreground font-semibold uppercase tracking-wide mb-1">JS Scripts (no &#123;&#123;&#125;&#125;)</p>
             <table className="w-full border-separate" style={{ borderSpacing: '0 2px' }}>
               <tbody>
+                <Row code="input" desc="predecessor's output" />
+                <Row code="run_input" desc="workflow's initial run input" />
                 <Row code="context.stepName.input" desc="named step input" />
                 <Row code="context.stepName.output" desc="named step output" />
                 <Row code="context.stepName.item" desc="for_each element (body only)" dimDesc />
-                <Row code="params.key" desc="workflow parameter" />
+                <Row code="config.key" desc="workflow config" />
                 <Row code="$(html)" desc="jQuery-like HTML selector" />
                 <Row code="parseRSS(xml)" desc="parse RSS/Atom feed" />
                 <Row code="now()" desc="current UTC timestamp" />

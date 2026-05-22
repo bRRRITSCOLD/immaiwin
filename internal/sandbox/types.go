@@ -18,8 +18,14 @@ type RunRequest struct {
 	Language Language          `json:"language"`
 	Code     string            `json:"code"`
 	Input    any               `json:"input"`
+	// RunInput is the workflow's initial run input — visible as
+	// `run_input` global inside sandbox scripts. Same semantics as
+	// the template engine's `{{run_input.X}}`: always the workflow
+	// entrypoint payload, regardless of which node owns this
+	// sandbox run.
+	RunInput any               `json:"run_input,omitempty"`
 	Context  map[string]any    `json:"context,omitempty"`
-	Params   map[string]string `json:"params,omitempty"`
+	Config   map[string]string `json:"config,omitempty"`
 	Timeout  time.Duration     `json:"timeout"`
 	MemLimit int64             `json:"mem_limit"` // bytes
 	CPULimit float64           `json:"cpu_limit"` // cores (e.g. 0.5)

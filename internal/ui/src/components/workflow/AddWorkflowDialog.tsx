@@ -42,7 +42,7 @@ export function AddWorkflowDialog({ onCreated }: Props) {
       try {
         await api.put(`/api/v1/workflows/${id}`, {
           name: value.name,
-          params: {},
+          config: {},
           nodes: [
             {
               id: 'trigger-1',
@@ -146,7 +146,7 @@ export function AddWorkflowDialog({ onCreated }: Props) {
       const wf = bundle.workflow
       await api.put(`/api/v1/workflows/${wfId}`, {
         name: importName || wf.name,
-        params: wf.params ?? {},
+        config: wf.config ?? {},
         nodes: wf.nodes ?? [],
         edges: wf.edges ?? [],
       })
@@ -343,8 +343,8 @@ export function AddWorkflowDialog({ onCreated }: Props) {
 
                   <div className="text-xs text-muted-foreground space-y-1 rounded-md border p-3">
                     <p><span className="font-medium text-foreground">{bundle.workflow.nodes?.length ?? 0}</span> nodes, <span className="font-medium text-foreground">{bundle.workflow.edges?.length ?? 0}</span> edges</p>
-                    {Object.keys(bundle.workflow.params ?? {}).length > 0 && (
-                      <p><span className="font-medium text-foreground">{Object.keys(bundle.workflow.params).length}</span> params: {Object.keys(bundle.workflow.params).join(', ')}</p>
+                    {Object.keys(bundle.workflow.config ?? {}).length > 0 && (
+                      <p><span className="font-medium text-foreground">{Object.keys(bundle.workflow.config).length}</span> config keys: {Object.keys(bundle.workflow.config).join(', ')}</p>
                     )}
                     <p className="text-[10px]">Connections not included — set up manually in target environment.</p>
                   </div>

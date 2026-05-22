@@ -1,0 +1,106 @@
+import { NodeResizer, type NodeProps, useReactFlow } from '@xyflow/react'
+import { CornerDownLeft } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { Textarea } from '~/components/ui/textarea'
+import { StepNameInput } from './StepNameInput'
+import { DynamicHandles } from './DynamicHandles'
+import { NodeDebugPanel, BreakpointMarker } from '../RunResultsContext'
+import { handleJsonTextareaTab } from './jsonTextareaTab'
+
+/**
+ * ReturnNode declares the workflow's return value. Authors compose
+ * the payload with the standard template engine —
+ * `{{context.<step>.output.<key>}}`, `{{input.<key>}}`,
+ * `{{config.<key>}}` — same syntax http_request body / mongo
+ * filter / notify message already use.
+ *
+ * Save-time invariant (server-enforced): at most ONE return node
+ * per workflow. Workflows without a return node yield null from
+ * sub_workflow dispatches — explicit fire-and-forget signal.
+ */
+export function ReturnNode({ id, data, selected }: NodeProps) {
+  const { updateNodeData } = useReactFlow()
+  const payloadValue = data?.payload
+  const initialText =
+    payloadValue === undefined || payloadValue === null
+      ? ''
+      : typeof payloadValue === 'string'
+        ? payloadValue
+        : JSON.stringify(payloadValue, null, 2)
+
+  const [payloadText, setPayloadText] = useState(initialText)
+  const lastSyncedRef = useRef(initialText)
+  const [parseError, setParseError] = useState<string | null>(null)
+
+  // Resync local state when upstream payload changes via something
+  // other than this textarea (workflow load, paste from history).
+  // Compare via JSON-stringify so React-Flow's data-object rebuilds
+  // don't trigger spurious resyncs.
+  useEffect(() => {
+    const next =
+      payloadValue === undefined || payloadValue === null
+        ? ''
+        : typeof payloadValue === 'string'
+          ? payloadValue
+          : JSON.stringify(payloadValue, null, 2)
+    if (next !== lastSyncedRef.current) {
+      setPayloadText(next)
+      lastSyncedRef.current = next
+      setParseError(null)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [JSON.stringify(payloadValue)])
+
+  return (
+    <div className="relative min-w-[280px] h-full">
+      <BreakpointMarker id={id} />
+      <div className="overflow-x-hidden rounded-lg border-2 border-emerald-500 bg-card text-card-foreground shadow-sm h-full">
+        <NodeResizer minWidth={280} minHeight={140} isVisible={selected} />
+        <div className="flex items-center gap-2 px-4 py-2.5 border-b border-emerald-500/40">
+          <CornerDownLeft className="h-4 w-4 text-emerald-400 shrink-0" />
+          <span className="text-sm font-medium">Return</span>
+        </div>
+        <StepNameInput id={id} data={data} />
+        <div className="px-3 py-2">
+          <p className="text-[10px] text-muted-foreground mb-1">
+            Payload (JSON, template-resolved at runtime). Empty = pass through upstream input.
+          </p>
+          <Textarea
+            className="nodrag font-mono text-[10px] min-h-[120px] resize-y"
+            rows={6}
+            placeholder='{ "summary": "{{context.weather.output.summary}}", "echo": "{{input.city}}" }'
+            value={payloadText}
+            onKeyDown={(e) => handleJsonTextareaTab(e, payloadText, setPayloadText)}
+            onChange={(e) => {
+              const v = e.target.value
+              setPayloadText(v)
+              if (v.trim() === '') {
+                setParseError(null)
+                lastSyncedRef.current = ''
+                updateNodeData(id, { payload: null })
+                return
+              }
+              try {
+                const parsed = JSON.parse(v)
+                setParseError(null)
+                lastSyncedRef.current = v
+                updateNodeData(id, { payload: parsed })
+              } catch (err) {
+                setParseError((err as Error).message)
+                // Hold local state — don't commit invalid JSON.
+              }
+            }}
+          />
+          {parseError && (
+            <p className="mt-1 text-[10px] text-red-500">{parseError}</p>
+          )}
+          <p className="mt-1 text-[10px] text-muted-foreground/70">
+            Sub-workflow consumers get this resolved object as the tool result.
+          </p>
+        </div>
+        <NodeDebugPanel id={id} />
+      </div>
+      <DynamicHandles nodeId={id} nodeType="return" data={data as Record<string, unknown>} />
+    </div>
+  )
+}

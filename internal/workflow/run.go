@@ -29,7 +29,7 @@ type WorkflowRun struct {
 	FinishedAt   *time.Time              `bson:"finished_at,omitempty" json:"finished_at,omitempty"`
 	Status       RunStatus               `bson:"status"         json:"status"`
 	TriggerInput any                     `bson:"trigger_input,omitempty" json:"trigger_input,omitempty"`
-	Params       map[string]string       `bson:"params,omitempty"        json:"params,omitempty"`
+	Config       map[string]string       `bson:"config,omitempty"        json:"config,omitempty"`
 	Steps        []StepResult            `bson:"steps,omitempty"         json:"steps,omitempty"`
 	AgentTraces  map[string][]TraceEvent `bson:"agent_traces,omitempty"  json:"agent_traces,omitempty"`
 	Usage        UsageTotal              `bson:"usage,omitempty"         json:"usage,omitempty"`

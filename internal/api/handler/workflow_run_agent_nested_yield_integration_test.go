@@ -420,7 +420,7 @@ func (s *AgentNestedYieldIntegrationSuite) TestAgent_NestedGates_3Tools_NoLoopAn
 	wfID := fmt.Sprintf("wf-nested-%d", suffix)
 	wfPayload := map[string]any{
 		"name":   "nested-gates 3-tool",
-		"params": map[string]any{},
+		"config": map[string]any{},
 		"nodes": []map[string]any{
 			{
 				"id":       "trigger-1",

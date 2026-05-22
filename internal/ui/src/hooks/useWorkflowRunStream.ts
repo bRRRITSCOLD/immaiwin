@@ -60,6 +60,11 @@ export interface NodeRunState {
   status: 'pending' | 'running' | 'done' | 'error' | 'paused' | 'cancelled'
   output?: unknown
   error?: string
+  // Timing — derived from event timestamps. startedAt set on the
+  // first step_start (resets per for_each iteration via the loopStep
+  // entry instead). finishedAt set on the terminal step_done.
+  startedAt?: string
+  finishedAt?: string
   // for_each body nodes run once per loop element; without this the
   // single status/output slot is overwritten every iteration and the
   // canvas can't show which iteration it's on (or that it re-ran).
@@ -276,6 +281,12 @@ export function useWorkflowRunStream(): WorkflowRunStream {
             status: 'running',
             nodeType: ev.node_type ?? n.nodeType,
             loopTotal: ev.loop_total ?? n.loopTotal,
+            // Reset timing on every step_start so a re-execution (post-
+            // Continue, for_each iteration, worker reclaim) re-times
+            // from this attempt's start instead of carrying the prior
+            // attempt's elapsed window.
+            startedAt: ev.at,
+            finishedAt: undefined,
             loopSteps:
               li > 0 ? upsertLoopStep(n.loopSteps, li, { status: 'running' }) : n.loopSteps,
           }
@@ -319,6 +330,7 @@ export function useWorkflowRunStream(): WorkflowRunStream {
             error: ev.error,
             nodeType: ev.node_type ?? n.nodeType,
             loopTotal: ev.loop_total ?? n.loopTotal,
+            finishedAt: ev.at,
             loopSteps:
               li > 0
                 ? upsertLoopStep(n.loopSteps, li, {

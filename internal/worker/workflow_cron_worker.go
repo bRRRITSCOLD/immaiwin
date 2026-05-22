@@ -308,7 +308,7 @@ func dispatchCronTick(
 		TenantID:   wf.TenantID,
 		QueuedAt:   now,
 		Status:     workflow.RunStatusQueued,
-		Params:     wf.Params,
+		Config: wf.Config,
 	}
 	if _, cerr := runRepo.Create(ctx, rec); cerr != nil {
 		slog.Error("workflow-cron: persist run rec failed", "workflow", wfID, "name", wfName, "err", cerr)

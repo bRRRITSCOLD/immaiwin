@@ -166,7 +166,7 @@ func HandleWebhook(store WorkflowStore, runStore workflow.WorkflowRunStore, rc w
 			TenantID:     matched.TenantID,
 			QueuedAt:     now,
 			Status:       workflow.RunStatusQueued,
-			Params:       matched.Params,
+			Config: matched.Config,
 			TriggerInput: input,
 		}
 		if _, cerr := runStore.Create(c.Request.Context(), rec); cerr != nil {

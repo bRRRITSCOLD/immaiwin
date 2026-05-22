@@ -4,7 +4,7 @@
   "category": "Webhooks",
   "workflow": {
     "name": "Webhook Echo",
-    "params": {},
+    "config": {},
     "nodes": [
       {
         "id": "trigger-1",

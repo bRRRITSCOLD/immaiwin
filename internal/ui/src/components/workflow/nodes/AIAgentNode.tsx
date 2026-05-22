@@ -141,7 +141,7 @@ export function AIAgentNode({ id, data, selected }: NodeProps) {
                 <p className="text-[10px] text-muted-foreground">Memory session ID (template-enabled). Empty = no persistence.</p>
                 <Input
                   className="nodrag h-7 text-xs"
-                  placeholder="e.g. user_{{params.user_id}}"
+                  placeholder="e.g. user_{{config.user_id}}"
                   value={memorySessionId}
                   onChange={(e) => updateNodeData(id, { memory_session_id: e.target.value })}
                 />

@@ -9,10 +9,10 @@ import re
 city = (input or {}).get("city", "Unknown")
 raw = (input or {}).get("raw", "")
 
-# Author-bound config lives in `params` under a namespaced key
+# Author-bound config lives in `config` under a namespaced key
 # `<sanitized_slug>__<config_name>` (see internal/workflow/agent_skills.go).
 # Per-call `style` arg from the LLM wins; falls back to the author default.
-_p = params or {}
+_p = config or {}
 _default_style = _p.get("weather_formatter__default_style", "friendly")
 _temp_unit = _p.get("weather_formatter__temp_unit", "F")
 

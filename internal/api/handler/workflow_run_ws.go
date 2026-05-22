@@ -239,7 +239,7 @@ func RunWorkflowWS(store WorkflowStore, runStore workflow.WorkflowRunStore, exec
 			// worker claims the lease + flips status=running atomically.
 			// StartedAt stays nil until ClaimLease stamps it.
 			Status:             workflow.RunStatusQueued,
-			Params:             wf.Params,
+			Config: wf.Config,
 			TriggerInput:       req.Input,
 			InitialBreakpoints: initialBreakpoints,
 		}

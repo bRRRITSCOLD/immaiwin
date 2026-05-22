@@ -24,7 +24,7 @@ export interface ApprovalChannel {
   channel?: string
 }
 
-export interface ParamEntry {
+export interface SchemaEntry {
   name: string
   type: 'string' | 'number' | 'boolean' | 'enum'
   description?: string
@@ -36,11 +36,27 @@ export interface ParamEntry {
 export interface Workflow {
   id: string
   name: string
-  params: Record<string, string>
+  config: Record<string, string>
   nodes: Node[]
   edges: Edge[]
   cost_limits?: CostLimits | null
-  params_schema?: ParamEntry[]
+  config_schema?: SchemaEntry[]
+  // Typed declaration for the workflow's RUN INPUT (distinct from
+  // params — input is per-run, params are persistent). Same SchemaEntry
+  // shape so the schema editor + sub_workflow auto-deriver can share
+  // the data model. Empty / absent = legacy free-form input.
+  input_schema?: SchemaEntry[]
+  // Raw JSON Schema escape hatch for nested / array input contracts
+  // that SchemaEntry's flat shape can't express. When set, wins over
+  // input_schema for engine validation + sub_workflow auto-derive.
+  // String form (not parsed object) so the editor textarea owns the
+  // canonical text and partial-edit states don't trip validators.
+  input_schema_json?: string
+  // Typed declaration for the workflow's RETURN value (from the
+  // `return` node's resolved payload). Optional. Same shape as
+  // input_schema.
+  output_schema?: SchemaEntry[]
+  output_schema_json?: string
   approval_channel?: ApprovalChannel | null
   // version is server-stamped (`$inc` on every Upsert). Newly-created
   // and duplicated workflows start at 1; clients must never set this.
@@ -86,9 +102,13 @@ interface WorkflowStore {
   setActive(id: string | null): void
   setSelectedEdgeType(type: EdgePaletteType | null): void
   setAttachingFrom(af: AttachingFrom | null): void
-  updateActiveGraph(nodes: Node[], edges: Edge[], params: Record<string, string>): void
+  updateActiveGraph(nodes: Node[], edges: Edge[], config: Record<string, string>): void
   updateActiveCostLimits(cost_limits: CostLimits | null): void
-  updateActiveParamsSchema(params_schema: ParamEntry[]): void
+  updateActiveConfigSchema(config_schema: SchemaEntry[]): void
+  updateActiveInputSchema(input_schema: SchemaEntry[]): void
+  updateActiveInputSchemaJSON(input_schema_json: string): void
+  updateActiveOutputSchema(output_schema: SchemaEntry[]): void
+  updateActiveOutputSchemaJSON(output_schema_json: string): void
   updateActiveApprovalChannel(approval_channel: ApprovalChannel | null): void
   activeWorkflow(): Workflow | null
 }
@@ -121,12 +141,12 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
     set({ attachingFrom: af })
   },
 
-  updateActiveGraph(nodes, edges, params) {
+  updateActiveGraph(nodes, edges, config) {
     const { activeId, workflows } = get()
     if (!activeId) return
     set({
       workflows: workflows.map((w) =>
-        w.id === activeId ? { ...w, nodes, edges, params } : w,
+        w.id === activeId ? { ...w, nodes, edges, config } : w,
       ),
     })
   },
@@ -151,12 +171,52 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
     })
   },
 
-  updateActiveParamsSchema(params_schema) {
+  updateActiveConfigSchema(config_schema) {
     const { activeId, workflows } = get()
     if (!activeId) return
     set({
       workflows: workflows.map((w) =>
-        w.id === activeId ? { ...w, params_schema } : w,
+        w.id === activeId ? { ...w, config_schema } : w,
+      ),
+    })
+  },
+
+  updateActiveInputSchema(input_schema) {
+    const { activeId, workflows } = get()
+    if (!activeId) return
+    set({
+      workflows: workflows.map((w) =>
+        w.id === activeId ? { ...w, input_schema } : w,
+      ),
+    })
+  },
+
+  updateActiveInputSchemaJSON(input_schema_json) {
+    const { activeId, workflows } = get()
+    if (!activeId) return
+    set({
+      workflows: workflows.map((w) =>
+        w.id === activeId ? { ...w, input_schema_json } : w,
+      ),
+    })
+  },
+
+  updateActiveOutputSchema(output_schema) {
+    const { activeId, workflows } = get()
+    if (!activeId) return
+    set({
+      workflows: workflows.map((w) =>
+        w.id === activeId ? { ...w, output_schema } : w,
+      ),
+    })
+  },
+
+  updateActiveOutputSchemaJSON(output_schema_json) {
+    const { activeId, workflows } = get()
+    if (!activeId) return
+    set({
+      workflows: workflows.map((w) =>
+        w.id === activeId ? { ...w, output_schema_json } : w,
       ),
     })
   },
