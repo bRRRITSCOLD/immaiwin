@@ -21,7 +21,7 @@ baked into the engine instead of bolted on after.
 - CI gate (vet / lint / `test -race` / typecheck) on every push + PR, branch protection on `main`
 
 ### Workflow engine
-- Visual canvas (React Flow) with 10 node types — `trigger`, `http_request`, `sandbox_script`, `ai_agent`, `for_each`, `mongo_request`, `redis_request`, `notify`, `sub_workflow`, `return`
+- Visual canvas (React Flow) with 11 node types — `trigger`, `http_request`, `sandbox_script`, `ai_agent`, `for_each`, `mongo_request`, `redis_request`, `notify`, `sub_workflow`, `return`, `transform`
 - Live run streaming over WebSocket — trace timeline, per-node status, cost badges
 - Webhook trigger (HMAC-SHA-256 signed)
 - Cron, Manual, RabbitMQ, Redis-subscribe, **WebSocket** triggers (all migrated to durable lease workers). The WebSocket trigger is provider-agnostic — operator-supplied bearer/header/query auth, exponential reconnect with ping/pong heartbeat, `event_path` dot-extract on each frame
@@ -39,6 +39,7 @@ baked into the engine instead of bolted on after.
 - **Workflow `input_schema` + pre-flight Run dialog** — workflows declare the shape of their run input via typed `SchemaEntry[]` (string / number / boolean / enum) OR raw JSON Schema (escape hatch for nested objects + arrays). Engine validates on every dispatch (manual, trigger, sub_workflow) and surfaces `ErrInputValidation`. The canvas Run button opens a typed form OR raw-JSON editor seeded by recursing the schema's `properties` / `items` and honoring `default` annotations.
 - **`{{run_input.X}}` template namespace + sandbox global** — the workflow's initial trigger payload is reachable from nodes at any depth in the BFS, independent of predecessor edges. Distinct from `{{input.X}}` (predecessor output). Top-level `run_input` global is also exposed in all 5 sandbox runtimes, parallel to existing `input` / `config`.
 - **`params` → `config` rename, end-to-end** — engine struct field, BSON tag, sandbox payload, all 5 lang entrypoints (JS / Python / Go / Rust / PHP), bundled skill source, UI types + visible labels, bundled workflow templates. Single name across the stack; pre-launch so no back-compat shim.
+- **`transform` node** — mid-graph payload reshape via the same template engine as `return`. Trim or rename fields from upstream output (mongo find / http body / agent answer) before feeding into a downstream agent or sandbox; cuts token spend without spinning up a sandbox container. Pure-template (no expression language, no array map — for projection use `for_each`, for arbitrary computation use `sandbox_script`).
 
 ### AI agent
 - ReAct loop with Anthropic, OpenAI, Ollama providers behind a single `Provider` interface
@@ -53,6 +54,7 @@ baked into the engine instead of bolted on after.
 - **Canvas Continue + breakpoints control channel** — REST endpoints (`POST /workflow_runs/:id/continue`, `PUT /workflow_runs/:id/breakpoints`) publish `RunControlMessage`s on `burrow:run_control:<runID>`. Worker bridge subscribes during the run-pass and routes inbound messages into the executor's in-process `continueCh` + `SetBreakpoints` primitives. Restores the lease-era debug UX (mid-run breakpoint add/remove, Continue button releases a pre-exec pause) without breaking the canvas-WS-as-pure-subscriber contract. Tenant-scoped; terminal runs refuse with 400.
 - **Debug-pause durability across worker restarts** — the executor checkpoints `execution_state` at every pre-exec breakpoint wait (BFS and as_tool target). On worker death, `ClaimLease` requires `execution_state != nil` for lapsed-lease branch (orphan-no-checkpoint runs are terminated by the worker's periodic sweep, which publishes a synthetic `run_done`). The api's run/stream WS sends keepalive pings every 20s so an idle pause doesn't drop the socket. Workers emit periodic `worker_heartbeat` events on the per-run channel so the canvas distinguishes a legit quiet pause from a dead worker (15s threshold). Live UI surfaces a "Worker quiet" banner when the gap exceeds the threshold, and the per-node yellow paused marker is preserved across worker death + non-cancel terminal events; one node pulses at a time. As_tool target breakpoints persist `PausedAgent` mid-loop so reclaim resumes at exactly the inner tool call — no re-running the agent loop, no extra LLM call.
 - Approval-gate resume is **replay-only** — no extra `Chat` call on resume. The trailing assistant tool_use is replayed from `PausedAgent.Messages`, dispatch continues from the saved `PartialNextIndex`, and the only post-resume LLM call is the final-answer prompt that observes the tool_result. Total Chat per gate = pre-gate + final-answer (locked by integration tests asserting the exact Chat-call count).
+- **Provider-side output-schema enforcement** — when an agent declares an `output_schema`, the loop sends `tool_choice: "any"` (Anthropic) / `"required"` (OpenAI) on every iter so the model cannot emit free-text answers. The synthetic `submit_final_answer` tool stays the exit channel. Existing post-call rejection-retry remains as a defensive backstop for providers (e.g. ollama) that don't honor tool_choice. Cuts the wasted Chat round trip when the model would otherwise emit a free-text answer that gets rejected.
 
 ### Security
 - `mongo_request` / `redis_request` and `rabbitmq` / `redis_subscribe` triggers **require** an explicit user connection — the platform's own Mongo/Redis (workflow records, audit log, lease, chat memory) are not reachable from a user workflow
@@ -76,10 +78,8 @@ baked into the engine instead of bolted on after.
 ## Up next (short-term)
 
 ### Composability
-- **Multi-agent workflows** — agent-to-agent handoff (next pick after sub-workflow + return + I/O schemas shipped)
-- **Output-schema enforcement** on agent results (the provider `tool_choice: "required"` trick on existing `output_schema` field)
+- **Multi-agent workflows (A → C)** — A: `ai_agent` node toggleable as_tool so a parent agent can call a child agent without a sub_workflow wrapper. C: orchestrator pattern (coordinator + parallel fan-out primitive over specialist sub-agents). C depends on A.
 - **Parallel agent inside `for_each`** — opt-in, bounded parallelism (default sequential to protect token budgets)
-- **Transform node** — drop-in node in front of any tool to reshape its output before it hits the agent context (token-saving)
 - **`ReturnNode` payload autofill from `output_schema_json`** — symmetry with the run-input pre-flight dialog (stub from schema, honor `default`, recurse nested)
 
 ### Engine

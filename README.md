@@ -153,7 +153,7 @@ The long game: add AI agents that can write and execute code as part of their re
 
 Canvas-based editor powered by React Flow. Drag nodes, connect edges, run entire workflows with one click.
 
-**10 node types:**
+**11 node types:**
 
 | Node | Purpose |
 |------|---------|
@@ -167,6 +167,7 @@ Canvas-based editor powered by React Flow. Drag nodes, connect edges, run entire
 | `notify` | Send notifications |
 | `sub_workflow` | Agent-dispatched call to another workflow by id. Tenant-scoped, cycle + depth guarded; consumes the target's typed return value (validated against `output_schema`). Unlocks workflow composition + agent-of-agents patterns. |
 | `return` | Explicit single-payload contract for sub-workflow consumers. Payload templates resolve via `{{context.X}}`, `{{input.X}}`, `{{run_input.X}}`. At most one per workflow. |
+| `transform` | Mid-graph payload reshape via the same template engine as `return`. Trim or rename fields from a large upstream output before it feeds a downstream agent or sandbox — token-saving without a sandbox round trip. Pure-template (no expression language). |
 
 Every node supports named steps — downstream nodes access upstream results via `context.stepName.output`.
 
@@ -585,7 +586,7 @@ Supported types: `mongodb`, `redis`, `rabbitmq`, `anthropic`, `openai`, `ollama`
 
 ### Shipped (recent)
 - [x] Multi-language sandbox (JS / Python / Go / Rust / PHP), Docker + k3s + gVisor backends, DAP/CDP interactive debug
-- [x] Visual canvas with 10 node types (`trigger`, `http_request`, `sandbox_script`, `ai_agent`, `for_each`, `mongo_request`, `redis_request`, `notify`, `sub_workflow`, `return`)
+- [x] Visual canvas with 11 node types (`trigger`, `http_request`, `sandbox_script`, `ai_agent`, `for_each`, `mongo_request`, `redis_request`, `notify`, `sub_workflow`, `return`, `transform`)
 - [x] AI agent (Anthropic / OpenAI / Ollama) — ReAct loop, edge-bound tool nodes, built-in `code_execute`, chat memory, JSON-Schema arg validation, skills system
 - [x] Durable execution — lease workers + checkpoint resume + boot sweep (every trigger type runs on the lease plane)
 - [x] Universal `on_error: stop|continue` (dual-edge) on every fallible node + the for_each, with approval-rejection security invariant
