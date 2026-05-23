@@ -911,6 +911,8 @@ function WorkflowCanvasInner({ workflow, onSave, onRun, onCancel, onContinue, on
           edgeTypes={edgeTypes}
           colorMode="dark"
           fitView
+          minZoom={0.1}
+          maxZoom={4}
           className="bg-background"
         >
           <Background />
