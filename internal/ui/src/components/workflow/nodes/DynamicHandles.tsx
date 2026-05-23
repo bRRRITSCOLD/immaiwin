@@ -326,8 +326,15 @@ export function DynamicHandles({ nodeId, nodeType, data }: Props) {
   }
 
   // Valid palette types for this node (for border submenu)
+  //
+  // as_tool nodes are normally fully isolated (only `receive` for the
+  // agent's tool edge). Exception — an `ai_agent` exposed as a tool
+  // is still an agent and may call its own tools; expose `tool` +
+  // `receive` so the author can wire sub-tools to it.
   const validPaletteTypes = asTool
-    ? []
+    ? nodeType === 'ai_agent'
+      ? allPaletteTypes.filter((p) => p.type === 'tool' || p.type === 'receive')
+      : []
     : allPaletteTypes.filter((p) => isPaletteValidForNode(nodeType, p.type))
 
   // Zone styles — always pointer events, cursor crosshair when palette or always for right-click
