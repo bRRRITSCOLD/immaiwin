@@ -384,11 +384,23 @@ function isPaletteConnectionValid(
 function asToolEdgeAllowed(
   src: Node | undefined,
   tgt: Node | undefined,
-  sourceHandle?: string | null,
+  sourceHandleId?: string | null,
 ): boolean {
   if (src && isAsToolEnabled(src.data as Record<string, unknown>)) {
-    if (src.type === 'ai_agent' && sourceHandle === 'tool') {
-      // sub-agent calling its own tools — allowed
+    // Sub-agent (as_tool ai_agent) may still call its own tools.
+    // Identify the agent's own `tool` handle by its paletteType so
+    // dynamic-handle ids (`dh-...`) work the same as the legacy
+    // hard-coded `tool` id.
+    if (src.type === 'ai_agent' && sourceHandleId) {
+      const handles = (src.data as { handles?: { id: string; paletteType?: string }[] } | undefined)
+        ?.handles
+      const h = handles?.find((x) => x.id === sourceHandleId)
+      const pt = h?.paletteType ?? (sourceHandleId === 'tool' ? 'tool' : undefined)
+      if (pt === 'tool') {
+        // allowed
+      } else {
+        return false
+      }
     } else {
       return false
     }
