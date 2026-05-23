@@ -15,6 +15,7 @@ import { NodeDebugPanel, BreakpointMarker, ApprovalMarker, AgentRunContext } fro
 import { ConnectionPicker } from './ConnectionPicker'
 import { OnErrorPolicySelect } from './OnErrorPolicySelect'
 import { AsToolPanel } from './AsToolPanel'
+import { handleJsonTextareaTab } from './jsonTextareaTab'
 
 // Default input schema for an ai_agent exposed as a tool — single
 // `task` string. Authors override per-agent via AsToolPanel's
@@ -246,6 +247,7 @@ export function AIAgentNode({ id, data, selected }: NodeProps) {
                   rows={4}
                   placeholder='{"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"]}'
                   value={outputSchema}
+                  onKeyDown={(e) => handleJsonTextareaTab(e, outputSchema, (v) => updateNodeData(id, { output_schema: v }))}
                   onChange={(e) => updateNodeData(id, { output_schema: e.target.value })}
                 />
               </div>
