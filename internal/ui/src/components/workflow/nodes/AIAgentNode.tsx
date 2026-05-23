@@ -12,8 +12,22 @@ import { DynamicHandles } from './DynamicHandles'
 import { SkillsPanel } from './SkillsPanel'
 import { AgentTimelinePanel } from './AgentTimelinePanel'
 import { NodeDebugPanel, BreakpointMarker, ApprovalMarker, AgentRunContext } from '../RunResultsContext'
+import { OutputTransformPanel } from './OutputTransformPanel'
 import { ConnectionPicker } from './ConnectionPicker'
 import { OnErrorPolicySelect } from './OnErrorPolicySelect'
+import { AsToolPanel } from './AsToolPanel'
+import { handleJsonTextareaTab } from './jsonTextareaTab'
+
+// Default input schema for an ai_agent exposed as a tool — single
+// `task` string. Authors override per-agent via AsToolPanel's
+// input_schema field.
+const AI_AGENT_TOOL_SCHEMA: Record<string, unknown> = {
+  type: 'object',
+  properties: {
+    task: { type: 'string', description: 'Instruction or question for the sub-agent.' },
+  },
+  required: ['task'],
+}
 
 const LLM_TYPES = ['anthropic', 'openai', 'ollama'] as const
 
@@ -234,6 +248,7 @@ export function AIAgentNode({ id, data, selected }: NodeProps) {
                   rows={4}
                   placeholder='{"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"]}'
                   value={outputSchema}
+                  onKeyDown={(e) => handleJsonTextareaTab(e, outputSchema, (v) => updateNodeData(id, { output_schema: v }))}
                   onChange={(e) => updateNodeData(id, { output_schema: e.target.value })}
                 />
               </div>
@@ -346,9 +361,16 @@ export function AIAgentNode({ id, data, selected }: NodeProps) {
 
         <SkillsPanel nodeId={id} data={data as Record<string, unknown>} />
         <AgentTimelinePanel id={id} />
+        <AsToolPanel
+          nodeId={id}
+          data={data as Record<string, unknown>}
+          defaultName="sub_agent"
+          defaultSchema={AI_AGENT_TOOL_SCHEMA}
+        />
         <div className="px-3 py-2 border-t border-border/50">
           <OnErrorPolicySelect nodeId={id} value={onErrorPolicy} nodeType="ai_agent" />
         </div>
+        <OutputTransformPanel nodeId={id} data={data as Record<string, unknown>} />
         <NodeDebugPanel id={id} />
       </div>
       <DynamicHandles nodeId={id} nodeType="ai_agent" data={data as Record<string, unknown>} />

@@ -27,13 +27,11 @@ import { SandboxScriptNode } from './nodes/SandboxScriptNode'
 import { AIAgentNode } from './nodes/AIAgentNode'
 import { SubWorkflowNode } from './nodes/SubWorkflowNode'
 import { ReturnNode } from './nodes/ReturnNode'
-import { TransformNode } from './nodes/TransformNode'
 import { useWorkflowStore, type Workflow } from './useWorkflowStore'
 import { WorkflowConfigPanel } from './WorkflowConfigPanel'
 import { WorkflowInputSchemaPanel } from './WorkflowInputSchemaPanel'
 import { WorkflowOutputSchemaPanel } from './WorkflowOutputSchemaPanel'
 import { RunInputDialog } from './RunInputDialog'
-import { ToolEdgeTransformDialog } from './ToolEdgeTransformDialog'
 import { WorkflowCostLimitsPanel } from './WorkflowCostLimitsPanel'
 import { WorkflowApprovalChannelPanel } from './WorkflowApprovalChannelPanel'
 import { WorkflowHelpLegend } from './WorkflowHelpLegend'
@@ -51,7 +49,6 @@ const nodeTypes: NodeTypes = {
   ai_agent: AIAgentNode,
   sub_workflow: SubWorkflowNode,
   return: ReturnNode,
-  transform: TransformNode,
 }
 
 const edgeTypes: EdgeTypes = {
@@ -369,16 +366,42 @@ function isPaletteConnectionValid(
  * Full-isolation rule for `as_tool` nodes: an agent-dispatched tool
  * node bypasses the BFS entirely, so the ONLY legitimate edge is the
  * AI Agent's inbound "tool" edge. No outbound from it, and no inbound
- * from anything other than an ai_agent. Used by onConnect (block at
- * draw time), isValidConnection (block the drag), and a self-heal
- * effect (prune edges that became invalid when as_tool was toggled on
- * or a legacy/template workflow loaded).
+ * from anything other than an ai_agent.
+ *
+ * Exception — an `ai_agent` exposed as a tool is itself an agent and
+ * may call its own tools when dispatched. Outbound edges from an
+ * `as_tool` `ai_agent` are allowed when the connection is the agent's
+ * own `tool` edge (sourceHandle === 'tool'); success / error / item
+ * outbound from an as_tool agent stay forbidden since BFS still skips it.
+ *
+ * Used by onConnect (block at draw time), isValidConnection (block
+ * the drag), and a self-heal effect (prune edges that became invalid
+ * when as_tool was toggled on or a legacy/template workflow loaded).
  */
 function asToolEdgeAllowed(
   src: Node | undefined,
   tgt: Node | undefined,
+  sourceHandleId?: string | null,
 ): boolean {
-  if (src && isAsToolEnabled(src.data as Record<string, unknown>)) return false
+  if (src && isAsToolEnabled(src.data as Record<string, unknown>)) {
+    // Sub-agent (as_tool ai_agent) may still call its own tools.
+    // Identify the agent's own `tool` handle by its paletteType so
+    // dynamic-handle ids (`dh-...`) work the same as the legacy
+    // hard-coded `tool` id.
+    if (src.type === 'ai_agent' && sourceHandleId) {
+      const handles = (src.data as { handles?: { id: string; paletteType?: string }[] } | undefined)
+        ?.handles
+      const h = handles?.find((x) => x.id === sourceHandleId)
+      const pt = h?.paletteType ?? (sourceHandleId === 'tool' ? 'tool' : undefined)
+      if (pt === 'tool') {
+        // allowed
+      } else {
+        return false
+      }
+    } else {
+      return false
+    }
+  }
   if (
     tgt &&
     isAsToolEnabled(tgt.data as Record<string, unknown>) &&
@@ -415,7 +438,7 @@ function WorkflowCanvasInner({ workflow, onSave, onRun, onCancel, onContinue, on
   const [debugMode, setDebugMode] = useState(false)
   const [breakpointIds, setBreakpointIds] = useState<Set<string>>(new Set())
   const [edgeMenu, setEdgeMenu] = useState<EdgeMenuState | null>(null)
-  const [transformDialog, setTransformDialog] = useState<{ open: boolean; edgeId: string | null }>({ open: false, edgeId: null })
+  const [nodeMenu, setNodeMenu] = useState<{ nodeId: string; screenX: number; screenY: number } | null>(null)
   // Pre-flight input dialog. Workflows declaring input_schema /
   // input_schema_json need operator-supplied input before
   // dispatch — running with empty payload would fail engine
@@ -442,18 +465,55 @@ function WorkflowCanvasInner({ workflow, onSave, onRun, onCancel, onContinue, on
     onRun(opts.stopAt)
   }
 
-  // Escape clears edge palette + edge context menu
+  // Escape clears edge palette + edge context menu.
+  // Cmd/Ctrl+D duplicates every selected node (data clone, fresh id +
+  // handles, +20px offset, no edges — same rule as a fresh drag-from-
+  // palette). Ignored while focus is in a text input so authors can
+  // type "d" freely.
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
       if (e.key === 'Escape') {
         setSelectedEdgeType(null)
         setEdgeMenu(null)
         setAttachingFrom(null)
+        return
+      }
+      if ((e.metaKey || e.ctrlKey) && (e.key === 'd' || e.key === 'D')) {
+        const t = e.target as HTMLElement | null
+        const tag = t?.tagName?.toLowerCase()
+        if (tag === 'input' || tag === 'textarea' || t?.isContentEditable) return
+        e.preventDefault()
+        setNodes((nds) => {
+          const selected = nds.filter((n) => n.selected)
+          if (selected.length === 0) return nds
+          const clones: typeof nds = selected.map((n) => {
+            const data = { ...(n.data ?? {}) } as Record<string, unknown>
+            // Drop handles so DynamicHandles auto-seeds fresh defaults
+            // for the new node — copying handle ids verbatim would let
+            // a stale waypoint or as_tool-leftover handle ride along
+            // and confuse downstream wiring.
+            delete data.handles
+            return {
+              ...n,
+              id: nextNodeId(),
+              position: { x: n.position.x + 24, y: n.position.y + 24 },
+              data,
+              selected: false,
+            }
+          })
+          // Deselect originals so only the new clones land selected,
+          // giving immediate visual feedback + Cmd+D again on the
+          // clones for a series of copies.
+          return [
+            ...nds.map((n) => (n.selected ? { ...n, selected: false } : n)),
+            ...clones.map((c) => ({ ...c, selected: true })),
+          ]
+        })
       }
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [setSelectedEdgeType, setAttachingFrom])
+  }, [setSelectedEdgeType, setAttachingFrom, setNodes])
 
   // Self-heal: prune edges that violate as_tool full-isolation —
   // covers toggling as_tool ON after edges were drawn, and loading a
@@ -464,7 +524,7 @@ function WorkflowCanvasInner({ workflow, onSave, onRun, onCancel, onContinue, on
     setEdges((eds) => {
       const byId = new Map(nodes.map((n) => [n.id, n]))
       const next = eds.filter((e) =>
-        asToolEdgeAllowed(byId.get(e.source), byId.get(e.target)),
+        asToolEdgeAllowed(byId.get(e.source), byId.get(e.target), e.sourceHandle ?? null),
       )
       return next.length === eds.length ? eds : next
     })
@@ -480,7 +540,7 @@ function WorkflowCanvasInner({ workflow, onSave, onRun, onCancel, onContinue, on
     const srcNode = nodesRef.current.find((n) => n.id === connection.source)
     const tgtNode = nodesRef.current.find((n) => n.id === connection.target)
     // as_tool full-isolation guard applies regardless of palette.
-    if (!asToolEdgeAllowed(srcNode, tgtNode)) return false
+    if (!asToolEdgeAllowed(srcNode, tgtNode, connection.sourceHandle ?? null)) return false
     const pt = paletteRef.current
     if (!pt) return true // no palette → allow (legacy behavior)
     return isPaletteConnectionValid(srcNode?.type, pt)
@@ -507,7 +567,7 @@ function WorkflowCanvasInner({ workflow, onSave, onRun, onCancel, onContinue, on
       // node, and a tool node has no outbound edges.
       const srcN = nodes.find((n) => n.id === connection.source)
       const tgtN = nodes.find((n) => n.id === connection.target)
-      if (!asToolEdgeAllowed(srcN, tgtN)) return
+      if (!asToolEdgeAllowed(srcN, tgtN, connection.sourceHandle ?? null)) return
 
       // Guard: validate palette type vs source node
       if (selectedEdgeType) {
@@ -593,8 +653,48 @@ function WorkflowCanvasInner({ workflow, onSave, onRun, onCancel, onContinue, on
     [screenToFlowPosition],
   )
 
+  const onNodeContextMenu = useCallback((e: React.MouseEvent, node: Node) => {
+    e.preventDefault()
+    setNodeMenu({ nodeId: node.id, screenX: e.clientX, screenY: e.clientY })
+  }, [])
+
+  function duplicateNodesById(ids: string[]) {
+    if (ids.length === 0) return
+    setNodes((nds) => {
+      const sources = nds.filter((n) => ids.includes(n.id))
+      if (sources.length === 0) return nds
+      const clones = sources.map((n) => {
+        const data = { ...(n.data ?? {}) } as Record<string, unknown>
+        delete data.handles
+        return {
+          ...n,
+          id: nextNodeId(),
+          position: { x: n.position.x + 24, y: n.position.y + 24 },
+          data,
+          selected: true,
+        }
+      })
+      return [...nds.map((n) => ({ ...n, selected: false })), ...clones]
+    })
+  }
+
+  function handleDuplicateNode() {
+    if (!nodeMenu) return
+    duplicateNodesById([nodeMenu.nodeId])
+    setNodeMenu(null)
+  }
+
+  function handleDeleteNode() {
+    if (!nodeMenu) return
+    const id = nodeMenu.nodeId
+    setNodes((nds) => nds.filter((n) => n.id !== id))
+    setEdges((eds) => eds.filter((e) => e.source !== id && e.target !== id))
+    setNodeMenu(null)
+  }
+
   const onPaneClick = useCallback(() => {
     setEdgeMenu(null)
+    setNodeMenu(null)
     setAttachingFrom(null)
   }, [setAttachingFrom])
 
@@ -617,29 +717,6 @@ function WorkflowCanvasInner({ workflow, onSave, onRun, onCancel, onContinue, on
     setEdgeMenu(null)
   }
 
-  function handleEditTransform() {
-    if (!edgeMenu) return
-    setTransformDialog({ open: true, edgeId: edgeMenu.edgeId })
-    setEdgeMenu(null)
-  }
-
-  const transformEdge = transformDialog.edgeId ? edges.find((e) => e.id === transformDialog.edgeId) : null
-
-  function saveEdgeTransform(transform: unknown | null) {
-    if (!transformDialog.edgeId) return
-    setEdges((eds) =>
-      eds.map((e) => {
-        if (e.id !== transformDialog.edgeId) return e
-        const nextData = { ...(e.data ?? {}) }
-        if (transform === null) {
-          delete (nextData as Record<string, unknown>).output_transform
-        } else {
-          ;(nextData as Record<string, unknown>).output_transform = transform
-        }
-        return { ...e, data: nextData }
-      }),
-    )
-  }
 
   const toggleBreakpoint = useCallback(
     (nodeId: string) => {
@@ -828,11 +905,14 @@ function WorkflowCanvasInner({ workflow, onSave, onRun, onCancel, onContinue, on
           onDrop={onDrop}
           onEdgeDoubleClick={onEdgeDoubleClick}
           onEdgeContextMenu={onEdgeContextMenu}
+          onNodeContextMenu={onNodeContextMenu}
           onPaneClick={onPaneClick}
           nodeTypes={nodeTypes}
           edgeTypes={edgeTypes}
           colorMode="dark"
           fitView
+          minZoom={0.1}
+          maxZoom={4}
           className="bg-background"
         >
           <Background />
@@ -972,43 +1052,51 @@ function WorkflowCanvasInner({ workflow, onSave, onRun, onCancel, onContinue, on
           </button>
         </div>
         {/* edge right-click context menu */}
-        {edgeMenu && (() => {
-          const e = edges.find((ed) => ed.id === edgeMenu.edgeId)
-          const isToolEdge =
-            e?.sourceHandle === 'tool' ||
-            ((e?.data as Record<string, unknown> | undefined)?.paletteType === 'tool')
-          const hasTransform = isToolEdge && (e?.data as Record<string, unknown> | undefined)?.output_transform != null
-          return (
-            <>
-              <div className="fixed inset-0 z-40" onClick={() => setEdgeMenu(null)} />
-              <div
-                className="fixed z-50 bg-popover border border-border rounded-md shadow-lg py-1 min-w-[160px]"
-                style={{ left: edgeMenu.screenX, top: edgeMenu.screenY }}
+        {edgeMenu && (
+          <>
+            <div className="fixed inset-0 z-40" onClick={() => setEdgeMenu(null)} />
+            <div
+              className="fixed z-50 bg-popover border border-border rounded-md shadow-lg py-1 min-w-[140px]"
+              style={{ left: edgeMenu.screenX, top: edgeMenu.screenY }}
+            >
+              <button
+                className="w-full text-left px-3 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground transition-colors"
+                onClick={handleAddWaypoint}
               >
-                <button
-                  className="w-full text-left px-3 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground transition-colors"
-                  onClick={handleAddWaypoint}
-                >
-                  Add Waypoint
-                </button>
-                {isToolEdge && (
-                  <button
-                    className="w-full text-left px-3 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground transition-colors"
-                    onClick={handleEditTransform}
-                  >
-                    {hasTransform ? 'Edit tool-output transform (tool → agent)' : 'Add tool-output transform (tool → agent)'}
-                  </button>
-                )}
-                <button
-                  className="w-full text-left px-3 py-1.5 text-sm text-red-400 hover:bg-accent hover:text-red-300 transition-colors"
-                  onClick={handleDeleteEdge}
-                >
-                  Delete Edge
-                </button>
-              </div>
-            </>
-          )
-        })()}
+                Add Waypoint
+              </button>
+              <button
+                className="w-full text-left px-3 py-1.5 text-sm text-red-400 hover:bg-accent hover:text-red-300 transition-colors"
+                onClick={handleDeleteEdge}
+              >
+                Delete Edge
+              </button>
+            </div>
+          </>
+        )}
+        {/* node right-click context menu */}
+        {nodeMenu && (
+          <>
+            <div className="fixed inset-0 z-40" onClick={() => setNodeMenu(null)} />
+            <div
+              className="fixed z-50 bg-popover border border-border rounded-md shadow-lg py-1 min-w-[160px]"
+              style={{ left: nodeMenu.screenX, top: nodeMenu.screenY }}
+            >
+              <button
+                className="w-full text-left px-3 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground transition-colors"
+                onClick={handleDuplicateNode}
+              >
+                Duplicate <span className="text-muted-foreground text-[10px] ml-1">⌘D / Ctrl+D</span>
+              </button>
+              <button
+                className="w-full text-left px-3 py-1.5 text-sm text-red-400 hover:bg-accent hover:text-red-300 transition-colors"
+                onClick={handleDeleteNode}
+              >
+                Delete Node
+              </button>
+            </div>
+          </>
+        )}
       </div>
       </div>
       <RunInputDialog
@@ -1018,12 +1106,6 @@ function WorkflowCanvasInner({ workflow, onSave, onRun, onCancel, onContinue, on
         schema={workflow.input_schema}
         rawSchema={workflow.input_schema_json}
         onSubmit={(input) => onRun(inputDialog.stopAt, input)}
-      />
-      <ToolEdgeTransformDialog
-        open={transformDialog.open}
-        onOpenChange={(o) => setTransformDialog((s) => ({ ...s, open: o }))}
-        initialTransform={(transformEdge?.data as Record<string, unknown> | undefined)?.output_transform}
-        onSave={saveEdgeTransform}
       />
     </RunResultsContext.Provider>
     </ToolApprovalContext.Provider>

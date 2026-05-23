@@ -4,6 +4,7 @@ import { Textarea } from '~/components/ui/textarea'
 import { StepNameInput } from './StepNameInput'
 import { DynamicHandles } from './DynamicHandles'
 import { NodeDebugPanel, BreakpointMarker, ApprovalMarker } from '../RunResultsContext'
+import { OutputTransformPanel } from './OutputTransformPanel'
 import { OnErrorPolicySelect } from './OnErrorPolicySelect'
 
 export function NotifyNode({ id, data, selected }: NodeProps) {
@@ -35,6 +36,7 @@ export function NotifyNode({ id, data, selected }: NodeProps) {
         <div className="px-3 py-2 border-t border-border/50">
           <OnErrorPolicySelect nodeId={id} value={(data?.on_error as string) ?? 'stop'} />
         </div>
+        <OutputTransformPanel nodeId={id} data={data as Record<string, unknown>} />
         <NodeDebugPanel id={id} />
       </div>
       <DynamicHandles nodeId={id} nodeType="notify" data={data as Record<string, unknown>} />

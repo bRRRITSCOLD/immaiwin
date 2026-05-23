@@ -1880,12 +1880,26 @@ func (e *WorkflowExecutor) RunWithEvents(ctx context.Context, wf Workflow, stopA
 			return results, nil
 		}
 
-		// Populate context for named nodes
-		if name, _ := node.Data["name"].(string); name != "" {
-			wfCtx[name] = StepContext{Input: item.input, Output: output}
+		// Per-node output_transform: when the node declares one, apply
+		// it now so downstream nodes (BFS edges, named-context lookups,
+		// step_done event) see the reshaped value. Raw output stays on
+		// StepResult.Output; transformed lands on TransformedOutput.
+		// Empty / nil transform = no reshape; downstream gets raw.
+		var transformedOutput any
+		if err == nil {
+			transformedOutput = applyNodeOutputTransform(node.Data, output, wfCtx)
+		}
+		downstreamOutput := output
+		if transformedOutput != nil {
+			downstreamOutput = transformedOutput
 		}
 
-		sr := StepResult{NodeID: node.ID, NodeType: node.Type, Output: output}
+		// Populate context for named nodes
+		if name, _ := node.Data["name"].(string); name != "" {
+			wfCtx[name] = StepContext{Input: item.input, Output: downstreamOutput}
+		}
+
+		sr := StepResult{NodeID: node.ID, NodeType: node.Type, Output: output, TransformedOutput: transformedOutput}
 		handle := "success"
 		if err != nil {
 			sr.Error = err.Error()
@@ -1898,10 +1912,11 @@ func (e *WorkflowExecutor) RunWithEvents(ctx context.Context, wf Workflow, stopA
 		results = append(results, sr)
 
 		stepDone := RunEvent{
-			Type:     EventStepDone,
-			NodeID:   node.ID,
-			NodeType: node.Type,
-			Output:   output,
+			Type:              EventStepDone,
+			NodeID:            node.ID,
+			NodeType:          node.Type,
+			Output:            output,
+			TransformedOutput: transformedOutput,
 		}
 		if err != nil {
 			stepDone.Error = err.Error()
@@ -1952,7 +1967,7 @@ func (e *WorkflowExecutor) RunWithEvents(ctx context.Context, wf Workflow, stopA
 			}
 			if matches {
 				if !visited[et.targetID] {
-					queue = append(queue, queueItem{nodeID: et.targetID, input: output})
+					queue = append(queue, queueItem{nodeID: et.targetID, input: downstreamOutput})
 				}
 			}
 		}
@@ -2248,12 +2263,24 @@ func (e *WorkflowExecutor) runBodyChain(
 
 		output, err := e.runNode(ctx, node, cur.input, wfCtx, config)
 
-		// Populate context for named body nodes
-		if name, _ := node.Data["name"].(string); name != "" {
-			wfCtx[name] = StepContext{Input: cur.input, Output: output}
+		// Per-node output_transform: see main BFS for the equivalent
+		// block. Raw goes onto StepResult.Output; transformed feeds
+		// downstream within this iteration.
+		var transformedOutput any
+		if err == nil {
+			transformedOutput = applyNodeOutputTransform(node.Data, output, wfCtx)
+		}
+		downstreamOutput := output
+		if transformedOutput != nil {
+			downstreamOutput = transformedOutput
 		}
 
-		sr := StepResult{NodeID: node.ID, NodeType: node.Type, Output: output}
+		// Populate context for named body nodes
+		if name, _ := node.Data["name"].(string); name != "" {
+			wfCtx[name] = StepContext{Input: cur.input, Output: downstreamOutput}
+		}
+
+		sr := StepResult{NodeID: node.ID, NodeType: node.Type, Output: output, TransformedOutput: transformedOutput}
 		handle := "success"
 		if err != nil {
 			sr.Error = err.Error()
@@ -2264,16 +2291,17 @@ func (e *WorkflowExecutor) runBodyChain(
 			slog.Warn("for_each body: node error", "node", node.ID, "err", err, "continued", sr.Continued)
 		}
 		results = append(results, sr)
-		lastOut = output
+		lastOut = downstreamOutput
 
 		if env != nil && env.events != nil {
 			done := RunEvent{
-				Type:      EventStepDone,
-				NodeID:    node.ID,
-				NodeType:  node.Type,
-				Output:    output,
-				LoopIter:  loopIter,
-				LoopTotal: loopTotal,
+				Type:              EventStepDone,
+				NodeID:            node.ID,
+				NodeType:          node.Type,
+				Output:            output,
+				TransformedOutput: transformedOutput,
+				LoopIter:          loopIter,
+				LoopTotal:         loopTotal,
 			}
 			if err != nil {
 				done.Error = err.Error()
@@ -2282,7 +2310,7 @@ func (e *WorkflowExecutor) runBodyChain(
 			env.events.Emit(stampNow(done))
 		}
 		if env != nil && env.isBreakpoint(node.ID) {
-			return results, output
+			return results, downstreamOutput
 		}
 
 		// Edge routing mirrors the main BFS EXACTLY so the for_each
@@ -2300,12 +2328,50 @@ func (e *WorkflowExecutor) runBodyChain(
 				matches = true
 			}
 			if matches && !visited[et.targetID] {
-				queue = append(queue, bodyItem{nodeID: et.targetID, input: output})
+				queue = append(queue, bodyItem{nodeID: et.targetID, input: downstreamOutput})
 			}
 		}
 	}
 
 	return results, lastOut
+}
+
+// applyNodeOutputTransform applies a node's `data.output_transform`
+// template to its raw output. Returns nil when the node has no
+// transform declared (caller treats nil as "no reshape — downstream
+// gets raw").
+//
+// The template is a JSON-shaped value (object/array/scalar). Inside
+// it, `{{input.<field>}}` resolves against the node's RAW output (not
+// the predecessor's output — at this point the node IS the producer),
+// alongside the standard `{{context.X}}` / `{{config.X}}` /
+// `{{run_input.X}}` namespaces.
+//
+// The transform is the consumer-facing reshape applied by every node
+// that wants to project / trim / rename its output before downstream
+// nodes (or the agent calling it as a tool) see it. Raw output stays
+// on StepResult.Output; transformed lands on StepResult.TransformedOutput
+// + flows to the next BFS node as `input`.
+func applyNodeOutputTransform(data map[string]any, rawOut any, wfCtx runCtx) any {
+	tmpl, has := data["output_transform"]
+	if !has || tmpl == nil {
+		return nil
+	}
+	if s, ok := tmpl.(string); ok {
+		trimmed := strings.TrimSpace(s)
+		if trimmed == "" {
+			return nil
+		}
+		var parsed any
+		if jerr := json.Unmarshal([]byte(trimmed), &parsed); jerr == nil {
+			tmpl = parsed
+		} else {
+			// Author saved a non-JSON string; treat as a single
+			// template expression and resolve as-is.
+			tmpl = trimmed
+		}
+	}
+	return resolveTemplateDeep(tmpl, rawOut, wfCtx)
 }
 
 // runNode dispatches execution to the appropriate handler for node.Type.
@@ -2331,8 +2397,6 @@ func (e *WorkflowExecutor) runNode(ctx context.Context, node Node, input any, wf
 		return e.runAIAgent(ctx, node, data, input, wfCtx, config)
 	case NodeTypeReturn:
 		return runReturn(data, input, wfCtx)
-	case NodeTypeTransform:
-		return runTransform(data, input, wfCtx)
 	default:
 		return nil, fmt.Errorf("unknown node type: %s", node.Type)
 	}
@@ -2352,20 +2416,6 @@ func (e *WorkflowExecutor) runNode(ctx context.Context, node Node, input any, wf
 // absent payload returns the upstream input unchanged — passthrough
 // when the author wants "whatever flowed into this node".
 func runReturn(data map[string]any, input any, wfCtx runCtx) (any, error) {
-	raw, has := data["payload"]
-	if !has || raw == nil {
-		return input, nil
-	}
-	return resolveTemplateDeep(raw, input, wfCtx), nil
-}
-
-// runTransform reshapes input into the template-resolved value of
-// `data.payload`. Identical mechanics to runReturn, separate type so
-// the save-time one-return-per-workflow check doesn't flag transform
-// nodes. Missing / nil payload passes the input through unchanged so
-// an unconfigured node is a no-op rather than a hard error during
-// canvas editing.
-func runTransform(data map[string]any, input any, wfCtx runCtx) (any, error) {
 	raw, has := data["payload"]
 	if !has || raw == nil {
 		return input, nil

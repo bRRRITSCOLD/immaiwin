@@ -14,6 +14,7 @@ import { StepNameInput } from './StepNameInput'
 import { DynamicHandles } from './DynamicHandles'
 import { ConnectionPicker } from './ConnectionPicker'
 import { NodeDebugPanel, BreakpointMarker } from '../RunResultsContext'
+import { OutputTransformPanel } from './OutputTransformPanel'
 
 const triggerTypes = [
   { value: 'manual', label: 'Manual' },
@@ -290,6 +291,13 @@ export function TriggerNode({ id, data, selected }: NodeProps) {
             </div>
           )}
         </div>
+        {/* Output transform only on external-payload triggers
+            (webhook / rabbitmq / redis_subscribe / websocket).
+            Manual = author shapes via Run dialog; cron = timestamp
+            tick — no payload worth reshaping. */}
+        {triggerType !== 'manual' && triggerType !== 'cron' && (
+          <OutputTransformPanel nodeId={id} data={data as Record<string, unknown>} />
+        )}
         <NodeDebugPanel id={id} />
       </div>
       <DynamicHandles nodeId={id} nodeType="trigger" data={data as Record<string, unknown>} />

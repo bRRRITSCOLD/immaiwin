@@ -6,6 +6,7 @@ import { StepNameInput } from './StepNameInput'
 import { AsToolPanel } from './AsToolPanel'
 import { DynamicHandles } from './DynamicHandles'
 import { NodeDebugPanel, BreakpointMarker } from '../RunResultsContext'
+import { OutputTransformPanel } from './OutputTransformPanel'
 import { OnErrorPolicySelect } from './OnErrorPolicySelect'
 import { useWorkflowStore } from '../useWorkflowStore'
 
@@ -173,6 +174,7 @@ export function SubWorkflowNode({ id, data, selected }: NodeProps) {
         <div className="px-3 py-2 border-t border-border/50">
           <OnErrorPolicySelect nodeId={id} value={(data?.on_error as string) ?? 'stop'} />
         </div>
+        <OutputTransformPanel nodeId={id} data={data as Record<string, unknown>} />
         <NodeDebugPanel id={id} />
       </div>
       <DynamicHandles nodeId={id} nodeType="sub_workflow" data={data as Record<string, unknown>} />
