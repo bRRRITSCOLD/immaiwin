@@ -599,11 +599,11 @@ Supported types: `mongodb`, `redis`, `rabbitmq`, `anthropic`, `openai`, `ollama`
 - [x] Sub-workflow as an agent tool — tenant-scoped, cycle + depth (5) guarded. `return` node + `output_schema` give sub-workflow consumers a typed return contract.
 - [x] Workflow `input_schema` (typed + raw JSON Schema) + pre-flight Run dialog; `{{run_input.X}}` template + top-level sandbox global so trigger payload is reachable from any node depth.
 - [x] Agent-as-tool — `ai_agent` nodes opt-in via `as_tool.enabled`; parent dispatches child agent directly (no sub-workflow wrapper). Sub-agents keep their own tool edges. Cycle + depth-5 ancestor guard.
+- [x] Multi-agent `fan_out` — built-in tool registered on every agent for parallel dispatch over the same catalog. `{calls: [{tool, args}], parallelism?}` → bounded concurrent execution, in-order `{results: [{output, error}]}`. Sibling failures don't abort. Map-reduce over specialists in one tool call.
 - [x] Per-node `output_transform` — every actionable node has a JSON-template reshape box; raw stays on debug panel, transformed feeds downstream + LLM tool_result. Replaces standalone Transform node + edge-level transform.
 - [x] Provider-side `tool_choice: required` enforcement when agent has `output_schema` — eliminates the wasted Chat round trip on free-text final answers.
 
 ### Up next (short-term picks)
-- Multi-agent C — orchestrator pattern + parallel fan-out over specialist sub-agents (A — agent-as-tool — shipped; C builds on it with bounded concurrency)
 - Parallel agent inside `for_each` — opt-in, bounded parallelism (default sequential)
 - Per-iter agent checkpoint (worker-death mid-ReAct = resume mid-iter)
 - First wave of standard connector nodes (Slack, S3, Postgres, etc.)

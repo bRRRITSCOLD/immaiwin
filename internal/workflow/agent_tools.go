@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -301,6 +302,149 @@ Set network=true ONLY when the task requires HTTP egress.`,
 		return sb.String(), nil
 	}
 	return def, handler, true
+}
+
+// fanOutSchema is the JSON-Schema for the built-in fan_out tool.
+// `calls` is the ordered list of sub-tool dispatches; each entry
+// names the tool and carries that tool's input args. `parallelism`
+// caps concurrent in-flight calls.
+var fanOutSchema = json.RawMessage(`{
+  "type": "object",
+  "properties": {
+    "calls": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "properties": {
+          "tool": {"type": "string", "description": "Name of a tool registered on this agent."},
+          "args": {"type": "object", "description": "Args object matching the named tool's input_schema."}
+        },
+        "required": ["tool"]
+      }
+    },
+    "parallelism": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 10,
+      "description": "Max concurrent sub-tool dispatches. Defaults to 5; capped at 10 to bound token spend."
+    }
+  },
+  "required": ["calls"]
+}`)
+
+const (
+	fanOutDefaultParallelism = 5
+	fanOutMaxParallelism     = 10
+)
+
+// builtinFanOutTool returns the `fan_out` built-in. It dispatches a
+// list of sub-tool calls concurrently against THIS agent's catalog —
+// the same catalog the LLM already sees — so any tool the agent can
+// call sequentially can also be fan-out called. Results land in the
+// same order as the input calls; an individual call's failure does
+// NOT abort siblings (the LLM gets the partial-success array and
+// decides whether to retry). Built on top of the existing tool
+// dispatch path so cycle / depth / output_transform / approval all
+// carry through unchanged.
+//
+// `cat` is captured by reference; at execution time the catalog is
+// fully assembled (built-ins + skills + as_tool targets), so any
+// registered tool name is reachable.
+func builtinFanOutTool(cat *ToolCatalog) (llm.ToolDef, ToolHandler) {
+	def := llm.ToolDef{
+		Name: "fan_out",
+		Description: `Dispatch multiple sub-tool calls in parallel and aggregate the results.
+Use for map-reduce patterns: e.g. summarize N documents, query M data sources,
+delegate K tasks to specialist sub-agents. Returns an array of {output, error}
+in the same order as the input calls. Failures don't abort siblings — pivot
+on partial success.`,
+		InputSchema: fanOutSchema,
+	}
+	handler := func(ctx context.Context, args json.RawMessage) (string, error) {
+		var in struct {
+			Calls []struct {
+				Tool string          `json:"tool"`
+				Args json.RawMessage `json:"args"`
+			} `json:"calls"`
+			Parallelism int `json:"parallelism"`
+		}
+		if err := json.Unmarshal(args, &in); err != nil {
+			return "", fmt.Errorf("fan_out: bad args: %w", err)
+		}
+		if len(in.Calls) == 0 {
+			return "", fmt.Errorf("fan_out: calls must be non-empty")
+		}
+		p := in.Parallelism
+		if p <= 0 {
+			p = fanOutDefaultParallelism
+		}
+		if p > fanOutMaxParallelism {
+			p = fanOutMaxParallelism
+		}
+
+		type result struct {
+			Output any    `json:"output,omitempty"`
+			Error  string `json:"error,omitempty"`
+		}
+		results := make([]result, len(in.Calls))
+
+		// Buffered channel = semaphore; bounds in-flight goroutines
+		// without pulling in a sync/errgroup dep. WaitGroup blocks
+		// until every sub-call returns (or errors).
+		sem := make(chan struct{}, p)
+		var wg sync.WaitGroup
+		for i, call := range in.Calls {
+			wg.Add(1)
+			sem <- struct{}{}
+			go func() {
+				defer wg.Done()
+				defer func() { <-sem }()
+				if call.Tool == "" {
+					results[i] = result{Error: "fan_out: empty tool name"}
+					return
+				}
+				callArgs := call.Args
+				if len(callArgs) == 0 {
+					callArgs = json.RawMessage(`{}`)
+				}
+				obs, err := cat.Execute(ctx, call.Tool, callArgs)
+				if err != nil {
+					// Include any observation the failing tool managed
+					// to emit alongside the error so the LLM has more
+					// than just an error string to reason over.
+					r := result{Error: err.Error()}
+					if obs != "" {
+						r.Output = obs
+					}
+					results[i] = r
+					return
+				}
+				// Try to decode the tool's string result back into a
+				// structured value so the LLM sees JSON instead of a
+				// double-encoded string. Fall back to the raw string
+				// when decoding fails (e.g. code_execute observation
+				// blocks).
+				var decoded any
+				if jerr := json.Unmarshal([]byte(obs), &decoded); jerr == nil {
+					results[i] = result{Output: decoded}
+				} else {
+					results[i] = result{Output: obs}
+				}
+			}()
+		}
+		wg.Wait()
+
+		out := struct {
+			Results []result `json:"results"`
+		}{Results: results}
+		b, err := json.Marshal(out)
+		if err != nil {
+			return "", fmt.Errorf("fan_out: marshal results: %w", err)
+		}
+		return string(b), nil
+	}
+	return def, handler
 }
 
 // --- as_tool: existing nodes opt-in as agent tools ---
