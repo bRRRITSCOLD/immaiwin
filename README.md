@@ -594,14 +594,21 @@ Supported types: `mongodb`, `redis`, `rabbitmq`, `anthropic`, `openai`, `ollama`
 - [x] Run metrics + worker health + reaper, transactional SMTP, full CI gate
 - [x] Security hardening — explicit-connection requirement for mongo/redis nodes + rabbitmq/redis_subscribe triggers (worker + API), HTTP SSRF dial-guard (refuses cloud metadata / RFC1918 / loopback / link-local; DNS-rebind safe; per-node `allowed_hosts` opt-in), `as_tool` canvas isolation, per-agent **tool authorization policy** (`allowed_tools` allow-list applied to built-ins + skills + as_tool nodes; denied tools never reach their handler)
 - [x] Canvas debug — Continue + breakpoints control bridge over Redis pub/sub; checkpoint at every pre-exec breakpoint (BFS + as_tool inner pause); `ClaimLease` refuses orphan-no-checkpoint runs; periodic orphan sweep terminates them with synthetic `run_done`; WS keepalive ping (20s); worker heartbeat events (10s); canvas "Worker quiet" banner (15s threshold); yellow paused marker survives worker death + orphan-error terminal; one marker pulses at a time; explicit Cancel clears it.
-- [x] Sandbox warm pool — k3s mirrors the docker pool (was docker-only). Boot-time async warm + per-Acquire liveness check + 24h activeDeadline on warm pods + tightened post-attach termination poll (10ms init / 50ms cap). Bumped k8s client-go QPS=50/Burst=100 so warm + lease + attach traffic can't saturate the limiter. Default-language Python / JS skill calls land in ~400ms instead of 1.5-5s. Per-(image, packages-hash) pool sharding remains follow-up.
+- [x] Sandbox warm pool — k3s mirrors the docker pool (was docker-only). Boot-time async warm + per-Acquire liveness check + 24h activeDeadline on warm pods + tightened post-attach termination poll (10ms init / 50ms cap). Bumped k8s client-go QPS=50/Burst=100 so warm + lease + attach traffic can't saturate the limiter. Default-language Python / JS skill calls land in ~400ms instead of 1.5-5s. Pool key extended to `(lang, image-tag, network, mem, cpu)` so package-using runs hit the warm pool too.
+- [x] Image-layer caching for `packages` (docker + k3s) — sha256-tagged image reused on next run; k3s variant pushes to the configured registry so containerd can pull. Pushed-tag cache prevents redundant pushes across the pool.
+- [x] Sub-workflow as an agent tool — tenant-scoped, cycle + depth (5) guarded. `return` node + `output_schema` give sub-workflow consumers a typed return contract.
+- [x] Workflow `input_schema` (typed + raw JSON Schema) + pre-flight Run dialog; `{{run_input.X}}` template + top-level sandbox global so trigger payload is reachable from any node depth.
+- [x] Agent-as-tool — `ai_agent` nodes opt-in via `as_tool.enabled`; parent dispatches child agent directly (no sub-workflow wrapper). Sub-agents keep their own tool edges. Cycle + depth-5 ancestor guard.
+- [x] Per-node `output_transform` — every actionable node has a JSON-template reshape box; raw stays on debug panel, transformed feeds downstream + LLM tool_result. Replaces standalone Transform node + edge-level transform.
+- [x] Provider-side `tool_choice: required` enforcement when agent has `output_schema` — eliminates the wasted Chat round trip on free-text final answers.
 
 ### Up next (short-term picks)
-- Sub-workflow as a tool + recursion guard (biggest composability lever)
+- Multi-agent C — orchestrator pattern + parallel fan-out over specialist sub-agents (A — agent-as-tool — shipped; C builds on it with bounded concurrency)
+- Parallel agent inside `for_each` — opt-in, bounded parallelism (default sequential)
 - Per-iter agent checkpoint (worker-death mid-ReAct = resume mid-iter)
 - First wave of standard connector nodes (Slack, S3, Postgres, etc.)
 - Slack OOB approvals — full ladder (bot token → Block Kit → per-tenant OAuth → Slack Connect)
-- Sandbox + infra: container warm-start pool, image-layer caching for `packages`, multi-node Kubernetes validation, per-tenant sandbox isolation
+- Sandbox + infra: multi-node Kubernetes validation, per-tenant sandbox isolation
 
 See [`ROADMAP.md`](./ROADMAP.md) for the rest — aspirational items (chat-platform triggers, agent eval/replay, tool synthesis), UX polish, observability, and the doc relationship table.
 
