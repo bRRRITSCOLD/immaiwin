@@ -464,18 +464,55 @@ function WorkflowCanvasInner({ workflow, onSave, onRun, onCancel, onContinue, on
     onRun(opts.stopAt)
   }
 
-  // Escape clears edge palette + edge context menu
+  // Escape clears edge palette + edge context menu.
+  // Cmd/Ctrl+D duplicates every selected node (data clone, fresh id +
+  // handles, +20px offset, no edges — same rule as a fresh drag-from-
+  // palette). Ignored while focus is in a text input so authors can
+  // type "d" freely.
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
       if (e.key === 'Escape') {
         setSelectedEdgeType(null)
         setEdgeMenu(null)
         setAttachingFrom(null)
+        return
+      }
+      if ((e.metaKey || e.ctrlKey) && (e.key === 'd' || e.key === 'D')) {
+        const t = e.target as HTMLElement | null
+        const tag = t?.tagName?.toLowerCase()
+        if (tag === 'input' || tag === 'textarea' || t?.isContentEditable) return
+        e.preventDefault()
+        setNodes((nds) => {
+          const selected = nds.filter((n) => n.selected)
+          if (selected.length === 0) return nds
+          const clones: typeof nds = selected.map((n) => {
+            const data = { ...(n.data ?? {}) } as Record<string, unknown>
+            // Drop handles so DynamicHandles auto-seeds fresh defaults
+            // for the new node — copying handle ids verbatim would let
+            // a stale waypoint or as_tool-leftover handle ride along
+            // and confuse downstream wiring.
+            delete data.handles
+            return {
+              ...n,
+              id: nextNodeId(),
+              position: { x: n.position.x + 24, y: n.position.y + 24 },
+              data,
+              selected: false,
+            }
+          })
+          // Deselect originals so only the new clones land selected,
+          // giving immediate visual feedback + Cmd+D again on the
+          // clones for a series of copies.
+          return [
+            ...nds.map((n) => (n.selected ? { ...n, selected: false } : n)),
+            ...clones.map((c) => ({ ...c, selected: true })),
+          ]
+        })
       }
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [setSelectedEdgeType, setAttachingFrom])
+  }, [setSelectedEdgeType, setAttachingFrom, setNodes])
 
   // Self-heal: prune edges that violate as_tool full-isolation —
   // covers toggling as_tool ON after edges were drawn, and loading a
