@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -148,12 +149,13 @@ func (c *ToolCatalog) Execute(ctx context.Context, name string, args json.RawMes
 		if err := dec.Decode(&decoded); err != nil {
 			// Short Go error keeps the agent loop's `\nerror: <…>` suffix
 			// from duplicating the long observation message.
-			return fmt.Sprintf("tool %s: invalid JSON in args: %s", name, err.Error()), fmt.Errorf("invalid tool args")
+			return fmt.Sprintf("tool %s: invalid JSON in args: %s", name, err.Error()),
+				fmt.Errorf("%w: invalid JSON in args", ErrToolValidation)
 		}
 		if err := sch.Validate(decoded); err != nil {
 			msg := fmt.Sprintf("tool %s: input failed schema validation:\n%s\n\ninput received:\n%s",
 				name, sanitizeSchemaErr(err.Error(), name), string(validateArgs))
-			return msg, fmt.Errorf("schema validation failed")
+			return msg, fmt.Errorf("%w: %s", ErrToolValidation, "schema validation failed")
 		}
 	}
 
@@ -410,6 +412,45 @@ on partial success.`,
 				}
 				obs, err := cat.Execute(ctx, call.Tool, callArgs)
 				if err != nil {
+					// Validation failures happen BEFORE the as_tool target
+					// closure runs, so no step_start / step_done are
+					// emitted for the target node — its canvas badge
+					// stays grey while the LLM sees the error. Emit
+					// synthetic start + done(error) here so the failure
+					// surfaces on the right node. Handler-runtime errors
+					// (the target ran + threw) already emit step_done
+					// from the closure, so only do this for the
+					// validation path.
+					if errors.Is(err, ErrToolValidation) {
+						if env, ok := envFromCtx(ctx); ok {
+							if targetID, hasID := env.toolNameToNodeID[call.Tool]; hasID {
+								if target, hasNode := env.byID[targetID]; hasNode {
+									if env.events != nil {
+										env.events.Emit(stampNow(RunEvent{
+											Type:     EventStepStart,
+											NodeID:   target.ID,
+											NodeType: target.Type,
+										}))
+										env.events.Emit(stampNow(RunEvent{
+											Type:     EventStepDone,
+											NodeID:   target.ID,
+											NodeType: target.Type,
+											Error:    err.Error(),
+											IsError:  true,
+										}))
+									}
+									if env.toolSteps != nil {
+										env.toolSteps.add(StepResult{
+											NodeID:       target.ID,
+											NodeType:     target.Type,
+											Error:        err.Error(),
+											ViaAgentTool: true,
+										})
+									}
+								}
+							}
+						}
+					}
 					// Include any observation the failing tool managed
 					// to emit alongside the error so the LLM has more
 					// than just an error string to reason over.
@@ -448,6 +489,14 @@ on partial success.`,
 }
 
 // --- as_tool: existing nodes opt-in as agent tools ---
+
+// ErrToolValidation marks tool-dispatch failures where the args
+// didn't match the tool's declared input_schema OR weren't valid JSON
+// — i.e. the handler never ran. Surfaced for callers (fan_out) that
+// need to distinguish "the handler errored mid-flight" (already
+// emitted step_done) from "the handler never started" (caller must
+// emit a synthetic step_done so the canvas shows the failure).
+var ErrToolValidation = errors.New("tool input validation failed")
 
 // asToolDef extracts a ToolDef from a target node's data.as_tool block.
 // Returns ok=false when the node hasn't opted in.
