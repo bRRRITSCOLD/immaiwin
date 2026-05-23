@@ -4,6 +4,7 @@ import { StepNameInput } from './StepNameInput'
 import { OnErrorPolicySelect } from './OnErrorPolicySelect'
 import { DynamicHandles } from './DynamicHandles'
 import { NodeDebugPanel, BreakpointMarker, ApprovalMarker } from '../RunResultsContext'
+import { OutputTransformPanel } from './OutputTransformPanel'
 
 export function ForEachNode({ id, data, selected }: NodeProps) {
   const { updateNodeData } = useReactFlow()
@@ -40,6 +41,7 @@ export function ForEachNode({ id, data, selected }: NodeProps) {
         <div className="px-3 py-2 border-t border-border/50">
           <OnErrorPolicySelect nodeId={id} value={(data?.on_error as string) ?? 'stop'} nodeType="for_each" />
         </div>
+        <OutputTransformPanel nodeId={id} data={data as Record<string, unknown>} />
         <NodeDebugPanel id={id} />
       </div>
       <DynamicHandles nodeId={id} nodeType="for_each" data={data as Record<string, unknown>} />

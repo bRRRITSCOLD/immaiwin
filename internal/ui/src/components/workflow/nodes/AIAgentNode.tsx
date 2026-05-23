@@ -12,6 +12,7 @@ import { DynamicHandles } from './DynamicHandles'
 import { SkillsPanel } from './SkillsPanel'
 import { AgentTimelinePanel } from './AgentTimelinePanel'
 import { NodeDebugPanel, BreakpointMarker, ApprovalMarker, AgentRunContext } from '../RunResultsContext'
+import { OutputTransformPanel } from './OutputTransformPanel'
 import { ConnectionPicker } from './ConnectionPicker'
 import { OnErrorPolicySelect } from './OnErrorPolicySelect'
 import { AsToolPanel } from './AsToolPanel'
@@ -369,6 +370,7 @@ export function AIAgentNode({ id, data, selected }: NodeProps) {
         <div className="px-3 py-2 border-t border-border/50">
           <OnErrorPolicySelect nodeId={id} value={onErrorPolicy} nodeType="ai_agent" />
         </div>
+        <OutputTransformPanel nodeId={id} data={data as Record<string, unknown>} />
         <NodeDebugPanel id={id} />
       </div>
       <DynamicHandles nodeId={id} nodeType="ai_agent" data={data as Record<string, unknown>} />

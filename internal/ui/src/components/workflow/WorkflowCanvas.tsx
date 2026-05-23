@@ -27,13 +27,11 @@ import { SandboxScriptNode } from './nodes/SandboxScriptNode'
 import { AIAgentNode } from './nodes/AIAgentNode'
 import { SubWorkflowNode } from './nodes/SubWorkflowNode'
 import { ReturnNode } from './nodes/ReturnNode'
-import { TransformNode } from './nodes/TransformNode'
 import { useWorkflowStore, type Workflow } from './useWorkflowStore'
 import { WorkflowConfigPanel } from './WorkflowConfigPanel'
 import { WorkflowInputSchemaPanel } from './WorkflowInputSchemaPanel'
 import { WorkflowOutputSchemaPanel } from './WorkflowOutputSchemaPanel'
 import { RunInputDialog } from './RunInputDialog'
-import { ToolEdgeTransformDialog } from './ToolEdgeTransformDialog'
 import { WorkflowCostLimitsPanel } from './WorkflowCostLimitsPanel'
 import { WorkflowApprovalChannelPanel } from './WorkflowApprovalChannelPanel'
 import { WorkflowHelpLegend } from './WorkflowHelpLegend'
@@ -51,7 +49,6 @@ const nodeTypes: NodeTypes = {
   ai_agent: AIAgentNode,
   sub_workflow: SubWorkflowNode,
   return: ReturnNode,
-  transform: TransformNode,
 }
 
 const edgeTypes: EdgeTypes = {
@@ -441,7 +438,6 @@ function WorkflowCanvasInner({ workflow, onSave, onRun, onCancel, onContinue, on
   const [debugMode, setDebugMode] = useState(false)
   const [breakpointIds, setBreakpointIds] = useState<Set<string>>(new Set())
   const [edgeMenu, setEdgeMenu] = useState<EdgeMenuState | null>(null)
-  const [transformDialog, setTransformDialog] = useState<{ open: boolean; edgeId: string | null }>({ open: false, edgeId: null })
   // Pre-flight input dialog. Workflows declaring input_schema /
   // input_schema_json need operator-supplied input before
   // dispatch — running with empty payload would fail engine
@@ -643,29 +639,6 @@ function WorkflowCanvasInner({ workflow, onSave, onRun, onCancel, onContinue, on
     setEdgeMenu(null)
   }
 
-  function handleEditTransform() {
-    if (!edgeMenu) return
-    setTransformDialog({ open: true, edgeId: edgeMenu.edgeId })
-    setEdgeMenu(null)
-  }
-
-  const transformEdge = transformDialog.edgeId ? edges.find((e) => e.id === transformDialog.edgeId) : null
-
-  function saveEdgeTransform(transform: unknown | null) {
-    if (!transformDialog.edgeId) return
-    setEdges((eds) =>
-      eds.map((e) => {
-        if (e.id !== transformDialog.edgeId) return e
-        const nextData = { ...(e.data ?? {}) }
-        if (transform === null) {
-          delete (nextData as Record<string, unknown>).output_transform
-        } else {
-          ;(nextData as Record<string, unknown>).output_transform = transform
-        }
-        return { ...e, data: nextData }
-      }),
-    )
-  }
 
   const toggleBreakpoint = useCallback(
     (nodeId: string) => {
@@ -998,43 +971,28 @@ function WorkflowCanvasInner({ workflow, onSave, onRun, onCancel, onContinue, on
           </button>
         </div>
         {/* edge right-click context menu */}
-        {edgeMenu && (() => {
-          const e = edges.find((ed) => ed.id === edgeMenu.edgeId)
-          const isToolEdge =
-            e?.sourceHandle === 'tool' ||
-            ((e?.data as Record<string, unknown> | undefined)?.paletteType === 'tool')
-          const hasTransform = isToolEdge && (e?.data as Record<string, unknown> | undefined)?.output_transform != null
-          return (
-            <>
-              <div className="fixed inset-0 z-40" onClick={() => setEdgeMenu(null)} />
-              <div
-                className="fixed z-50 bg-popover border border-border rounded-md shadow-lg py-1 min-w-[160px]"
-                style={{ left: edgeMenu.screenX, top: edgeMenu.screenY }}
+        {edgeMenu && (
+          <>
+            <div className="fixed inset-0 z-40" onClick={() => setEdgeMenu(null)} />
+            <div
+              className="fixed z-50 bg-popover border border-border rounded-md shadow-lg py-1 min-w-[140px]"
+              style={{ left: edgeMenu.screenX, top: edgeMenu.screenY }}
+            >
+              <button
+                className="w-full text-left px-3 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground transition-colors"
+                onClick={handleAddWaypoint}
               >
-                <button
-                  className="w-full text-left px-3 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground transition-colors"
-                  onClick={handleAddWaypoint}
-                >
-                  Add Waypoint
-                </button>
-                {isToolEdge && (
-                  <button
-                    className="w-full text-left px-3 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground transition-colors"
-                    onClick={handleEditTransform}
-                  >
-                    {hasTransform ? 'Edit tool-output transform (tool → agent)' : 'Add tool-output transform (tool → agent)'}
-                  </button>
-                )}
-                <button
-                  className="w-full text-left px-3 py-1.5 text-sm text-red-400 hover:bg-accent hover:text-red-300 transition-colors"
-                  onClick={handleDeleteEdge}
-                >
-                  Delete Edge
-                </button>
-              </div>
-            </>
-          )
-        })()}
+                Add Waypoint
+              </button>
+              <button
+                className="w-full text-left px-3 py-1.5 text-sm text-red-400 hover:bg-accent hover:text-red-300 transition-colors"
+                onClick={handleDeleteEdge}
+              >
+                Delete Edge
+              </button>
+            </div>
+          </>
+        )}
       </div>
       </div>
       <RunInputDialog
@@ -1044,12 +1002,6 @@ function WorkflowCanvasInner({ workflow, onSave, onRun, onCancel, onContinue, on
         schema={workflow.input_schema}
         rawSchema={workflow.input_schema_json}
         onSubmit={(input) => onRun(inputDialog.stopAt, input)}
-      />
-      <ToolEdgeTransformDialog
-        open={transformDialog.open}
-        onOpenChange={(o) => setTransformDialog((s) => ({ ...s, open: o }))}
-        initialTransform={(transformEdge?.data as Record<string, unknown> | undefined)?.output_transform}
-        onSave={saveEdgeTransform}
       />
     </RunResultsContext.Provider>
     </ToolApprovalContext.Provider>

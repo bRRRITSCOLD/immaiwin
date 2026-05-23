@@ -30,15 +30,6 @@ const (
 	// resolved value becomes the sub_workflow tool result. Workflows
 	// without a return node return null — fire-and-forget pattern.
 	NodeTypeReturn NodeType = "return"
-	// NodeTypeTransform reshapes its input via a JSON-shaped
-	// `data.payload` template (same engine as NodeTypeReturn). Use
-	// case: trim or rename fields from an upstream output (mongo find,
-	// http body, agent answer) before it feeds into a downstream
-	// agent or sandbox, cutting token spend without a sandbox round
-	// trip. Pure-template — no expression language, no array map.
-	// For array projection use for_each; for arbitrary computation
-	// use sandbox_script.
-	NodeTypeTransform NodeType = "transform"
 )
 
 // Edge source-handle values used by the executor.

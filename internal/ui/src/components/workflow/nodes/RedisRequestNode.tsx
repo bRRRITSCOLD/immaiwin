@@ -12,6 +12,7 @@ import { DynamicHandles } from './DynamicHandles'
 import { AsToolPanel } from './AsToolPanel'
 import { ConnectionPicker } from './ConnectionPicker'
 import { NodeDebugPanel, BreakpointMarker, ApprovalMarker } from '../RunResultsContext'
+import { OutputTransformPanel } from './OutputTransformPanel'
 import { OnErrorPolicySelect } from './OnErrorPolicySelect'
 
 const OPERATIONS = [
@@ -477,6 +478,7 @@ export function RedisRequestNode({ id, data, selected }: NodeProps) {
         <div className="px-3 py-2 border-t border-border/50">
           <OnErrorPolicySelect nodeId={id} value={(data?.on_error as string) ?? 'stop'} />
         </div>
+        <OutputTransformPanel nodeId={id} data={data as Record<string, unknown>} />
         <NodeDebugPanel id={id} />
       </div>
       <DynamicHandles nodeId={id} nodeType="redis_request" data={data as Record<string, unknown>} />
