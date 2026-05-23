@@ -149,9 +149,15 @@ export function DynamicHandles({ nodeId, nodeType, data }: Props) {
   // as_tool node: only `receive` handles render (the agent's tool edge
   // still needs a target). All source handles (success/error/item) are
   // inert here, so they're hidden and un-wirable.
+  //
+  // Exception — an `ai_agent` exposed as a tool is still an agent: it
+  // runs its own ReAct loop when dispatched and may call its own
+  // tools. Preserve its `tool` source handles (along with receive) so
+  // a sub-agent can wire to mongo / http / sandbox / other agents
+  // exactly the way a top-level agent does.
   const asTool = isAsToolEnabled(data)
   const displayHandles = asTool
-    ? handles.filter((h) => h.paletteType === 'receive')
+    ? handles.filter((h) => h.paletteType === 'receive' || (nodeType === 'ai_agent' && h.paletteType === 'tool'))
     : handles
 
   // Update node internals when handles change so RF registers them

@@ -369,16 +369,30 @@ function isPaletteConnectionValid(
  * Full-isolation rule for `as_tool` nodes: an agent-dispatched tool
  * node bypasses the BFS entirely, so the ONLY legitimate edge is the
  * AI Agent's inbound "tool" edge. No outbound from it, and no inbound
- * from anything other than an ai_agent. Used by onConnect (block at
- * draw time), isValidConnection (block the drag), and a self-heal
- * effect (prune edges that became invalid when as_tool was toggled on
- * or a legacy/template workflow loaded).
+ * from anything other than an ai_agent.
+ *
+ * Exception — an `ai_agent` exposed as a tool is itself an agent and
+ * may call its own tools when dispatched. Outbound edges from an
+ * `as_tool` `ai_agent` are allowed when the connection is the agent's
+ * own `tool` edge (sourceHandle === 'tool'); success / error / item
+ * outbound from an as_tool agent stay forbidden since BFS still skips it.
+ *
+ * Used by onConnect (block at draw time), isValidConnection (block
+ * the drag), and a self-heal effect (prune edges that became invalid
+ * when as_tool was toggled on or a legacy/template workflow loaded).
  */
 function asToolEdgeAllowed(
   src: Node | undefined,
   tgt: Node | undefined,
+  sourceHandle?: string | null,
 ): boolean {
-  if (src && isAsToolEnabled(src.data as Record<string, unknown>)) return false
+  if (src && isAsToolEnabled(src.data as Record<string, unknown>)) {
+    if (src.type === 'ai_agent' && sourceHandle === 'tool') {
+      // sub-agent calling its own tools — allowed
+    } else {
+      return false
+    }
+  }
   if (
     tgt &&
     isAsToolEnabled(tgt.data as Record<string, unknown>) &&
@@ -464,7 +478,7 @@ function WorkflowCanvasInner({ workflow, onSave, onRun, onCancel, onContinue, on
     setEdges((eds) => {
       const byId = new Map(nodes.map((n) => [n.id, n]))
       const next = eds.filter((e) =>
-        asToolEdgeAllowed(byId.get(e.source), byId.get(e.target)),
+        asToolEdgeAllowed(byId.get(e.source), byId.get(e.target), e.sourceHandle ?? null),
       )
       return next.length === eds.length ? eds : next
     })
@@ -480,7 +494,7 @@ function WorkflowCanvasInner({ workflow, onSave, onRun, onCancel, onContinue, on
     const srcNode = nodesRef.current.find((n) => n.id === connection.source)
     const tgtNode = nodesRef.current.find((n) => n.id === connection.target)
     // as_tool full-isolation guard applies regardless of palette.
-    if (!asToolEdgeAllowed(srcNode, tgtNode)) return false
+    if (!asToolEdgeAllowed(srcNode, tgtNode, connection.sourceHandle ?? null)) return false
     const pt = paletteRef.current
     if (!pt) return true // no palette → allow (legacy behavior)
     return isPaletteConnectionValid(srcNode?.type, pt)
@@ -507,7 +521,7 @@ function WorkflowCanvasInner({ workflow, onSave, onRun, onCancel, onContinue, on
       // node, and a tool node has no outbound edges.
       const srcN = nodes.find((n) => n.id === connection.source)
       const tgtN = nodes.find((n) => n.id === connection.target)
-      if (!asToolEdgeAllowed(srcN, tgtN)) return
+      if (!asToolEdgeAllowed(srcN, tgtN, connection.sourceHandle ?? null)) return
 
       // Guard: validate palette type vs source node
       if (selectedEdgeType) {
