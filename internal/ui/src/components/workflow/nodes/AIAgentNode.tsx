@@ -1,5 +1,5 @@
 import { NodeResizer, type NodeProps, useReactFlow, useNodes, useEdges } from '@xyflow/react'
-import { Bot, Wrench, HelpCircle, Plus } from 'lucide-react'
+import { Bot, Wrench, HelpCircle, Plus, Sparkles } from 'lucide-react'
 import { useContext, useEffect, useState } from 'react'
 import { api } from '~/lib/api'
 import { Textarea } from '~/components/ui/textarea'
@@ -356,11 +356,7 @@ export function AIAgentNode({ id, data, selected }: NodeProps) {
           <p className="text-[10px] text-muted-foreground">
             Connect tool nodes via the <span className="text-purple-400 font-medium">tool</span> edge to expose them to the agent.
           </p>
-          <p className="text-[10px] text-muted-foreground/80 mt-1">
-            <span className="font-medium">Built-in tools (always available):</span>{' '}
-            <code className="text-[10px]">code_execute</code> — run code in the sandbox (5 langs, gVisor-isolated; requires sandbox configured).{' '}
-            <code className="text-[10px]">fan_out</code> — dispatch <code className="text-[10px]">{`{calls:[{tool,args}], parallelism?}`}</code> in parallel against this agent's other tools; returns <code className="text-[10px]">{`{results:[{output,error}]}`}</code> in input order. Sibling failures don't abort.
-          </p>
+          <BuiltinToolsChips />
         </div>
 
         <SkillsPanel nodeId={id} data={data as Record<string, unknown>} />
@@ -378,6 +374,62 @@ export function AIAgentNode({ id, data, selected }: NodeProps) {
         <NodeDebugPanel id={id} />
       </div>
       <DynamicHandles nodeId={id} nodeType="ai_agent" data={data as Record<string, unknown>} />
+    </div>
+  )
+}
+
+// BuiltinToolsChips renders one pill per built-in tool registered on
+// every agent's catalog (mirrors what `buildAgentToolCatalog` adds).
+// Each chip's tooltip describes the tool so the prompt-author knows
+// what's available without leaving the canvas.
+function BuiltinToolsChips() {
+  const builtins: { name: string; summary: string; detail: React.ReactNode }[] = [
+    {
+      name: 'code_execute',
+      summary: 'run code in the sandbox',
+      detail: (
+        <>
+          <p className="font-medium">code_execute</p>
+          <p className="mt-1">Runs arbitrary code in a gVisor-isolated sandbox. 5 languages: javascript, python, golang, rust, php. Script must call <code>output(&lt;value&gt;)</code> to return a result. <code>network=true</code> opt-in for HTTP egress.</p>
+          <p className="mt-1 text-muted-foreground/80">Requires sandbox configured on the worker.</p>
+        </>
+      ),
+    },
+    {
+      name: 'fan_out',
+      summary: 'dispatch tools in parallel',
+      detail: (
+        <>
+          <p className="font-medium">fan_out</p>
+          <p className="mt-1">Dispatches a list of sub-tool calls concurrently against this agent's own catalog. Use for map-reduce patterns: summarize N docs, query M sources, delegate K tasks to specialist sub-agents.</p>
+          <p className="mt-2 font-mono text-[10px]">{`{calls:[{tool,args}], parallelism?}`}</p>
+          <p className="mt-1">Returns <code className="font-mono text-[10px]">{`{results:[{output,error}]}`}</code> in input order. Sibling failures don't abort. Default parallelism 5, cap 10.</p>
+        </>
+      ),
+    },
+  ]
+
+  return (
+    <div className="flex flex-wrap items-center gap-1 pt-1.5">
+      <span className="text-[10px] text-muted-foreground self-center">
+        Built-in:
+      </span>
+      {builtins.map((b) => (
+        <Tooltip key={b.name}>
+          <TooltipTrigger asChild>
+            <span
+              className="nodrag flex items-center gap-1 rounded border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-mono leading-none text-amber-300 cursor-help"
+              title={b.summary}
+            >
+              <Sparkles className="h-2.5 w-2.5" />
+              {b.name}
+            </span>
+          </TooltipTrigger>
+          <TooltipContent side="top" className="max-w-[320px] text-[11px] leading-snug">
+            {b.detail}
+          </TooltipContent>
+        </Tooltip>
+      ))}
     </div>
   )
 }
