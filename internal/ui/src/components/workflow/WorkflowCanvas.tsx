@@ -438,6 +438,7 @@ function WorkflowCanvasInner({ workflow, onSave, onRun, onCancel, onContinue, on
   const [debugMode, setDebugMode] = useState(false)
   const [breakpointIds, setBreakpointIds] = useState<Set<string>>(new Set())
   const [edgeMenu, setEdgeMenu] = useState<EdgeMenuState | null>(null)
+  const [nodeMenu, setNodeMenu] = useState<{ nodeId: string; screenX: number; screenY: number } | null>(null)
   // Pre-flight input dialog. Workflows declaring input_schema /
   // input_schema_json need operator-supplied input before
   // dispatch — running with empty payload would fail engine
@@ -652,8 +653,48 @@ function WorkflowCanvasInner({ workflow, onSave, onRun, onCancel, onContinue, on
     [screenToFlowPosition],
   )
 
+  const onNodeContextMenu = useCallback((e: React.MouseEvent, node: Node) => {
+    e.preventDefault()
+    setNodeMenu({ nodeId: node.id, screenX: e.clientX, screenY: e.clientY })
+  }, [])
+
+  function duplicateNodesById(ids: string[]) {
+    if (ids.length === 0) return
+    setNodes((nds) => {
+      const sources = nds.filter((n) => ids.includes(n.id))
+      if (sources.length === 0) return nds
+      const clones = sources.map((n) => {
+        const data = { ...(n.data ?? {}) } as Record<string, unknown>
+        delete data.handles
+        return {
+          ...n,
+          id: nextNodeId(),
+          position: { x: n.position.x + 24, y: n.position.y + 24 },
+          data,
+          selected: true,
+        }
+      })
+      return [...nds.map((n) => ({ ...n, selected: false })), ...clones]
+    })
+  }
+
+  function handleDuplicateNode() {
+    if (!nodeMenu) return
+    duplicateNodesById([nodeMenu.nodeId])
+    setNodeMenu(null)
+  }
+
+  function handleDeleteNode() {
+    if (!nodeMenu) return
+    const id = nodeMenu.nodeId
+    setNodes((nds) => nds.filter((n) => n.id !== id))
+    setEdges((eds) => eds.filter((e) => e.source !== id && e.target !== id))
+    setNodeMenu(null)
+  }
+
   const onPaneClick = useCallback(() => {
     setEdgeMenu(null)
+    setNodeMenu(null)
     setAttachingFrom(null)
   }, [setAttachingFrom])
 
@@ -864,6 +905,7 @@ function WorkflowCanvasInner({ workflow, onSave, onRun, onCancel, onContinue, on
           onDrop={onDrop}
           onEdgeDoubleClick={onEdgeDoubleClick}
           onEdgeContextMenu={onEdgeContextMenu}
+          onNodeContextMenu={onNodeContextMenu}
           onPaneClick={onPaneClick}
           nodeTypes={nodeTypes}
           edgeTypes={edgeTypes}
@@ -1026,6 +1068,29 @@ function WorkflowCanvasInner({ workflow, onSave, onRun, onCancel, onContinue, on
                 onClick={handleDeleteEdge}
               >
                 Delete Edge
+              </button>
+            </div>
+          </>
+        )}
+        {/* node right-click context menu */}
+        {nodeMenu && (
+          <>
+            <div className="fixed inset-0 z-40" onClick={() => setNodeMenu(null)} />
+            <div
+              className="fixed z-50 bg-popover border border-border rounded-md shadow-lg py-1 min-w-[160px]"
+              style={{ left: nodeMenu.screenX, top: nodeMenu.screenY }}
+            >
+              <button
+                className="w-full text-left px-3 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground transition-colors"
+                onClick={handleDuplicateNode}
+              >
+                Duplicate <span className="text-muted-foreground text-[10px] ml-1">⌘D / Ctrl+D</span>
+              </button>
+              <button
+                className="w-full text-left px-3 py-1.5 text-sm text-red-400 hover:bg-accent hover:text-red-300 transition-colors"
+                onClick={handleDeleteNode}
+              >
+                Delete Node
               </button>
             </div>
           </>
