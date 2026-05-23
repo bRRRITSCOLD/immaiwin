@@ -355,7 +355,11 @@ export function AIAgentNode({ id, data, selected }: NodeProps) {
         <div className="px-3 py-2 border-t border-border/50">
           <p className="text-[10px] text-muted-foreground">
             Connect tool nodes via the <span className="text-purple-400 font-medium">tool</span> edge to expose them to the agent.
-            Built-in <code className="text-[10px]">code_execute</code> tool is always available (sandbox required).
+          </p>
+          <p className="text-[10px] text-muted-foreground/80 mt-1">
+            <span className="font-medium">Built-in tools (always available):</span>{' '}
+            <code className="text-[10px]">code_execute</code> — run code in the sandbox (5 langs, gVisor-isolated; requires sandbox configured).{' '}
+            <code className="text-[10px]">fan_out</code> — dispatch <code className="text-[10px]">{`{calls:[{tool,args}], parallelism?}`}</code> in parallel against this agent's other tools; returns <code className="text-[10px]">{`{results:[{output,error}]}`}</code> in input order. Sibling failures don't abort.
           </p>
         </div>
 
@@ -467,8 +471,8 @@ function RegisteredToolChips({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [JSON.stringify(skills)])
 
-  // Built-in tool (sandbox always wired in this UX).
-  const builtinNames = ['code_execute']
+  // Built-in tools (registered on every agent catalog by buildAgentToolCatalog).
+  const builtinNames = ['code_execute', 'fan_out']
 
   // Edge-bound as_tool target names. Mirror the executor's lookup:
   // outgoing edges with sourceHandle === 'tool' (EdgeHandleTool)
