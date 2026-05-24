@@ -90,6 +90,7 @@ baked into the engine instead of bolted on after.
 - **Per-tool gate Skip button** (vs Reject) — Skip = soft, agent observes the rejection and pivots; Reject = hard veto
 - **Distributed concurrency control per workflow** — `concurrency: N` across the worker pool
 - **Per-skill `on_error`** — follow-up to the universal node policy
+- **Connection cache invalidation** — `ConnectionResolver.llmCache` (and the DB/Redis caches) hold providers built once per connection ID; updating a connection's `default_model` / endpoint / credentials in the DB doesn't propagate until the worker restarts. Wire a Redis pub/sub on connection update → invalidate matching cache entry → next ResolveLLM rebuilds from fresh config.
 
 ### Security + governance
 - **Per-tenant sandbox isolation** — namespaces, RBAC, secret scoping; tenant workflows can't see each other's sandbox pods
