@@ -327,15 +327,16 @@ export function DynamicHandles({ nodeId, nodeType, data }: Props) {
 
   // Valid palette types for this node (for border submenu)
   //
-  // as_tool nodes are normally fully isolated. Exception — an
-  // `ai_agent` exposed as a tool is still an agent and may call its
-  // own tools. Expose only `tool` in the add-handle menu (receive
-  // handles auto-seed at defaults; adding more is purely decorative
-  // and would confuse the BFS-skip mental model).
+  // as_tool nodes lose source handles (success/error/item are inert
+  // since BFS skips them) but always keep `receive` — the parent
+  // agent's tool edge has to land somewhere, and the auto-seeded
+  // defaults can be deleted or restyled. Exception — an `ai_agent`
+  // exposed as a tool is still an agent and may call its own tools,
+  // so it additionally gets `tool` source handles.
   const validPaletteTypes = asTool
     ? nodeType === 'ai_agent'
-      ? allPaletteTypes.filter((p) => p.type === 'tool')
-      : []
+      ? allPaletteTypes.filter((p) => p.type === 'tool' || p.type === 'receive')
+      : allPaletteTypes.filter((p) => p.type === 'receive')
     : allPaletteTypes.filter((p) => isPaletteValidForNode(nodeType, p.type))
 
   // Zone styles — always pointer events, cursor crosshair when palette or always for right-click

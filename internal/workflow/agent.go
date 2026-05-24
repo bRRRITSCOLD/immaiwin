@@ -1215,6 +1215,17 @@ func (e *WorkflowExecutor) buildAgentToolCatalog(agent Node, env *runEnv,
 		}
 	}
 
+	// 1b. Built-in fan_out — parallel dispatch over the same catalog
+	// the LLM already sees. Captures `cat` by reference so any tool
+	// registered later (skills, as_tool targets) is reachable at
+	// dispatch time.
+	{
+		def, h := builtinFanOutTool(cat)
+		if err := cat.Add(def, h); err != nil {
+			return nil, err
+		}
+	}
+
 	// 2. Skill-supplied tools (P1.11). Reads data.skills as []SkillReq,
 	// resolves to a lockfile via SkillRes, then registers each tool with the
 	// agent using a `<sanitized-slug>__<tool_id>` prefix to avoid collisions.
