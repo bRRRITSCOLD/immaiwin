@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
@@ -2123,6 +2124,22 @@ func (e *WorkflowExecutor) runForEach(
 	var abortErr error
 	anyFatal := false
 
+	// Bounded parallelism (opt-in). `data.parallelism > 1` runs body
+	// iterations concurrently up to the cap; default 1 = sequential
+	// (back-compat + safe for token-spend-sensitive agent bodies).
+	// Refuse parallelism > 1 with on_error=stop: the abort-on-first-
+	// fault semantic doesn't compose with already-in-flight goroutines
+	// (we'd have to cancel + collect partial work). Save-time validator
+	// rejects this combo; here we defensively coerce to sequential so a
+	// pre-save-check workflow can't corrupt the run.
+	parallelism := forEachParallelism(node.Data)
+	if parallelism > 1 && abortOnErr {
+		parallelism = 1
+	}
+	if parallelism > 1 {
+		return e.runForEachParallel(ctx, node, items, total, itemTargetIDs, bodySeen, byID, adj, wfCtx, config, env, forEachName, input, parallelism)
+	}
+
 	for idx, item := range items {
 		// Honour cancellation between iterations. On force-cancel /
 		// lease-loss the heartbeat cancels the run ctx; without this
@@ -2203,6 +2220,135 @@ func (e *WorkflowExecutor) runForEach(
 		abortErr = fmt.Errorf("for_each: completed with unsuppressed body error(s) (on_error=continue)")
 	}
 
+	return outputs, allResults, abortErr
+}
+
+// forEachParallelism reads the `data.parallelism` field. Default 1
+// (sequential, current back-compat). Clamped to [1, maxForEachParallelism]
+// so a misconfigured workflow can't spawn unbounded goroutines.
+func forEachParallelism(data map[string]any) int {
+	const maxForEachParallelism = 32
+	switch v := data["parallelism"].(type) {
+	case float64:
+		p := int(v)
+		if p < 1 {
+			return 1
+		}
+		if p > maxForEachParallelism {
+			return maxForEachParallelism
+		}
+		return p
+	case int:
+		if v < 1 {
+			return 1
+		}
+		if v > maxForEachParallelism {
+			return maxForEachParallelism
+		}
+		return v
+	default:
+		return 1
+	}
+}
+
+// runForEachParallel runs the for_each body chains concurrently
+// (bounded by `parallelism`). Per-iteration `iterCtx` is a fresh
+// clone of the parent wfCtx so named body nodes don't race on the
+// same map. `allResults`, `outputs`, and `anyFatal` are protected by
+// a mutex. abort-on-error is intentionally disabled in this path —
+// see runForEach for the rationale (in-flight goroutines can't be
+// cleanly aborted, so this path requires on_error=continue).
+func (e *WorkflowExecutor) runForEachParallel(
+	ctx context.Context,
+	node Node,
+	items []any,
+	total int,
+	itemTargetIDs []string,
+	bodySeen map[string]bool,
+	byID map[string]Node,
+	adj map[string][]adjEntry,
+	wfCtx runCtx,
+	config map[string]string,
+	env *runEnv,
+	forEachName string,
+	input any,
+	parallelism int,
+) (any, []StepResult, error) {
+	type iterOut struct {
+		results []StepResult
+		outputs []any
+		fatal   bool
+	}
+	per := make([]iterOut, len(items))
+
+	sem := make(chan struct{}, parallelism)
+	var wg sync.WaitGroup
+	for idx, item := range items {
+		// Honour cancellation between dispatches. In-flight goroutines
+		// keep running — ctx cancellation cascades to their runNode
+		// calls naturally, and any partial work lands in `per`.
+		if cerr := ctx.Err(); cerr != nil {
+			slog.Warn("for_each (parallel): ctx cancelled before dispatch", "node", node.ID, "item_index", idx, "err", cerr)
+			break
+		}
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(idx int, item any) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			// Per-iter wfCtx clone so named body-node writes don't
+			// race across iterations.
+			iterCtx := make(runCtx, len(wfCtx))
+			maps.Copy(iterCtx, wfCtx)
+			if forEachName != "" {
+				iterCtx[forEachName] = StepContext{Input: input, Item: item}
+			}
+			if env != nil && env.events != nil {
+				for bid := range bodySeen {
+					env.events.Emit(stampNow(RunEvent{
+						Type:      EventLoopIterStart,
+						NodeID:    bid,
+						NodeType:  byID[bid].Type,
+						LoopIter:  idx + 1,
+						LoopTotal: total,
+					}))
+				}
+			}
+			loopCtx := withForEachLoop(ctx, idx+1, total)
+
+			var iter iterOut
+			for _, startID := range itemTargetIDs {
+				chainResults, lastOut := e.runBodyChain(loopCtx, startID, item, adj, byID, iterCtx, config)
+				iter.results = append(iter.results, chainResults...)
+				if len(chainResults) > 0 && chainResults[len(chainResults)-1].Error == "" {
+					iter.outputs = append(iter.outputs, lastOut)
+				}
+				for _, sr := range chainResults {
+					if sr.Error != "" && !sr.Continued {
+						iter.fatal = true
+					}
+				}
+			}
+			per[idx] = iter
+		}(idx, item)
+	}
+	wg.Wait()
+
+	var allResults []StepResult
+	var outputs []any
+	anyFatal := false
+	for _, it := range per {
+		allResults = append(allResults, it.results...)
+		outputs = append(outputs, it.outputs...)
+		if it.fatal {
+			anyFatal = true
+		}
+	}
+
+	var abortErr error
+	if anyFatal {
+		abortErr = fmt.Errorf("for_each (parallel): completed with unsuppressed body error(s) (on_error=continue)")
+	}
 	return outputs, allResults, abortErr
 }
 

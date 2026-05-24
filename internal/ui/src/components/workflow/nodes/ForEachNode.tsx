@@ -38,7 +38,27 @@ export function ForEachNode({ id, data, selected }: NodeProps) {
           </div>
           <p className="text-[9px] text-muted-foreground/60 pt-0.5">name → body access via <code className="text-[9px]">context.stepName.item</code></p>
         </div>
-        <div className="px-3 py-2 border-t border-border/50">
+        <div className="px-3 py-2 border-t border-border/50 space-y-1.5">
+          <div className="flex items-center justify-between gap-2">
+            <label className="text-[10px] text-muted-foreground" title="1 (default) = sequential. >1 = bounded concurrent iterations (requires on_error: continue — in-flight iterations can't be aborted mid-flight). Server clamps to 32.">
+              Parallelism
+            </label>
+            <input
+              type="number"
+              min={1}
+              max={32}
+              className="nodrag w-16 h-7 px-1.5 text-xs bg-transparent border border-border/40 rounded text-right font-mono"
+              value={(data?.parallelism as number) ?? 1}
+              onChange={(e) => {
+                const n = parseInt(e.target.value, 10)
+                if (!Number.isFinite(n) || n <= 1) {
+                  updateNodeData(id, { parallelism: 1 })
+                } else {
+                  updateNodeData(id, { parallelism: Math.min(32, n) })
+                }
+              }}
+            />
+          </div>
           <OnErrorPolicySelect nodeId={id} value={(data?.on_error as string) ?? 'stop'} nodeType="for_each" />
         </div>
         <OutputTransformPanel nodeId={id} data={data as Record<string, unknown>} />
