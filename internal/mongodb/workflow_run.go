@@ -610,6 +610,48 @@ func (r *WorkflowRunRepository) ReleaseLease(ctx context.Context, runID, workerI
 	return err
 }
 
+// CheckpointPausedAgent persists just the agent's per-iteration
+// snapshot onto the run without touching status / steps / lease.
+// Called at the end of every ReAct iter so a worker that dies mid-loop
+// can be reclaimed by another worker (via ClaimLease's normal path)
+// and RunFromCheckpoint will hydrate env.resumeAgentState from the
+// latest PausedAgent — resuming at the iter that was about to start
+// instead of restarting from iter 0.
+//
+// Lease-gated on lease_owner: a worker that lost its lease must NOT
+// silently overwrite state another worker now owns. Returns
+// ErrLeaseNotHeld so the agent loop aborts cleanly.
+//
+// Pass nil for `state` to clear PausedAgent (e.g. on normal agent
+// completion). Bumps last_checkpoint_at on every successful update so
+// the orphan-sweep timestamp tracks fresh progress.
+func (r *WorkflowRunRepository) CheckpointPausedAgent(ctx context.Context, runID, workerID string, state *workflow.AgentPauseState) error {
+	if runID == "" || workerID == "" {
+		return errors.New("workflow run paused-agent checkpoint: runID and workerID required")
+	}
+	now := time.Now().UTC()
+	update := bson.M{
+		"$set": bson.M{"last_checkpoint_at": now},
+	}
+	if state != nil {
+		update["$set"].(bson.M)["paused_agent"] = state
+	} else {
+		update["$unset"] = bson.M{"paused_agent": ""}
+	}
+	res, err := r.col.UpdateOne(
+		ctx,
+		bson.M{"_id": runID, "lease_owner": workerID},
+		update,
+	)
+	if err != nil {
+		return err
+	}
+	if res.MatchedCount == 0 {
+		return workflow.ErrLeaseNotHeld
+	}
+	return nil
+}
+
 // CheckpointExecutionState writes the BFS snapshot at a step boundary,
 // gated on the caller still holding the lease (filter matches
 // lease_owner == workerID). On lease loss returns ErrLeaseNotHeld so

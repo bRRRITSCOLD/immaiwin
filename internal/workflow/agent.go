@@ -639,6 +639,17 @@ func (e *WorkflowExecutor) runAIAgent(ctx context.Context, node Node, data map[s
 				_ = e.Memory.Trim(ctx, sessionID, defaultMaxMemoryMessages)
 			}
 
+			// Clear the per-iter checkpoint snapshot on success — agent
+			// is done, BFS continues with later nodes. Leaving
+			// PausedAgent set would have a downstream worker-death
+			// reclaim try to resume this already-completed agent.
+			if env.checkpoint && e.RunRepo != nil && env.workerID != "" && env.runID != "" {
+				if cerr := e.RunRepo.CheckpointPausedAgent(ctx, env.runID, env.workerID, nil); cerr != nil && !errors.Is(cerr, ErrLeaseNotHeld) {
+					slog.Warn("ai_agent: clear per-iter checkpoint on completion failed (continuing)",
+						"run_id", env.runID, "agent", node.ID, "err", cerr)
+				}
+			}
+
 			// Return shape: rich result with usage + trace for downstream nodes.
 			return map[string]any{
 				"output":     finalText,
@@ -1164,6 +1175,15 @@ func (e *WorkflowExecutor) runAIAgent(ctx context.Context, node Node, data map[s
 					}
 					_ = e.Memory.Trim(ctx, sessionID, defaultMaxMemoryMessages)
 				}
+				// Clear per-iter checkpoint snapshot — agent finished
+				// via submit_final_answer. See StopReasonEndTurn return
+				// for the rationale.
+				if env.checkpoint && e.RunRepo != nil && env.workerID != "" && env.runID != "" {
+					if cerr := e.RunRepo.CheckpointPausedAgent(ctx, env.runID, env.workerID, nil); cerr != nil && !errors.Is(cerr, ErrLeaseNotHeld) {
+						slog.Warn("ai_agent: clear per-iter checkpoint on completion failed (continuing)",
+							"run_id", env.runID, "agent", node.ID, "err", cerr)
+					}
+				}
 				return map[string]any{
 					"output":     finalAnswerArgs,
 					"usage":      usageTotal,
@@ -1181,6 +1201,33 @@ func (e *WorkflowExecutor) runAIAgent(ctx context.Context, node Node, data map[s
 			// the across-iter scope reset.
 			env.approvedToolCallNames = nil
 			env.approvedNodeIDs = nil
+
+			// Per-iter checkpoint: persist the agent's mid-loop state
+			// (messages so far, accumulated usage + trace, next iter
+			// index) to the run row so a worker death between iters
+			// is reclaimable at iter N+1 instead of restarting at
+			// iter 0. Lease-gated by CheckpointPausedAgent — on lease
+			// loss the agent loop aborts cleanly. Best-effort: a
+			// Mongo blip here logs but doesn't kill the run; the
+			// next successful iter checkpoint will overwrite.
+			if env.checkpoint && e.RunRepo != nil && env.workerID != "" && env.runID != "" {
+				snap := &AgentPauseState{
+					AgentNodeID:  node.ID,
+					Iter:         iter + 1,
+					Messages:     messages,
+					UsageTotal:   usageTotal,
+					Trace:        traceEvents,
+					SystemPrompt: systemPrompt,
+					UserInput:    userInputText,
+				}
+				if cerr := e.RunRepo.CheckpointPausedAgent(ctx, env.runID, env.workerID, snap); cerr != nil {
+					if errors.Is(cerr, ErrLeaseNotHeld) {
+						return nil, cerr
+					}
+					slog.Warn("ai_agent: per-iter checkpoint failed (continuing)",
+						"run_id", env.runID, "agent", node.ID, "iter", iter, "err", cerr)
+				}
+			}
 			continue
 
 		case llm.StopReasonMaxTokens:

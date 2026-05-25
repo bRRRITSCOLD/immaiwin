@@ -395,6 +395,15 @@ type WorkflowRunStore interface {
 	// pass empty to leave unchanged. Phase 3 PR 3.2.
 	CheckpointExecutionState(ctx context.Context, runID, workerID string, state ExecutionState, steps []StepResult, status RunStatus) error
 
+	// CheckpointPausedAgent writes only the agent's per-iteration
+	// snapshot onto the run (paused_agent + last_checkpoint_at), no
+	// status / steps / lease changes. Called by the agent loop at the
+	// end of every ReAct iter so a worker death mid-loop is reclaimable
+	// at iter N+1 instead of iter 0. Pass nil to clear the field on
+	// normal completion. Lease-gated; returns ErrLeaseNotHeld when the
+	// caller no longer owns the lease.
+	CheckpointPausedAgent(ctx context.Context, runID, workerID string, state *AgentPauseState) error
+
 	// ApplyApprovalDecision writes the user's decision into the run's
 	// execution-state pending gate, clears any active lease, flips
 	// status back to `running`, and bumps last_checkpoint_at. Caller

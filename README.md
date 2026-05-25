@@ -601,11 +601,11 @@ Supported types: `mongodb`, `redis`, `rabbitmq`, `anthropic`, `openai`, `ollama`
 - [x] Agent-as-tool — `ai_agent` nodes opt-in via `as_tool.enabled`; parent dispatches child agent directly (no sub-workflow wrapper). Sub-agents keep their own tool edges. Cycle + depth-5 ancestor guard.
 - [x] Multi-agent `fan_out` — built-in tool registered on every agent for parallel dispatch over the same catalog. `{calls: [{tool, args}], parallelism?}` → bounded concurrent execution, in-order `{results: [{output, error}]}`. Sibling failures don't abort. Map-reduce over specialists in one tool call.
 - [x] Parallel `for_each` — opt-in via `data.parallelism > 1` (default 1, sequential). Bounded concurrent iterations, per-iter wfCtx clone. `on_error: stop` in parallel = SOFT stop (halts new dispatches on first fault, in-flight iterations complete); `on_error: continue` = best-effort fan-out.
+- [x] Per-iter agent checkpoint — agent loop persists its mid-loop snapshot (messages, iter, usage, trace) at the end of every ReAct iter via lease-gated `CheckpointPausedAgent`. Worker death mid-loop reclaims at iter N+1 instead of restarting at iter 0.
 - [x] Per-node `output_transform` — every actionable node has a JSON-template reshape box; raw stays on debug panel, transformed feeds downstream + LLM tool_result. Replaces standalone Transform node + edge-level transform.
 - [x] Provider-side `tool_choice: required` enforcement when agent has `output_schema` — eliminates the wasted Chat round trip on free-text final answers.
 
 ### Up next (short-term picks)
-- Per-iter agent checkpoint (worker-death mid-ReAct = resume mid-iter)
 - First wave of standard connector nodes (Slack, S3, Postgres, etc.)
 - Slack OOB approvals — full ladder (bot token → Block Kit → per-tenant OAuth → Slack Connect)
 - Sandbox + infra: multi-node Kubernetes validation, per-tenant sandbox isolation

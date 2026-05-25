@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bRRRITSCOLD/burrow/internal/llm"
 	"github.com/bRRRITSCOLD/burrow/internal/mongodb"
 	"github.com/bRRRITSCOLD/burrow/internal/workflow"
 	"github.com/stretchr/testify/suite"
@@ -252,4 +253,65 @@ func (s *WorkflowRunCheckpointIntegrationSuite) TestApplyApprovalDecision_Reject
 	s.Require().NotNil(got.ExecutionState.Pending.Decision)
 	s.False(got.ExecutionState.Pending.Decision.Approved)
 	s.Equal("missing budget signoff", got.ExecutionState.Pending.Decision.Reason)
+}
+
+// TestCheckpointPausedAgent_LeaseHeld_WritesSnapshot verifies the
+// happy path of the per-iter agent checkpoint: a worker holding the
+// lease writes AgentPauseState onto the run + bumps
+// last_checkpoint_at, doesn't touch status / steps / lease.
+func (s *WorkflowRunCheckpointIntegrationSuite) TestCheckpointPausedAgent_LeaseHeld_WritesSnapshot() {
+	s.seedClaimedRun("run-cp-pa-1", "worker-a")
+
+	snap := &workflow.AgentPauseState{
+		AgentNodeID:  "agent-1",
+		Iter:         3,
+		Messages:     []llm.Message{llm.UserText("hello")},
+		SystemPrompt: "you are a test agent",
+		UserInput:    "test input",
+	}
+	err := s.repo.CheckpointPausedAgent(context.Background(), "run-cp-pa-1", "worker-a", snap)
+	s.Require().NoError(err)
+
+	got, err := s.repo.Get(context.Background(), "run-cp-pa-1")
+	s.Require().NoError(err)
+	s.Require().NotNil(got.PausedAgent)
+	s.Equal("agent-1", got.PausedAgent.AgentNodeID)
+	s.Equal(3, got.PausedAgent.Iter)
+	s.Equal("you are a test agent", got.PausedAgent.SystemPrompt)
+	s.NotNil(got.LastCheckpointAt, "last_checkpoint_at must be stamped")
+	s.Equal(workflow.RunStatusRunning, got.Status, "status must NOT change — paused-agent write is mid-loop")
+}
+
+// TestCheckpointPausedAgent_NilState_ClearsField verifies the
+// completion path — agent finished, pass nil to remove the
+// PausedAgent doc so a later worker-death reclaim doesn't try to
+// resume an already-finished agent.
+func (s *WorkflowRunCheckpointIntegrationSuite) TestCheckpointPausedAgent_NilState_ClearsField() {
+	s.seedClaimedRun("run-cp-pa-2", "worker-a")
+	// Seed an initial paused state so the clear has something to clear.
+	err := s.repo.CheckpointPausedAgent(context.Background(), "run-cp-pa-2", "worker-a", &workflow.AgentPauseState{
+		AgentNodeID: "agent-1",
+		Iter:        2,
+	})
+	s.Require().NoError(err)
+
+	err = s.repo.CheckpointPausedAgent(context.Background(), "run-cp-pa-2", "worker-a", nil)
+	s.Require().NoError(err)
+
+	got, err := s.repo.Get(context.Background(), "run-cp-pa-2")
+	s.Require().NoError(err)
+	s.Nil(got.PausedAgent, "nil state must $unset paused_agent")
+}
+
+// TestCheckpointPausedAgent_ForeignWorker_ReturnsErrLeaseNotHeld is
+// the durability invariant — a worker without the lease can't stomp
+// the snapshot. Mirrors CheckpointExecutionState's foreign-worker
+// guard so reclaim races stay safe.
+func (s *WorkflowRunCheckpointIntegrationSuite) TestCheckpointPausedAgent_ForeignWorker_ReturnsErrLeaseNotHeld() {
+	s.seedClaimedRun("run-cp-pa-3", "worker-a")
+
+	snap := &workflow.AgentPauseState{AgentNodeID: "agent-1", Iter: 1}
+	err := s.repo.CheckpointPausedAgent(context.Background(), "run-cp-pa-3", "worker-b", snap)
+	s.Require().Error(err)
+	s.ErrorIs(err, workflow.ErrLeaseNotHeld)
 }
