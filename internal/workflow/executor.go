@@ -19,6 +19,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -2127,17 +2128,16 @@ func (e *WorkflowExecutor) runForEach(
 	// Bounded parallelism (opt-in). `data.parallelism > 1` runs body
 	// iterations concurrently up to the cap; default 1 = sequential
 	// (back-compat + safe for token-spend-sensitive agent bodies).
-	// Refuse parallelism > 1 with on_error=stop: the abort-on-first-
-	// fault semantic doesn't compose with already-in-flight goroutines
-	// (we'd have to cancel + collect partial work). Save-time validator
-	// rejects this combo; here we defensively coerce to sequential so a
-	// pre-save-check workflow can't corrupt the run.
+	//
+	// on_error: stop semantics in the parallel path are SOFT —
+	// in-flight goroutines run to completion (we can't cleanly abort
+	// without leaking partial side effects), but no NEW iterations
+	// dispatch once any iteration's body chain produces an
+	// unsuppressed error. on_error: continue is unchanged
+	// (best-effort fan-out, every item runs).
 	parallelism := forEachParallelism(node.Data)
-	if parallelism > 1 && abortOnErr {
-		parallelism = 1
-	}
 	if parallelism > 1 {
-		return e.runForEachParallel(ctx, node, items, total, itemTargetIDs, bodySeen, byID, adj, wfCtx, config, env, forEachName, input, parallelism)
+		return e.runForEachParallel(ctx, node, items, total, itemTargetIDs, bodySeen, byID, adj, wfCtx, config, env, forEachName, input, parallelism, abortOnErr)
 	}
 
 	for idx, item := range items {
@@ -2254,10 +2254,17 @@ func forEachParallelism(data map[string]any) int {
 // runForEachParallel runs the for_each body chains concurrently
 // (bounded by `parallelism`). Per-iteration `iterCtx` is a fresh
 // clone of the parent wfCtx so named body nodes don't race on the
-// same map. `allResults`, `outputs`, and `anyFatal` are protected by
-// a mutex. abort-on-error is intentionally disabled in this path —
-// see runForEach for the rationale (in-flight goroutines can't be
-// cleanly aborted, so this path requires on_error=continue).
+// same map. `per[idx]` keeps each iteration's results in an
+// index-stable slot so the post-wait flatten yields input-order
+// output regardless of goroutine completion order.
+//
+// `abortOnErr` honours `on_error: stop` with SOFT semantics in this
+// path: the dispatch loop checks a shared `firstErr` atomic between
+// launches and stops STARTING new iterations once any iteration's
+// body chain ended with an unsuppressed error. Already-in-flight
+// goroutines run to completion (cancelling them mid-flight would
+// leak partial side effects); their results still land in `per`.
+// on_error: continue is unchanged (every item runs, best-effort).
 func (e *WorkflowExecutor) runForEachParallel(
 	ctx context.Context,
 	node Node,
@@ -2273,6 +2280,7 @@ func (e *WorkflowExecutor) runForEachParallel(
 	forEachName string,
 	input any,
 	parallelism int,
+	abortOnErr bool,
 ) (any, []StepResult, error) {
 	type iterOut struct {
 		results []StepResult
@@ -2281,8 +2289,10 @@ func (e *WorkflowExecutor) runForEachParallel(
 	}
 	per := make([]iterOut, len(items))
 
+	var firstErr atomic.Bool
 	sem := make(chan struct{}, parallelism)
 	var wg sync.WaitGroup
+	dispatched := 0
 	for idx, item := range items {
 		// Honour cancellation between dispatches. In-flight goroutines
 		// keep running — ctx cancellation cascades to their runNode
@@ -2291,8 +2301,19 @@ func (e *WorkflowExecutor) runForEachParallel(
 			slog.Warn("for_each (parallel): ctx cancelled before dispatch", "node", node.ID, "item_index", idx, "err", cerr)
 			break
 		}
+		// Soft-stop: any prior iteration's body chain produced an
+		// unsuppressed fault → no new dispatches. Already-launched
+		// goroutines run out; their results land in `per`. Without
+		// this, on_error: stop in the parallel path would silently
+		// degrade to best-effort.
+		if abortOnErr && firstErr.Load() {
+			slog.Warn("for_each (parallel): unsuppressed body error — halting new dispatches (on_error=stop, soft)",
+				"node", node.ID, "halted_at_item_index", idx, "remaining", len(items)-idx)
+			break
+		}
 		wg.Add(1)
 		sem <- struct{}{}
+		dispatched++
 		go func(idx int, item any) {
 			defer wg.Done()
 			defer func() { <-sem }()
@@ -2329,6 +2350,9 @@ func (e *WorkflowExecutor) runForEachParallel(
 					}
 				}
 			}
+			if iter.fatal {
+				firstErr.Store(true)
+			}
 			per[idx] = iter
 		}(idx, item)
 	}
@@ -2337,7 +2361,10 @@ func (e *WorkflowExecutor) runForEachParallel(
 	var allResults []StepResult
 	var outputs []any
 	anyFatal := false
-	for _, it := range per {
+	for i, it := range per {
+		if i >= dispatched {
+			break
+		}
 		allResults = append(allResults, it.results...)
 		outputs = append(outputs, it.outputs...)
 		if it.fatal {
@@ -2347,7 +2374,11 @@ func (e *WorkflowExecutor) runForEachParallel(
 
 	var abortErr error
 	if anyFatal {
-		abortErr = fmt.Errorf("for_each (parallel): completed with unsuppressed body error(s) (on_error=continue)")
+		if abortOnErr {
+			abortErr = fmt.Errorf("for_each (parallel): aborted on unsuppressed body error (on_error=stop, soft — in-flight iterations completed)")
+		} else {
+			abortErr = fmt.Errorf("for_each (parallel): completed with unsuppressed body error(s) (on_error=continue)")
+		}
 	}
 	return outputs, allResults, abortErr
 }

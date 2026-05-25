@@ -300,38 +300,6 @@ func UpsertWorkflow(store WorkflowStore) gin.HandlerFunc {
 			}
 		}
 
-		// Validate for_each parallelism: > 1 only allowed when
-		// on_error: continue. Sequential (parallelism = 1 / absent)
-		// can use either policy.
-		//
-		// Rationale: bounded-parallel iterations spawn goroutines that
-		// can't be cleanly aborted mid-flight, so abort-on-first-error
-		// would leave partial work in an undefined state. Force
-		// authors to pick: either explicit "stop on first fault"
-		// sequentially, or "best-effort fan-out" in parallel.
-		for _, n := range wf.Nodes {
-			if n.Type != workflow.NodeTypeForEach {
-				continue
-			}
-			var p int
-			switch v := n.Data["parallelism"].(type) {
-			case float64:
-				p = int(v)
-			case int:
-				p = v
-			}
-			if p > 1 {
-				policy, _ := n.Data["on_error"].(string)
-				if policy != "continue" {
-					c.JSON(http.StatusBadRequest, gin.H{
-						"error":   "for_each with parallelism > 1 requires on_error: continue (in-flight iterations can't be aborted mid-flight)",
-						"node_id": n.ID,
-					})
-					return
-				}
-			}
-		}
-
 		// Validate cron expressions on trigger nodes w/ trigger_type=cron
 		// 6-field parser w/ optional seconds — must mirror the worker's
 		// scheduler bits or expressions valid here would still reject at
